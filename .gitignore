@@ -1,0 +1,130 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Secrets
+secret.json
+secrets/
+*.pem
+*.key
+
+# KIS API tokens (24h valid, auto-regenerated)
+data/kis_token.json
+data/kis_real_token.json
+
+# Personal data (user-specific)
+Talk/
+data/agent_memory/
+data/trading_principles.json
+Local_Docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Flutter
+dashboard/.dart_tool/
+dashboard/build/
+dashboard/.packages
+dashboard/.flutter-plugins
+dashboard/.flutter-plugins-dependencies
+dashboard/macos/Flutter/ephemeral/
+
+# Project scanner output (contains local paths)
+docs/project-context.md
+
+# Model files
+*.bin
+*.pt
+*.onnx
+*.safetensors
+models/
+
+# ChromaDB
+chroma_data/
+
+# Memory files (Claude)
+.claude/
+
+# Backup files
+*_backup_*.json
+
+# Knowledge base local data
+knowledge/*.db
+knowledge/*.sqlite
+
+# Claude project instructions (local only)
+CLAUDE.md
+
+# Tests (not for public distribution)
+tests/
+scripts/test_*.py
+
+# Internal development docs (regenerated)
+docs/project-context.md
+docs/agents/
+docs/decisions.md
+docs/feature-spec.md
+docs/feedback-code-review.md
+docs/feedback-integration-review.md
+docs/feedback-security-review.md
+docs/launch-readiness.md
+docs/quality-report.md
+docs/validation-backend.md
+docs/validation-db-migration.md
+docs/validation-db-schema.md
+docs/animation-spec.md
+docs/design-system.md
+docs/IMPLEMENTATION_CHECKLIST.md
+docs/IMPLEMENTATION_SUMMARY.md
+docs/report/
+
+# Large file safeguards
+*.h5
+*.pkl
+*.joblib
+*.p12
+*.jks
+*.cert

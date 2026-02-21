@@ -1,0 +1,20 @@
+{"name":"Jensen Huang","aliases":["젠슨황","젠슨 황","黄仁勋","Jen-Hsun Huang"],"company":"NVDA","role":"CEO","influence":"high"}
+{"name":"Lisa Su","aliases":["리사수","리사 수","蘇姿丰"],"company":"AMD","role":"CEO","influence":"high"}
+{"name":"Tim Cook","aliases":["팀쿡","팀 쿡"],"company":"AAPL","role":"CEO","influence":"high"}
+{"name":"Satya Nadella","aliases":["사티아 나델라","나델라"],"company":"MSFT","role":"CEO","influence":"high"}
+{"name":"Sundar Pichai","aliases":["순다르 피차이","피차이"],"company":"GOOGL","role":"CEO","influence":"high"}
+{"name":"Andy Jassy","aliases":["앤디 재시","앤디재시"],"company":"AMZN","role":"CEO","influence":"high"}
+{"name":"Mark Zuckerberg","aliases":["마크 저커버그","저커버그","줴커버그"],"company":"META","role":"CEO","influence":"high"}
+{"name":"Elon Musk","aliases":["일론 머스크","머스크","일론머스크"],"company":"TSLA","role":"CEO","influence":"high"}
+{"name":"C.C. Wei","aliases":["웨이저쟈","위저자","魏哲家"],"company":"TSM","role":"CEO","influence":"high"}
+{"name":"Hock Tan","aliases":["혹 탄","탄혹엥"],"company":"AVGO","role":"CEO","influence":"high"}
+{"name":"Lip-Bu Tan","aliases":["립부 탄"],"company":"INTC","role":"CEO","influence":"high"}
+{"name":"Cristiano Amon","aliases":["크리스티아노 아몬","아몬"],"company":"QCOM","role":"CEO","influence":"medium"}
+{"name":"Sanjay Mehrotra","aliases":["산자이 메로트라"],"company":"MU","role":"CEO","influence":"medium"}
+{"name":"Rene Haas","aliases":["르네 하스"],"company":"ARM","role":"CEO","influence":"medium"}
+{"name":"Jerome Powell","aliases":["제롬 파월","파월","파월 의장"],"company":"FED","role":"Federal Reserve Chair","influence":"critical"}
+{"name":"Janet Yellen","aliases":["재닛 옐런","옐런"],"company":"UST","role":"Treasury Secretary","influence":"high"}
+{"name":"Gary Gensler","aliases":["게리 겐슬러","겐슬러"],"company":"SEC","role":"SEC Chair","influence":"high"}
+{"name":"Sam Altman","aliases":["샘 올트먼","올트먼"],"company":"OpenAI","role":"CEO","influence":"high"}
+{"name":"Dario Amodei","aliases":["다리오 아모데이","아모데이"],"company":"Anthropic","role":"CEO","influence":"medium"}
+{"name":"Demis Hassabis","aliases":["데미스 하사비스","하사비스"],"company":"GOOGL","role":"DeepMind CEO","influence":"medium"}

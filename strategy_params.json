@@ -1,0 +1,19 @@
+{
+  "take_profit_pct": 3.0,
+  "trailing_stop_pct": 1.5,
+  "stop_loss_pct": -2.0,
+  "eod_close": true,
+  "min_confidence": 0.7,
+  "max_position_pct": 15.0,
+  "max_total_position_pct": 80.0,
+  "max_daily_trades": 30,
+  "max_daily_loss_pct": -5.0,
+  "max_hold_days": 5,
+  "vix_shutdown_threshold": 35,
+  "survival_trading": {
+    "monthly_cost_usd": 300,
+    "monthly_target_usd": 500,
+    "enabled": true,
+    "description": "시스템 운영비($300/월)를 반드시 수익으로 충당해야 한다"
+  }
+}

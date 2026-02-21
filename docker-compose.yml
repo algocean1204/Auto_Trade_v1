@@ -1,0 +1,136 @@
+services:
+  # ================================================================
+  # PostgreSQL 17 + pgvector (상시 실행)
+  # ================================================================
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: trading-postgres
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      POSTGRES_DB: trading_system
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - trading
+
+  # ================================================================
+  # Redis 7 (상시 실행)
+  # ================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - trading
+
+  # ================================================================
+  # FastAPI Dashboard Server -- 호스트에서 직접 실행으로 이전
+  # Claude CLI (local SDK) 접근을 위해 Docker에서 제거되었다.
+  # 실행 방법: scripts/start_api.sh 또는 scripts/start_dashboard.py
+  # ================================================================
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: trading-api
+  #   ports:
+  #     - "${API_PORT:-9500}:9500"
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     DB_HOST: postgres
+  #     DB_PORT: "5432"
+  #     REDIS_HOST: redis
+  #     REDIS_PORT: "6379"
+  #     DOCKER_MODE: "1"
+  #     MLX_ENABLED: "0"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   restart: always
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./strategy_params.json:/app/strategy_params.json
+  #   networks:
+  #     - trading
+
+  # ================================================================
+  # Production 전용 서비스 (내부 네트워크, 포트 미노출)
+  # docker compose --profile prod-internal up -d 로 실행
+  # ================================================================
+  postgres-prod:
+    image: pgvector/pgvector:pg17
+    container_name: trading-postgres-prod
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: trading_system
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - trading-internal
+    profiles:
+      - prod-internal
+
+  redis-prod:
+    image: redis:7-alpine
+    container_name: trading-redis-prod
+    expose:
+      - "6379"
+    volumes:
+      - redis_data_prod:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - trading-internal
+    profiles:
+      - prod-internal
+
+volumes:
+  postgres_data:
+  redis_data:
+  postgres_data_prod:
+  redis_data_prod:
+
+networks:
+  trading:
+    driver: bridge
+  trading-internal:
+    driver: bridge
+    internal: true

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.trading.autotrader</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/kimtaekyu/Documents/Develop_Fold/Secret_Project/Stock_Trading/scripts/auto_trading.sh</string>
+    </array>
+
+    <!-- 홈 디렉토리로 설정 (Documents는 TCC 보호 대상) -->
+    <key>WorkingDirectory</key>
+    <string>/Users/kimtaekyu</string>
+
+    <!-- 매일 23:00 KST 시작 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>23</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kimtaekyu/Library/Logs/trading/launchagent_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/kimtaekyu/Library/Logs/trading/launchagent_stderr.log</string>
+
+    <!-- 비정상 종료 시 재시작 -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/kimtaekyu/Documents/Develop_Fold/Secret_Project/Stock_Trading</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/Users/kimtaekyu/.local/bin</string>
+    </dict>
+</dict>
+</plist>
