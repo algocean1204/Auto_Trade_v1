@@ -1,0 +1,68 @@
+{
+  "core_principle": "생존 매매 - 매달 최소 $300 수익으로 시스템 운영비를 충당한다",
+  "principles": [
+    {
+      "id": "p1",
+      "category": "survival",
+      "title": "생존 매매",
+      "content": "매달 최소 $300 수익을 내야 한다. 이것은 시스템 운영비(Claude API)이며, 달성하지 못하면 시스템이 중단된다.",
+      "priority": 1,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "p2",
+      "category": "risk",
+      "title": "손실 제한",
+      "content": "단일 거래 최대 손실은 전체 자본의 2%를 넘지 않는다. 일일 최대 손실은 5%를 넘지 않는다.",
+      "priority": 2,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "p3",
+      "category": "strategy",
+      "title": "확실한 기회만 포착",
+      "content": "불확실한 시장에서는 현금을 보유한다. 확실한 신호가 있을 때만 진입한다.",
+      "priority": 3,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "p4",
+      "category": "strategy",
+      "title": "본주 분석, 레버리지 매매",
+      "content": "기술적 분석은 본주(TSLA, SPY 등)로 수행하고, 실제 매매는 2X 레버리지 ETF(TSLL, SSO 등)로 실행한다.",
+      "priority": 4,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "p5",
+      "category": "risk",
+      "title": "분산 투자",
+      "content": "단일 종목에 전체 자본의 30% 이상 투자하지 않는다. 최소 3개 이상의 종목에 분산한다.",
+      "priority": 5,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "p6",
+      "category": "execution",
+      "title": "감정 배제",
+      "content": "AI 시스템은 감정 없이 데이터와 지표에 기반하여 매매한다. 공포와 탐욕에 흔들리지 않는다.",
+      "priority": 6,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "p7",
+      "category": "execution",
+      "title": "지속적 학습",
+      "content": "매일 매매 결과를 분석하고, 지표 성능을 평가하여 전략을 개선한다.",
+      "priority": 7,
+      "is_system": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

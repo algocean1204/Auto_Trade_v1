@@ -1,0 +1,62 @@
+# =============================================================================
+# Docker 전용 requirements (MLX/ChromaDB/Embedding 모델 제외)
+#
+# Apple Silicon 전용 패키지(mlx-lm)와 대용량 모델 패키지(sentence-transformers,
+# FlagEmbedding, chromadb)는 Docker 컨테이너에서 불필요하거나 설치 불가하므로
+# 제외한다. playwright도 브라우저 바이너리가 필요하여 제외한다.
+# =============================================================================
+
+# --- Core Web Framework ---
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+
+# --- Database ---
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+alembic==1.14.1
+psycopg2-binary==2.9.10
+pgvector==0.4.2
+
+# --- Cache ---
+redis==5.2.1
+
+# --- HTTP Clients ---
+aiohttp==3.11.11
+httpx==0.28.1
+
+# --- AI (API mode only, no local MLX) ---
+anthropic==0.42.0
+
+# --- Broker ---
+python-kis==1.0.0
+
+# --- Data Processing ---
+pandas==3.0.0
+numpy==2.2.6
+pandas-ta==0.4.71b0
+
+# --- Crawlers ---
+feedparser==6.0.11
+finvizfinance==1.3.0
+beautifulsoup4==4.12.3
+# investiny==0.7.0  -> httpx<0.24 conflict. Lazy import with fallback in investing_crawler.py
+
+# --- Utilities ---
+python-dotenv==1.0.1
+apscheduler==3.10.4
+websockets==14.1
+tzdata>=2024.1
+
+# --- Notifications ---
+python-telegram-bot==21.10
+
+# --- Excluded in Docker (Apple Silicon / heavy models) ---
+# mlx-lm==0.21.2          -> Apple MPS only
+# chromadb==0.6.3          -> RAG vector DB (not needed for dashboard)
+# sentence-transformers    -> Embedding model (not needed for dashboard)
+# FlagEmbedding            -> BGE-M3 model (not needed for dashboard)
+# playwright               -> Browser automation (not needed in container)
+# yfinance                 -> Removed from codebase (KIS API used instead)
+# praw                     -> Reddit (no REDDIT credentials configured)

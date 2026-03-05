@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Trading AI System V2 — Pipeline Architecture</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --accent: #6366f1;
+    --accent2: #22d3ee;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --orange: #f97316;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --code-bg: #141720;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
+  h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; color: var(--accent2); border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.15rem; margin: 1.5rem 0 0.75rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; font-size: 0.95rem; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+  .badge-get { background: #22c55e22; color: var(--green); border: 1px solid #22c55e44; }
+  .badge-post { background: #6366f122; color: var(--accent); border: 1px solid #6366f144; }
+  .badge-put { background: #eab30822; color: var(--yellow); border: 1px solid #eab30844; }
+  .badge-delete { background: #ef444422; color: var(--red); border: 1px solid #ef444444; }
+  .badge-ws { background: #f9731622; color: var(--orange); border: 1px solid #f9731644; }
+
+  /* Pipeline Flow Diagram */
+  .flow-container {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    flex-wrap: wrap;
+  }
+  .flow-box {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    white-space: nowrap;
+    text-align: center;
+    min-width: 120px;
+  }
+  .flow-arrow { color: var(--muted); font-size: 1.2rem; }
+  .fb-infra { background: #6366f133; border: 1px solid #6366f166; color: #a5b4fc; }
+  .fb-broker { background: #22d3ee22; border: 1px solid #22d3ee55; color: #67e8f9; }
+  .fb-endpoint { background: #22c55e22; border: 1px solid #22c55e55; color: #86efac; }
+  .fb-scheduler { background: #f9731622; border: 1px solid #f9731655; color: #fdba74; }
+  .fb-crawler { background: #eab30822; border: 1px solid #eab30855; color: #fde047; }
+  .fb-flutter { background: #ec489922; border: 1px solid #ec489955; color: #f9a8d4; }
+  .fb-redis { background: #ef444422; border: 1px solid #ef444455; color: #fca5a5; }
+  .fb-ws { background: #a855f722; border: 1px solid #a855f755; color: #d8b4fe; }
+
+  /* Module Cards */
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .module-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    transition: border-color 0.2s;
+  }
+  .module-card:hover { border-color: var(--accent); }
+  .module-card h4 {
+    font-size: 1rem;
+    color: #fff;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .module-card .path { color: var(--muted); font-size: 0.78rem; font-family: monospace; margin-bottom: 0.75rem; }
+  .module-card .desc { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem; }
+
+  /* Function Table */
+  .fn-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .fn-table th {
+    text-align: left;
+    padding: 6px 8px;
+    background: var(--code-bg);
+    color: var(--accent2);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+  }
+  .fn-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid #1e2130;
+    vertical-align: top;
+  }
+  .fn-table td:first-child { font-family: monospace; color: #fbbf24; white-space: nowrap; }
+  .fn-table td:nth-child(2) { color: var(--muted); }
+  .fn-table td:nth-child(3) { font-family: monospace; font-size: 0.78rem; color: #86efac; }
+  .fn-table td:nth-child(4) { font-family: monospace; font-size: 0.78rem; color: #93c5fd; }
+
+  .endpoint-list { list-style: none; padding: 0; }
+  .endpoint-list li { margin: 4px 0; font-size: 0.82rem; }
+
+  /* TOC */
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+  .toc h3 { margin-top: 0; }
+  .toc ul { list-style: none; padding: 0; columns: 2; }
+  .toc li { margin: 3px 0; }
+  .toc a { color: var(--accent2); text-decoration: none; font-size: 0.88rem; }
+  .toc a:hover { text-decoration: underline; }
+
+  /* Legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; font-size: 0.82rem; }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; color: #fbbf24; }
+
+  @media (max-width: 768px) {
+    body { padding: 1rem; }
+    .module-grid { grid-template-columns: 1fr; }
+    .toc ul { columns: 1; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Stock Trading AI System V2</h1>
+<p class="subtitle">Pipeline Architecture &amp; Module Reference — 전체 파이프라인 연결 문서 (2026-02-28 생성)</p>
+
+<!-- ===== TOC ===== -->
+<div class="toc">
+  <h3>목차</h3>
+  <ul>
+    <li><a href="#overview">1. 시스템 개요</a></li>
+    <li><a href="#flow-main">2. 메인 파이프라인 흐름</a></li>
+    <li><a href="#flow-fx">3. 환율 파이프라인</a></li>
+    <li><a href="#flow-data">4. 데이터 흐름</a></li>
+    <li><a href="#layer-infra">5. 인프라 계층</a></li>
+    <li><a href="#layer-broker">6. 브로커 계층</a></li>
+    <li><a href="#layer-server">7. 서버 계층</a></li>
+    <li><a href="#layer-endpoints">8. 엔드포인트 계층 (30개)</a></li>
+    <li><a href="#layer-scheduler">9. 스케줄러/크롤러 계층</a></li>
+    <li><a href="#layer-ws">10. WebSocket 계층</a></li>
+    <li><a href="#all-routes">11. 전체 API 라우트 맵</a></li>
+  </ul>
+</div>
+
+<!-- ===== LEGEND ===== -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#6366f1"></div> 인프라</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#22d3ee"></div> 브로커</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div> 엔드포인트</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f97316"></div> 스케줄러</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#eab308"></div> 크롤러</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ec4899"></div> Flutter</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> Redis</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#a855f7"></div> WebSocket</div>
+</div>
+
+<!-- ===== 1. OVERVIEW ===== -->
+<h2 id="overview">1. 시스템 개요</h2>
+<p>미국 2X 레버리지 ETF 자동매매 시스템이다. KIS OpenAPI 브로커 연동, Claude AI 분석, FastAPI 모니터링 서버, Flutter 대시보드로 구성된다.</p>
+<div class="flow-container">
+  <div class="flow-row">
+    <div class="flow-box fb-flutter">Flutter Dashboard</div>
+    <span class="flow-arrow">⟷</span>
+    <div class="flow-box fb-endpoint">FastAPI Server (:8000)</div>
+    <span class="flow-arrow">⟷</span>
+    <div class="flow-box fb-broker">BrokerClient</div>
+    <span class="flow-arrow">⟷</span>
+    <div class="flow-box fb-infra">KIS OpenAPI</div>
+  </div>
+  <div class="flow-row" style="margin-top:0.75rem">
+    <div class="flow-box fb-endpoint" style="margin-left: 178px">FastAPI Server</div>
+    <span class="flow-arrow">⟷</span>
+    <div class="flow-box fb-redis">Redis Cache</div>
+    <span class="flow-arrow">⟵</span>
+    <div class="flow-box fb-scheduler">FxScheduler</div>
+    <span class="flow-arrow">⟵</span>
+    <div class="flow-box fb-crawler">Naver / Google 크롤러</div>
+  </div>
+</div>
+
+<!-- ===== 2. MAIN PIPELINE ===== -->
+<h2 id="flow-main">2. 메인 파이프라인 흐름</h2>
+<div class="flow-container">
+  <h3 style="margin-top:0">서버 부팅 시퀀스</h3>
+  <div class="flow-row">
+    <div class="flow-box fb-infra">main.py</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-infra">dependency_injector</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-infra">InjectedSystem 생성</div>
+  </div>
+  <div class="flow-row">
+    <span class="flow-arrow" style="margin-left:2rem">↓</span>
+  </div>
+  <div class="flow-row">
+    <div class="flow-box fb-infra">create_app()</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-infra">inject_system(app, system)</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-endpoint">set_*_deps() × 30개</div>
+  </div>
+  <div class="flow-row">
+    <span class="flow-arrow" style="margin-left:2rem">↓</span>
+  </div>
+  <div class="flow-row">
+    <div class="flow-box fb-scheduler">FxScheduler.start()</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-infra">uvicorn.Server.serve()</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-endpoint">Ready on :8000</div>
+  </div>
+
+  <h3 style="margin-top:1.5rem">잔고 조회 파이프라인 (핵심)</h3>
+  <div class="flow-row">
+    <div class="flow-box fb-flutter">Flutter /api/dashboard/accounts</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-endpoint">dashboard.py get_accounts_summary()</div>
+  </div>
+  <div class="flow-row">
+    <span class="flow-arrow" style="margin-left:2rem">↓</span>
+  </div>
+  <div class="flow-row">
+    <div class="flow-box fb-endpoint">fetch_balance(virtual_auth)</div>
+    <span class="flow-arrow">+</span>
+    <div class="flow-box fb-endpoint">fetch_balance(real_auth)</div>
+  </div>
+  <div class="flow-row">
+    <span class="flow-arrow" style="margin-left:2rem">↓</span>
+  </div>
+  <div class="flow-row">
+    <div class="flow-box fb-broker">kis_api._get_tr_id(auth, "balance")</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-infra">virtual → VTTT3012R / real → TTTS3012R</div>
+  </div>
+  <div class="flow-row">
+    <span class="flow-arrow" style="margin-left:2rem">↓</span>
+  </div>
+  <div class="flow-row">
+    <div class="flow-box fb-broker">AsyncHttpClient.get()</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-infra">KIS OpenAPI /uapi/overseas-stock/v1/trading/inquire-balance</div>
+  </div>
+</div>
+
+<!-- ===== 3. FX PIPELINE ===== -->
+<h2 id="flow-fx">3. 환율 파이프라인 (3단계 폴백)</h2>
+<div class="flow-container">
+  <div class="flow-row">
+    <div class="flow-box fb-scheduler">FxScheduler._tick()</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box fb-scheduler">_fetch_rate_with_fallback()</div>
+  </div>
+  <div class="flow-row" style="margin-top:1rem">
+    <span style="color:var(--green);font-weight:600;width:40px">1차</span>
+    <div class="flow-box fb-broker">KIS API (FxManager.get_rate())</div>
+    <span class="flow-arrow">→ 성공 시 반환, 실패 시 ↓</span>
+  </div>
+  <div class="flow-row">
+    <span style="color:var(--yellow);font-weight:600;width:40px">2차</span>
+    <div class="flow-box fb-crawler">네이버 금융 크롤링 (fetch_naver_usd_krw)</div>
+    <span class="flow-arrow">→ 성공 시 반환, 실패 시 ↓</span>
+  </div>
+  <div class="flow-row">
+    <span style="color:var(--orange);font-weight:600;width:40px">3차</span>
+    <div class="flow-box fb-crawler">구글 Finance 크롤링 (fetch_google_usd_krw)</div>
+    <span class="flow-arrow">→ 성공 시 반환, 실패 시 ↓</span>
+  </div>
+  <div class="flow-row">
+    <span style="color:var(--red);font-weight:600;width:40px">폴백</span>
+    <div class="flow-box fb-redis">하드코딩 1350.0원</div>
+  </div>
+  <div class="flow-row" style="margin-top:1rem">
+    <span class="flow-arrow">결과 →</span>
+    <div class="flow-box fb-redis">Redis fx:current (현재 환율)</div>
+    <span class="flow-arrow">+</span>
+    <div class="flow-box fb-redis">Redis fx:history (이력, 최대 720건)</div>
+  </div>
+  <div class="flow-row">
+    <span class="flow-arrow">조회 →</span>
+    <div class="flow-box fb-endpoint">fx.py /api/fx/status, /api/fx/history</div>
+    <span class="flow-arrow">←</span>
+    <div class="flow-box fb-flutter">Flutter Dashboard</div>
+  </div>
+</div>
+
+<!-- ===== 4. DATA FLOW ===== -->
+<h2 id="flow-data">4. 데이터 흐름 요약</h2>
+<div class="flow-container">
+  <h3 style="margin-top:0">InjectedSystem 구조</h3>
+  <pre style="color:var(--muted);font-size:0.85rem;line-height:1.8">
+InjectedSystem
+├── components
+│   ├── broker: BrokerClientImpl    ← KIS API 브로커 인터페이스
+│   │   ├── virtual_auth: KisAuth   ← 모의투자 인증 (openapivts:29443)
+│   │   ├── real_auth: KisAuth      ← 실전투자 인증 (openapi:9443)
+│   │   └── http: AsyncHttpClient   ← HTTP 클라이언트 (재시도 3회)
+│   ├── cache: RedisCache           ← Redis 캐시 인터페이스
+│   ├── db: AsyncSession            ← PostgreSQL 비동기 세션
+│   └── ...기타 인프라 컴포넌트
+├── features
+│   ├── fx_manager: FxManager       ← 환율 관리자
+│   ├── regime_detector             ← 시장 레짐 탐지
+│   ├── position_monitor            ← 포지션 모니터링
+│   ├── capital_guard               ← 자본 보호 모듈
+│   └── ...기타 피처 모듈
+└── running: bool                   ← 시스템 실행 상태
+  </pre>
+</div>
+
+<!-- ===== 5. INFRA LAYER ===== -->
+<h2 id="layer-infra">5. 인프라 계층</h2>
+<div class="module-grid">
+
+  <div class="module-card">
+    <h4>broker_gateway.py</h4>
+    <div class="path">src/common/broker_gateway.py</div>
+    <div class="desc">KIS 인증(KisAuth), 브로커 인터페이스(BrokerClient), 공통 모델을 정의한다.</div>
+    <table class="fn-table">
+      <tr><th>클래스/함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>KisAuth.__init__</td><td>인증 초기화 (실전/가상)</td><td>key, secret, account, is_real</td><td>KisAuth</td></tr>
+      <tr><td>KisAuth.get_headers</td><td>API 요청 헤더 생성</td><td>tr_id: str</td><td>dict (Authorization, appkey, etc.)</td></tr>
+      <tr><td>KisAuth.get_token</td><td>OAuth2 토큰 발급/캐싱</td><td>-</td><td>str (access_token)</td></tr>
+      <tr><td>BrokerClient</td><td>추상 인터페이스</td><td>-</td><td>NotImplementedError</td></tr>
+      <tr><td>get_broker_client</td><td>싱글턴 팩토리</td><td>-</td><td>BrokerClientImpl</td></tr>
+    </table>
+    <h4 style="margin-top:0.75rem">공통 모델</h4>
+    <table class="fn-table">
+      <tr><th>모델</th><th>필드</th></tr>
+      <tr><td>PriceData</td><td>price, change, change_pct, volume, high, low, open, prev_close</td></tr>
+      <tr><td>PositionData</td><td>ticker, qty, avg_price, current_price, pnl, pnl_pct, market_value</td></tr>
+      <tr><td>BalanceData</td><td>positions: list[PositionData], total_equity, available_cash, pnl_total</td></tr>
+      <tr><td>OrderRequest</td><td>ticker, side, quantity, price, order_type</td></tr>
+      <tr><td>OrderResult</td><td>order_id, status, filled_qty, filled_price, message</td></tr>
+      <tr><td>OHLCV</td><td>date, open, high, low, close, volume</td></tr>
+    </table>
+  </div>
+
+  <div class="module-card">
+    <h4>http_client.py</h4>
+    <div class="path">src/common/http_client.py</div>
+    <div class="desc">비동기 HTTP 클라이언트. 지수 백오프 재시도(500/502/503/504)를 지원한다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>get</td><td>GET 요청</td><td>url, headers, params</td><td>aiohttp.ClientResponse</td></tr>
+      <tr><td>post</td><td>POST 요청</td><td>url, headers, json_data</td><td>aiohttp.ClientResponse</td></tr>
+      <tr><td>close</td><td>세션 종료</td><td>-</td><td>None</td></tr>
+    </table>
+    <p style="font-size:0.8rem;color:var(--muted);margin-top:0.5rem">재시도: max 3회, base_delay 1.0초, 지수 백오프</p>
+  </div>
+
+  <div class="module-card">
+    <h4>kis_response.py</h4>
+    <div class="path">src/executor/broker/kis_response.py</div>
+    <div class="desc">KIS API 응답 검증 유틸리티이다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>check_response</td><td>HTTP + rt_cd 검증</td><td>resp, context: str</td><td>None / raise BrokerError</td></tr>
+      <tr><td>build_url</td><td>KIS API URL 조립</td><td>auth: KisAuth, path: str</td><td>str (full URL)</td></tr>
+      <tr><td>account_parts</td><td>계좌 CANO/PRDT 분리</td><td>auth: KisAuth</td><td>tuple[str, str]</td></tr>
+      <tr><td>safe_float</td><td>안전 float 변환</td><td>val, default</td><td>float</td></tr>
+      <tr><td>safe_int</td><td>안전 int 변환</td><td>val, default</td><td>int</td></tr>
+    </table>
+  </div>
+
+  <div class="module-card">
+    <h4>api_server.py</h4>
+    <div class="path">src/monitoring/server/api_server.py</div>
+    <div class="desc">FastAPI 앱 생성, CORS/라우터/예외핸들러 설정, DI 주입 총괄이다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>create_app</td><td>FastAPI 앱 생성</td><td>-</td><td>FastAPI</td></tr>
+      <tr><td>inject_system</td><td>30개 엔드포인트 DI</td><td>app, system: InjectedSystem</td><td>None (side effect)</td></tr>
+      <tr><td>start_server</td><td>uvicorn 서빙 시작</td><td>app, host, port</td><td>None (블로킹)</td></tr>
+    </table>
+    <p style="font-size:0.8rem;color:var(--muted);margin-top:0.5rem">등록 라우터: 31개 (compat 포함), startup/shutdown 이벤트에서 FxScheduler 관리</p>
+  </div>
+
+</div>
+
+<!-- ===== 6. BROKER LAYER ===== -->
+<h2 id="layer-broker">6. 브로커 계층</h2>
+<div class="module-grid">
+
+  <div class="module-card">
+    <h4>kis_api.py <span class="badge badge-post">FIXED</span></h4>
+    <div class="path">src/executor/broker/kis_api.py</div>
+    <div class="desc">KIS OpenAPI 직접 호출 함수들이다. TR_ID를 auth 유형(실전/가상)에 따라 동적 선택한다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>_get_tr_id</td><td>가상/실전 TR_ID 자동 선택</td><td>auth: KisAuth, operation: str</td><td>str (TR_ID)</td></tr>
+      <tr><td>fetch_balance</td><td>해외 잔고 조회</td><td>auth, http</td><td>BalanceData</td></tr>
+      <tr><td>fetch_buy_power</td><td>매수가능 금액 조회</td><td>auth, http</td><td>float (USD)</td></tr>
+      <tr><td>submit_order</td><td>매수/매도 주문 실행</td><td>auth, http, order: OrderRequest</td><td>OrderResult</td></tr>
+      <tr><td>fetch_price</td><td>현재가 조회</td><td>auth, http, ticker, exchange</td><td>PriceData</td></tr>
+      <tr><td>fetch_daily_candles</td><td>일봉 OHLCV 조회</td><td>auth, http, ticker, exchange, days</td><td>list[OHLCV]</td></tr>
+      <tr><td>fetch_exchange_rate</td><td>USD/KRW 환율 조회</td><td>auth, http</td><td>float</td></tr>
+    </table>
+    <h4 style="margin-top:0.75rem">TR_ID 매핑 (수정됨)</h4>
+    <table class="fn-table">
+      <tr><th>Operation</th><th>Virtual</th><th>Real</th></tr>
+      <tr><td>buy</td><td>VTTT1002U</td><td>TTTT1002U</td></tr>
+      <tr><td>sell</td><td>VTTT1001U</td><td>TTTT1001U</td></tr>
+      <tr><td>balance</td><td>VTTT3012R</td><td>TTTS3012R</td></tr>
+      <tr><td>buy_power</td><td>VTTS3007R</td><td>TTTS3007R</td></tr>
+    </table>
+  </div>
+
+  <div class="module-card">
+    <h4>client_impl.py</h4>
+    <div class="path">src/executor/broker/client_impl.py</div>
+    <div class="desc">BrokerClient 인터페이스 구현체이다. virtual_auth/real_auth를 목적에 따라 분리 사용한다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>사용 Auth</th><th>OUT</th></tr>
+      <tr><td>get_balance</td><td>가상 잔고 조회</td><td>virtual_auth</td><td>BalanceData</td></tr>
+      <tr><td>get_price</td><td>현재가 조회</td><td>real_auth</td><td>PriceData</td></tr>
+      <tr><td>get_daily_candles</td><td>일봉 데이터</td><td>real_auth</td><td>list[OHLCV]</td></tr>
+      <tr><td>get_exchange_rate</td><td>환율 조회</td><td>real_auth</td><td>float</td></tr>
+      <tr><td>place_order</td><td>주문 실행</td><td>virtual_auth</td><td>OrderResult</td></tr>
+      <tr><td>get_buy_power</td><td>매수가능 금액</td><td>virtual_auth</td><td>float</td></tr>
+    </table>
+  </div>
+
+</div>
+
+<!-- ===== 7. SERVER LAYER ===== -->
+<h2 id="layer-server">7. 서버 계층</h2>
+<div class="flow-container">
+  <h3 style="margin-top:0">DI 주입 흐름 (inject_system)</h3>
+  <pre style="color:var(--muted);font-size:0.82rem;line-height:1.7">
+inject_system(app, system) 호출 시:
+  ┌─ 기존 3개 ────── set_dashboard_deps → set_trading_control_deps → set_system_deps
+  ├─ 신규 13개 ───── set_analysis_deps → set_macro_deps → set_news_deps → ...
+  ├─ 배치 4개 ────── set_strategy_deps → set_feedback_deps → set_charts_deps
+  ├─ 배치2 3개 ───── set_alerts_deps → set_crawl_control_deps → set_reports_deps
+  ├─ 배치1 5개 ───── set_tax_deps → set_fx_deps → set_slippage_deps → set_profit_target_deps → set_risk_deps
+  └─ WebSocket ───── set_ws_deps
+  → 총 30개 DI 완료
+
+  FxScheduler(system) 생성 → app.on_event("startup") 등록 → 서버 시작 시 .start() 호출
+  </pre>
+</div>
+
+<!-- ===== 8. ENDPOINTS ===== -->
+<h2 id="layer-endpoints">8. 엔드포인트 계층 (30개 모듈)</h2>
+
+<div class="module-grid">
+  <!-- Dashboard -->
+  <div class="module-card">
+    <h4>dashboard.py</h4>
+    <div class="path">src/monitoring/endpoints/dashboard.py</div>
+    <div class="desc">대시보드 요약, 포지션, 잔고, 최근 거래를 제공한다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/summary</code> → DashboardSummaryResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/positions</code> → PositionsResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/accounts</code> → AccountsResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/trades/recent</code> → RecentTradesResponse</li>
+    </ul>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">데이터 소스: broker.get_balance(), fetch_balance(virtual_auth/real_auth), Redis cache</p>
+  </div>
+
+  <!-- Trading Control -->
+  <div class="module-card">
+    <h4>trading_control.py</h4>
+    <div class="path">src/monitoring/endpoints/trading_control.py</div>
+    <div class="desc">자동매매 시작/중지/상태 제어이다. Bearer 인증 필수.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/trading/status</code> → TradingStatusResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/trading/start</code> → TradingActionResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/trading/stop</code> → TradingActionResponse</li>
+    </ul>
+  </div>
+
+  <!-- System -->
+  <div class="module-card">
+    <h4>system.py</h4>
+    <div class="path">src/monitoring/endpoints/system.py</div>
+    <div class="desc">헬스체크, 시스템 정보, 시계, AI 모드 조회/전환이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/system/health</code> → HealthResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/system/info</code> → SystemInfoResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/system/clock</code> → ClockInfoResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/system/ai-mode</code> → AiModeResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/system/ai-mode</code> → AiModeResponse</li>
+    </ul>
+  </div>
+
+  <!-- Analysis -->
+  <div class="module-card">
+    <h4>analysis.py</h4>
+    <div class="path">src/monitoring/endpoints/analysis.py</div>
+    <div class="desc">종합 종목 분석 (AI 3단계 폴백), 티커 뉴스, 티커 목록이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/analysis/comprehensive/{ticker}</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/analysis/ticker-news/{ticker}</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/analysis/tickers</code> → list</li>
+    </ul>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">분석 3단계: ComprehensiveTeam AI → IndicatorBundleBuilder → KIS API 기본 데이터</p>
+  </div>
+
+  <!-- Indicators -->
+  <div class="module-card">
+    <h4>indicators.py</h4>
+    <div class="path">src/monitoring/endpoints/indicators.py</div>
+    <div class="desc">RSI/기술 지표 조회, 가중치 관리, 설정, 실시간 지표이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/indicators/rsi</code> → TripleRsiResponse (기본 TQQQ)</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/indicators/rsi/{ticker}</code> → TripleRsiResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/indicators/realtime/{ticker}</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/indicators/weights</code> → dict</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/indicators/weights</code> → dict</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/indicators/config</code> → dict</li>
+    </ul>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">RSI 계산: broker.get_daily_candles(ticker) → 종가 추출 → RSI(7/14/21) + 시그널 라인</p>
+  </div>
+
+  <!-- Macro -->
+  <div class="module-card">
+    <h4>macro.py</h4>
+    <div class="path">src/monitoring/endpoints/macro.py</div>
+    <div class="desc">FRED 거시지표, 시리즈 이력, 경제 캘린더, Net Liquidity이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/macro/indicators</code> → MacroIndicatorsResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/macro/history/{series_id}</code> → MacroHistoryResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/macro/calendar</code> → EconomicCalendarResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/macro/net-liquidity</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- News -->
+  <div class="module-card">
+    <h4>news.py</h4>
+    <div class="path">src/monitoring/endpoints/news.py</div>
+    <div class="desc">뉴스 날짜 목록, 일별 뉴스, 기사 상세, 요약, 수동 수집이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/news/dates</code> → NewsDatesResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/news/daily</code> → DailyNewsResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/news/{article_id}</code> → ArticleDetailResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/news/summary</code> → NewsSummaryResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/news/collect</code> → dict (인증 필수)</li>
+    </ul>
+  </div>
+
+  <!-- Universe -->
+  <div class="module-card">
+    <h4>universe.py</h4>
+    <div class="path">src/monitoring/endpoints/universe.py</div>
+    <div class="desc">ETF 유니버스 CRUD, 섹터 목록이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/universe</code> → UniverseResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/universe/add</code> → dict</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/universe/toggle</code> → dict</li>
+      <li><span class="badge badge-delete">DELETE</span> <code>/api/universe/{ticker}</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/universe/sectors</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- Emergency -->
+  <div class="module-card">
+    <h4>emergency.py</h4>
+    <div class="path">src/monitoring/endpoints/emergency.py</div>
+    <div class="desc">긴급 정지/재개/상태 확인이다. 인증 필수.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/emergency/status</code> → EmergencyStatusResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/emergency/stop</code> → EmergencyActionResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/emergency/resume</code> → EmergencyActionResponse</li>
+    </ul>
+  </div>
+
+  <!-- Benchmark -->
+  <div class="module-card">
+    <h4>benchmark.py</h4>
+    <div class="path">src/monitoring/endpoints/benchmark.py</div>
+    <div class="desc">SPY/QQQ 대비 포트폴리오 성과 비교이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/benchmark/comparison</code> → BenchmarkComparisonResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/benchmark/chart</code> → BenchmarkChartResponse</li>
+    </ul>
+  </div>
+
+  <!-- Trade Reasoning -->
+  <div class="module-card">
+    <h4>trade_reasoning.py</h4>
+    <div class="path">src/monitoring/endpoints/trade_reasoning.py</div>
+    <div class="desc">매매 근거 조회, 통계, 피드백이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/trade-reasoning/dates</code> → TradeDatesResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/trade-reasoning/daily</code> → DailyReasoningResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/trade-reasoning/stats</code> → TradeStatsResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/trade-reasoning/{trade_id}/feedback</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- Manual Trade -->
+  <div class="module-card">
+    <h4>manual_trade.py</h4>
+    <div class="path">src/monitoring/endpoints/manual_trade.py</div>
+    <div class="desc">수동 매매 AI 분석 요청 및 실행이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-post">POST</span> <code>/api/manual/analyze</code> → ManualAnalyzeResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/manual/execute</code> → ManualExecuteResponse (인증)</li>
+    </ul>
+  </div>
+
+  <!-- Principles -->
+  <div class="module-card">
+    <h4>principles.py</h4>
+    <div class="path">src/monitoring/endpoints/principles.py</div>
+    <div class="desc">매매 원칙 CRUD (Redis 저장)이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/principles</code> → PrinciplesListResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/principles</code> → dict</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/principles/{id}</code> → dict</li>
+      <li><span class="badge badge-delete">DELETE</span> <code>/api/principles/{id}</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- Agents -->
+  <div class="module-card">
+    <h4>agents.py</h4>
+    <div class="path">src/monitoring/endpoints/agents.py</div>
+    <div class="desc">AI 에이전트 팀/멤버 조회이다. 듀얼 라우터 (/api/agents + /agents).</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/agents</code>, <code>/api/agents/list</code> → AgentListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/agents/{id}</code> → AgentDetailResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/agents/{id}/history</code> → AgentHistoryResponse</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/agents/{id}</code> → dict (설정 변경)</li>
+    </ul>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">호환 라우터: /agents/list, /agents/{id} (Flutter 하드코딩 경로)</p>
+  </div>
+
+  <!-- Performance -->
+  <div class="module-card">
+    <h4>performance.py</h4>
+    <div class="path">src/monitoring/endpoints/performance.py</div>
+    <div class="desc">성과 요약, 일별/월별 성과이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/performance/summary</code> → PerformanceSummaryResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/performance/daily</code> → DailyPerformanceResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/performance/monthly</code> → MonthlyPerformanceResponse</li>
+    </ul>
+  </div>
+
+  <!-- Order Flow -->
+  <div class="module-card">
+    <h4>order_flow.py</h4>
+    <div class="path">src/monitoring/endpoints/order_flow.py</div>
+    <div class="desc">주문흐름 스냅샷, 이력, 고래 활동이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/orderflow/snapshot</code> → OrderflowSnapshotResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/orderflow/history</code> → OrderflowHistoryResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/orderflow/whale</code> → WhaleActivityResponse</li>
+    </ul>
+  </div>
+
+  <!-- Indicator Crawler -->
+  <div class="module-card">
+    <h4>indicator_crawler.py</h4>
+    <div class="path">src/monitoring/endpoints/indicator_crawler.py</div>
+    <div class="desc">FRED 거시지표 수동 크롤링 트리거/상태이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-post">POST</span> <code>/api/indicators/crawl</code> → CrawlTriggerResponse (인증)</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/indicators/crawl/status</code> → CrawlStatusResponse</li>
+    </ul>
+  </div>
+
+  <!-- Strategy -->
+  <div class="module-card">
+    <h4>strategy.py</h4>
+    <div class="path">src/monitoring/endpoints/strategy.py</div>
+    <div class="desc">전략 파라미터 조회/수정, 티커별 오버라이드, AI 최적화이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/strategy/params</code> → StrategyParamsResponse</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/strategy/params</code> → dict (인증)</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/strategy/ticker-params</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/strategy/ticker-params/{ticker}</code> → dict</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/strategy/ticker-params/{ticker}</code> → dict (인증)</li>
+      <li><span class="badge badge-delete">DELETE</span> <code>/api/strategy/ticker-params/{ticker}</code> → dict (인증)</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/strategy/ticker-params/ai-optimize</code> → dict (인증)</li>
+    </ul>
+  </div>
+
+  <!-- Feedback -->
+  <div class="module-card">
+    <h4>feedback.py</h4>
+    <div class="path">src/monitoring/endpoints/feedback.py</div>
+    <div class="desc">일별/주별 피드백 리포트, Pending 승인/거절이다. 듀얼 라우터.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/feedback/daily/{date}</code> → FeedbackReportResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/feedback/latest</code> → FeedbackReportResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/feedback/weekly/{week}</code> → dict (호환)</li>
+      <li><span class="badge badge-get">GET</span> <code>/feedback/pending-adjustments</code> → dict (호환)</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/feedback/approve-adjustment/{id}</code> → dict</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/feedback/reject-adjustment/{id}</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- Charts -->
+  <div class="module-card">
+    <h4>charts.py</h4>
+    <div class="path">src/monitoring/endpoints/charts.py</div>
+    <div class="desc">일별 수익률, 누적, 히트맵, 낙폭 차트 데이터이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/charts/daily-returns</code> → ChartListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/charts/cumulative</code> → ChartListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/charts/heatmap/hourly</code> → ChartListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/charts/heatmap/ticker</code> → ChartListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/dashboard/charts/drawdown</code> → ChartListResponse</li>
+    </ul>
+  </div>
+
+  <!-- Alerts -->
+  <div class="module-card">
+    <h4>alerts.py</h4>
+    <div class="path">src/monitoring/endpoints/alerts.py</div>
+    <div class="desc">알림 목록 조회, 읽지 않은 수, 읽음 처리이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/alerts/</code> → AlertListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/alerts/unread-count</code> → AlertUnreadCountResponse</li>
+      <li><span class="badge badge-post">POST</span> <code>/api/alerts/{id}/read</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- Crawl Control -->
+  <div class="module-card">
+    <h4>crawl_control.py</h4>
+    <div class="path">src/monitoring/endpoints/crawl_control.py</div>
+    <div class="desc">뉴스 수동 크롤링 시작 및 진행 상태 조회이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-post">POST</span> <code>/api/crawl/manual</code> → CrawlStartResponse (인증)</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/crawl/status/{task_id}</code> → CrawlStatusResponse</li>
+    </ul>
+  </div>
+
+  <!-- Reports -->
+  <div class="module-card">
+    <h4>reports.py</h4>
+    <div class="path">src/monitoring/endpoints/reports.py</div>
+    <div class="desc">일별 거래 리포트 목록/상세 조회이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/reports/daily/list</code> → DailyReportListResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/reports/daily</code> → DailyReportResponse</li>
+    </ul>
+  </div>
+
+  <!-- Tax -->
+  <div class="module-card">
+    <h4>tax.py</h4>
+    <div class="path">src/monitoring/endpoints/tax.py</div>
+    <div class="desc">YTD 세금 현황, 연간 리포트, 세금 손실 수확 제안이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/tax/status</code> → TaxStatusResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/tax/report</code> → TaxReportResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/tax/harvest-suggestions</code> → TaxHarvestResponse</li>
+    </ul>
+  </div>
+
+  <!-- FX -->
+  <div class="module-card">
+    <h4>fx.py</h4>
+    <div class="path">src/monitoring/endpoints/fx.py</div>
+    <div class="desc">USD/KRW 환율 현황 및 이력 조회이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/fx/status</code> → FxStatusResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/fx/history</code> → FxHistoryResponse (limit 파라미터)</li>
+    </ul>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">데이터 소스: FxManager 실시간 → Redis fx:current/fx:history → 폴백 1350.0</p>
+  </div>
+
+  <!-- Slippage -->
+  <div class="module-card">
+    <h4>slippage.py</h4>
+    <div class="path">src/monitoring/endpoints/slippage.py</div>
+    <div class="desc">슬리피지 통계, 최적 거래 시간대이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/slippage/stats</code> → SlippageStatsResponse</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/slippage/optimal-hours</code> → OptimalHoursResponse</li>
+    </ul>
+  </div>
+
+  <!-- Profit Target -->
+  <div class="module-card">
+    <h4>profit_target.py</h4>
+    <div class="path">src/monitoring/endpoints/profit_target.py</div>
+    <div class="desc">월간 수익 목표 현황, 공격성 조절, 이력, 추정이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/target/current</code> → ProfitTargetCurrentResponse</li>
+      <li><span class="badge badge-put">PUT</span> <code>/api/target/aggression</code> → dict (인증)</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/target/history</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/target/monthly</code> → dict</li>
+      <li><span class="badge badge-get">GET</span> <code>/api/target/projection</code> → dict</li>
+    </ul>
+  </div>
+
+  <!-- Risk -->
+  <div class="module-card">
+    <h4>risk.py</h4>
+    <div class="path">src/monitoring/endpoints/risk.py</div>
+    <div class="desc">포트폴리오 리스크 대시보드 (VaR, VIX, 레짐, 경고)이다.</div>
+    <ul class="endpoint-list">
+      <li><span class="badge badge-get">GET</span> <code>/api/risk/dashboard</code> → RiskDashboardResponse</li>
+    </ul>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">데이터 소스: regime_detector, position_monitor, vix_fetcher, capital_guard</p>
+  </div>
+
+</div>
+
+<!-- ===== 9. SCHEDULER ===== -->
+<h2 id="layer-scheduler">9. 스케줄러/크롤러 계층</h2>
+<div class="module-grid">
+  <div class="module-card">
+    <h4>FxScheduler</h4>
+    <div class="path">src/monitoring/schedulers/fx_scheduler.py</div>
+    <div class="desc">10분 주기 환율 갱신 백그라운드 루프이다. 3단계 폴백 체인.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>start</td><td>백그라운드 루프 시작</td><td>-</td><td>None (asyncio.Task 생성)</td></tr>
+      <tr><td>stop</td><td>백그라운드 루프 중지</td><td>-</td><td>None</td></tr>
+      <tr><td>_tick</td><td>환율 1회 갱신</td><td>-</td><td>Redis fx:current, fx:history 갱신</td></tr>
+      <tr><td>_fetch_rate_with_fallback</td><td>3단계 폴백 조회</td><td>-</td><td>tuple[float, str] (환율, 소스)</td></tr>
+      <tr><td>_try_kis_rate</td><td>1차: KIS API</td><td>-</td><td>float | None</td></tr>
+      <tr><td>_try_naver_rate</td><td>2차: 네이버 크롤링</td><td>-</td><td>float | None</td></tr>
+      <tr><td>_try_google_rate</td><td>3차: 구글 크롤링</td><td>-</td><td>float | None</td></tr>
+    </table>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">주기: 600초, 최대 이력: 720건, 폴백: 1350.0원</p>
+  </div>
+
+  <div class="module-card">
+    <h4>naver_fx.py</h4>
+    <div class="path">src/monitoring/crawlers/naver_fx.py</div>
+    <div class="desc">네이버 금융에서 USD/KRW 환율을 크롤링한다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>fetch_naver_usd_krw</td><td>네이버 환율 크롤링</td><td>-</td><td>float | None</td></tr>
+    </table>
+  </div>
+
+  <div class="module-card">
+    <h4>google_fx.py</h4>
+    <div class="path">src/monitoring/crawlers/google_fx.py</div>
+    <div class="desc">구글 Finance에서 USD/KRW 환율을 크롤링한다.</div>
+    <table class="fn-table">
+      <tr><th>함수</th><th>역할</th><th>IN</th><th>OUT</th></tr>
+      <tr><td>fetch_google_usd_krw</td><td>구글 환율 크롤링</td><td>-</td><td>float | None</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ===== 10. WEBSOCKET ===== -->
+<h2 id="layer-ws">10. WebSocket 계층</h2>
+<div class="module-card" style="max-width:500px">
+  <h4>ws_manager.py</h4>
+  <div class="path">src/monitoring/websocket/ws_manager.py</div>
+  <div class="desc">실시간 WebSocket 스트림 관리 (5개 채널 + 크롤링 진행)이다.</div>
+  <ul class="endpoint-list">
+    <li><span class="badge badge-ws">WS</span> <code>/ws/dashboard</code> — 대시보드 실시간 데이터</li>
+    <li><span class="badge badge-ws">WS</span> <code>/ws/positions</code> — 포지션 실시간 업데이트</li>
+    <li><span class="badge badge-ws">WS</span> <code>/ws/orderflow</code> — 주문흐름 실시간 데이터</li>
+    <li><span class="badge badge-ws">WS</span> <code>/ws/alerts</code> — 알림 실시간 스트림</li>
+    <li><span class="badge badge-ws">WS</span> <code>/ws/trades</code> — 거래 실시간 스트림</li>
+    <li><span class="badge badge-ws">WS</span> <code>/ws/crawl/{task_id}</code> — 크롤링 진행 폴링</li>
+  </ul>
+  <p style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem">갱신 주기: 3초, 크롤링 폴링: 1초</p>
+</div>
+
+<!-- ===== 11. ROUTE MAP ===== -->
+<h2 id="all-routes">11. 전체 API 라우트 맵 (88개)</h2>
+<div class="flow-container">
+<pre style="color:var(--muted);font-size:0.8rem;line-height:1.65">
+<span style="color:#22c55e">GET </span>  /api/system/health                          → HealthResponse
+<span style="color:#22c55e">GET </span>  /api/system/info                            → SystemInfoResponse
+<span style="color:#22c55e">GET </span>  /api/system/clock                           → ClockInfoResponse
+<span style="color:#22c55e">GET </span>  /api/system/ai-mode                         → AiModeResponse
+<span style="color:#6366f1">POST</span>  /api/system/ai-mode                         → AiModeResponse
+
+<span style="color:#22c55e">GET </span>  /api/dashboard/summary                      → DashboardSummaryResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/positions                     → PositionsResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/accounts                      → AccountsResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/trades/recent                 → RecentTradesResponse
+
+<span style="color:#22c55e">GET </span>  /api/dashboard/charts/daily-returns           → ChartListResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/charts/cumulative              → ChartListResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/charts/heatmap/hourly           → ChartListResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/charts/heatmap/ticker           → ChartListResponse
+<span style="color:#22c55e">GET </span>  /api/dashboard/charts/drawdown                → ChartListResponse
+
+<span style="color:#22c55e">GET </span>  /api/trading/status                          → TradingStatusResponse
+<span style="color:#6366f1">POST</span>  /api/trading/start                           → TradingActionResponse [AUTH]
+<span style="color:#6366f1">POST</span>  /api/trading/stop                            → TradingActionResponse [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/analysis/comprehensive/{ticker}          → dict (3-tier AI analysis)
+<span style="color:#22c55e">GET </span>  /api/analysis/ticker-news/{ticker}             → dict
+<span style="color:#22c55e">GET </span>  /api/analysis/tickers                         → list
+
+<span style="color:#22c55e">GET </span>  /api/indicators/rsi                           → TripleRsiResponse
+<span style="color:#22c55e">GET </span>  /api/indicators/rsi/{ticker}                  → TripleRsiResponse
+<span style="color:#22c55e">GET </span>  /api/indicators/realtime/{ticker}              → dict
+<span style="color:#22c55e">GET </span>  /api/indicators/weights                       → dict
+<span style="color:#eab308">PUT </span>  /api/indicators/weights                       → dict [AUTH]
+<span style="color:#eab308">PUT </span>  /api/indicators/config                        → dict [AUTH]
+<span style="color:#6366f1">POST</span>  /api/indicators/crawl                         → CrawlTriggerResponse [AUTH]
+<span style="color:#22c55e">GET </span>  /api/indicators/crawl/status                  → CrawlStatusResponse
+
+<span style="color:#22c55e">GET </span>  /api/macro/indicators                         → MacroIndicatorsResponse
+<span style="color:#22c55e">GET </span>  /api/macro/history/{series_id}                → MacroHistoryResponse
+<span style="color:#22c55e">GET </span>  /api/macro/calendar                           → EconomicCalendarResponse
+<span style="color:#22c55e">GET </span>  /api/macro/net-liquidity                      → dict
+
+<span style="color:#22c55e">GET </span>  /api/news/dates                               → NewsDatesResponse
+<span style="color:#22c55e">GET </span>  /api/news/daily                               → DailyNewsResponse
+<span style="color:#22c55e">GET </span>  /api/news/{article_id}                        → ArticleDetailResponse
+<span style="color:#22c55e">GET </span>  /api/news/summary                             → NewsSummaryResponse
+<span style="color:#6366f1">POST</span>  /api/news/collect                             → dict [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/universe                                → UniverseResponse
+<span style="color:#6366f1">POST</span>  /api/universe/add                             → dict [AUTH]
+<span style="color:#eab308">PUT </span>  /api/universe/toggle                          → dict [AUTH]
+<span style="color:#ef4444">DEL </span>  /api/universe/{ticker}                        → dict [AUTH]
+<span style="color:#22c55e">GET </span>  /api/universe/sectors                         → dict
+
+<span style="color:#22c55e">GET </span>  /api/emergency/status                         → EmergencyStatusResponse
+<span style="color:#6366f1">POST</span>  /api/emergency/stop                           → EmergencyActionResponse [AUTH]
+<span style="color:#6366f1">POST</span>  /api/emergency/resume                         → EmergencyActionResponse [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/benchmark/comparison                     → BenchmarkComparisonResponse
+<span style="color:#22c55e">GET </span>  /api/benchmark/chart                          → BenchmarkChartResponse
+
+<span style="color:#22c55e">GET </span>  /api/trade-reasoning/dates                    → TradeDatesResponse
+<span style="color:#22c55e">GET </span>  /api/trade-reasoning/daily                    → DailyReasoningResponse
+<span style="color:#22c55e">GET </span>  /api/trade-reasoning/stats                    → TradeStatsResponse
+<span style="color:#6366f1">POST</span>  /api/trade-reasoning/{trade_id}/feedback       → dict [AUTH]
+
+<span style="color:#6366f1">POST</span>  /api/manual/analyze                           → ManualAnalyzeResponse
+<span style="color:#6366f1">POST</span>  /api/manual/execute                           → ManualExecuteResponse [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/principles                               → PrinciplesListResponse
+<span style="color:#6366f1">POST</span>  /api/principles                               → dict [AUTH]
+<span style="color:#eab308">PUT </span>  /api/principles/{id}                          → dict [AUTH]
+<span style="color:#ef4444">DEL </span>  /api/principles/{id}                          → dict [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/agents, /api/agents/list                 → AgentListResponse
+<span style="color:#22c55e">GET </span>  /api/agents/{id}                              → AgentDetailResponse
+<span style="color:#22c55e">GET </span>  /api/agents/{id}/history                      → AgentHistoryResponse
+<span style="color:#eab308">PUT </span>  /api/agents/{id}                              → dict [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/performance/summary                      → PerformanceSummaryResponse
+<span style="color:#22c55e">GET </span>  /api/performance/daily                        → DailyPerformanceResponse
+<span style="color:#22c55e">GET </span>  /api/performance/monthly                      → MonthlyPerformanceResponse
+
+<span style="color:#22c55e">GET </span>  /api/orderflow/snapshot                       → OrderflowSnapshotResponse
+<span style="color:#22c55e">GET </span>  /api/orderflow/history                        → OrderflowHistoryResponse
+<span style="color:#22c55e">GET </span>  /api/orderflow/whale                          → WhaleActivityResponse
+
+<span style="color:#22c55e">GET </span>  /api/strategy/params                          → StrategyParamsResponse
+<span style="color:#eab308">PUT </span>  /api/strategy/params                          → dict [AUTH]
+<span style="color:#22c55e">GET </span>  /api/strategy/ticker-params                   → dict
+<span style="color:#22c55e">GET </span>  /api/strategy/ticker-params/{ticker}          → dict
+<span style="color:#eab308">PUT </span>  /api/strategy/ticker-params/{ticker}          → dict [AUTH]
+<span style="color:#ef4444">DEL </span>  /api/strategy/ticker-params/{ticker}          → dict [AUTH]
+<span style="color:#6366f1">POST</span>  /api/strategy/ticker-params/ai-optimize       → dict [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/feedback/daily/{date}                    → FeedbackReportResponse
+<span style="color:#22c55e">GET </span>  /api/feedback/latest                          → FeedbackReportResponse
+<span style="color:#6366f1">POST</span>  /api/feedback/approve-adjustment/{id}          → dict [AUTH]
+<span style="color:#6366f1">POST</span>  /api/feedback/reject-adjustment/{id}           → dict [AUTH]
+
+<span style="color:#22c55e">GET </span>  /api/alerts/                                  → AlertListResponse
+<span style="color:#22c55e">GET </span>  /api/alerts/unread-count                      → AlertUnreadCountResponse
+<span style="color:#6366f1">POST</span>  /api/alerts/{id}/read                         → dict
+
+<span style="color:#6366f1">POST</span>  /api/crawl/manual                             → CrawlStartResponse [AUTH]
+<span style="color:#22c55e">GET </span>  /api/crawl/status/{task_id}                   → CrawlStatusResponse
+
+<span style="color:#22c55e">GET </span>  /api/reports/daily/list                       → DailyReportListResponse
+<span style="color:#22c55e">GET </span>  /api/reports/daily                            → DailyReportResponse
+
+<span style="color:#22c55e">GET </span>  /api/tax/status                               → TaxStatusResponse
+<span style="color:#22c55e">GET </span>  /api/tax/report                               → TaxReportResponse
+<span style="color:#22c55e">GET </span>  /api/tax/harvest-suggestions                  → TaxHarvestResponse
+
+<span style="color:#22c55e">GET </span>  /api/fx/status                                → FxStatusResponse
+<span style="color:#22c55e">GET </span>  /api/fx/history                               → FxHistoryResponse
+
+<span style="color:#22c55e">GET </span>  /api/slippage/stats                           → SlippageStatsResponse
+<span style="color:#22c55e">GET </span>  /api/slippage/optimal-hours                   → OptimalHoursResponse
+
+<span style="color:#22c55e">GET </span>  /api/target/current                           → ProfitTargetCurrentResponse
+<span style="color:#eab308">PUT </span>  /api/target/aggression                        → dict [AUTH]
+<span style="color:#22c55e">GET </span>  /api/target/history                           → dict
+<span style="color:#22c55e">GET </span>  /api/target/monthly                           → dict
+<span style="color:#22c55e">GET </span>  /api/target/projection                        → dict
+
+<span style="color:#22c55e">GET </span>  /api/risk/dashboard                           → RiskDashboardResponse
+
+<span style="color:#f97316">WS  </span>  /ws/dashboard, /ws/positions, /ws/orderflow, /ws/alerts, /ws/trades
+<span style="color:#f97316">WS  </span>  /ws/crawl/{task_id}
+
+<span style="color:#94a3b8">── Flutter 호환 경로 (레거시) ──</span>
+<span style="color:#22c55e">GET </span>  /agents/list                                  → AgentListResponse
+<span style="color:#22c55e">GET </span>  /agents/{id}                                  → AgentDetailResponse
+<span style="color:#22c55e">GET </span>  /feedback/weekly/{week}                       → dict
+<span style="color:#22c55e">GET </span>  /feedback/pending-adjustments                  → dict
+<span style="color:#6366f1">POST</span>  /feedback/approve-adjustment/{id}              → dict
+<span style="color:#6366f1">POST</span>  /feedback/reject-adjustment/{id}               → dict
+</pre>
+</div>
+
+<div style="text-align:center;margin-top:3rem;padding:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.85rem">
+  <p>Stock Trading AI System V2 — Pipeline Architecture Document</p>
+  <p>Generated: 2026-02-28 | Modules: 30+ | Endpoints: 88 | WebSocket Channels: 6</p>
+</div>
+
+</body>
+</html>

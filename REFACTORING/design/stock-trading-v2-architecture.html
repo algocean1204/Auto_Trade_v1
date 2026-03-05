@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Trading AI System V2.0 — 거시적 모듈 블록 설계서</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0c12;--s1:#10131e;--s2:#171c2a;--s3:#1e2438;
+  --bd:#252b45;--bd2:#313858;
+  --t:#dfe2ef;--t2:#8f94b5;--t3:#565b78;
+  --blue:#5b8def;--green:#4ecdc4;--orange:#f7a44c;--pink:#e87fc4;
+  --purple:#9b7fed;--red:#ef6868;--yellow:#efd060;--cyan:#56d4e0;--lime:#8fd460;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Noto Sans KR',sans-serif;background:var(--bg);color:var(--t);line-height:1.7;padding:24px 12px}
+.w{max-width:1200px;margin:0 auto}
+code,.mono{font-family:'JetBrains Mono',monospace}
+
+/* Header */
+.hdr{text-align:center;padding:36px 0 24px;border-bottom:1px solid var(--bd);margin-bottom:28px}
+.pill{display:inline-block;padding:4px 14px;border-radius:18px;font-size:9.5px;font-weight:700;letter-spacing:2px;text-transform:uppercase;background:rgba(91,141,239,.1);color:var(--blue);border:1px solid rgba(91,141,239,.18);margin-bottom:10px}
+.hdr h1{font-size:26px;font-weight:900;background:linear-gradient(135deg,var(--cyan),var(--blue),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:3px}
+.hdr p{font-size:11.5px;color:var(--t2);max-width:680px;margin:0 auto}
+
+/* Card */
+.card{background:var(--s1);border:1px solid var(--bd);border-radius:12px;margin-bottom:22px;overflow:hidden}
+.card-head{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+.card-head h2{font-size:15px;font-weight:800;flex:1}
+.card-body{padding:18px 20px}
+.icon{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;flex-shrink:0}
+
+/* Tags */
+.tags{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
+.tg{font-size:9.5px;font-family:'JetBrains Mono',monospace;padding:2px 9px;border-radius:5px;font-weight:600}
+.tg-be{background:rgba(91,141,239,.1);color:var(--blue);border:1px solid rgba(91,141,239,.15)}
+.tg-ai{background:rgba(155,127,237,.1);color:var(--purple);border:1px solid rgba(155,127,237,.15)}
+.tg-fe{background:rgba(78,205,196,.1);color:var(--green);border:1px solid rgba(78,205,196,.15)}
+.tg-db{background:rgba(247,164,76,.1);color:var(--orange);border:1px solid rgba(247,164,76,.15)}
+.tg-if{background:rgba(239,104,104,.1);color:var(--red);border:1px solid rgba(239,104,104,.15)}
+
+/* Tree */
+.tree{background:var(--s2);border:1px solid var(--bd);border-radius:9px;padding:16px;font-family:'JetBrains Mono',monospace;font-size:10.5px;line-height:2;color:var(--t2);overflow-x:auto;white-space:pre;margin:10px 0}
+.tree .f{color:var(--orange);font-weight:700}
+.tree .cm{color:#454a66}
+
+/* Module block */
+.mblk{border:1px solid var(--bd);border-radius:10px;margin-bottom:14px;overflow:hidden}
+.mblk-h{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--s2);cursor:pointer;user-select:none;transition:.1s}
+.mblk-h:hover{background:var(--s3)}
+.mblk-id{font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:700;padding:2px 8px;border-radius:4px;flex-shrink:0}
+.mblk-h h3{font-size:12.5px;font-weight:700;flex:1;margin:0}
+.mblk-h .arr{color:var(--t3);font-size:10px;transition:transform .15s;flex-shrink:0}
+.mblk.open .arr{transform:rotate(90deg)}
+.mblk-b{display:none;padding:14px 16px}
+.mblk.open .mblk-b{display:block}
+
+/* IO Spec */
+.io{background:var(--s2);border:1px solid var(--bd);border-radius:7px;padding:12px;margin:7px 0;font-size:11px}
+.io-l{font-size:8.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;display:flex;align-items:center;gap:4px}
+.io-l.inp{color:var(--green)}.io-l.out{color:var(--orange)}.io-l.api{color:var(--cyan)}.io-l.evt{color:var(--yellow)}
+.j{font-family:'JetBrains Mono',monospace;font-size:10px;line-height:1.65;color:var(--t2);white-space:pre-wrap;margin:3px 0}
+.j .k{color:var(--blue)}.j .v{color:var(--green)}.j .c{color:#454a66}
+
+/* Checklist */
+.cl{list-style:none;padding:0;margin:8px 0}
+.cl li{font-size:11px;padding:4px 0 4px 18px;position:relative;color:var(--t2);border-bottom:1px solid rgba(37,43,69,.4)}
+.cl li:last-child{border-bottom:none}
+.cl li::before{content:'☐';position:absolute;left:0;top:4px;color:var(--t3);font-size:11px}
+
+/* Pipeline */
+.pipe{display:flex;align-items:center;gap:0;margin:10px 0;overflow-x:auto;padding-bottom:3px;flex-wrap:wrap}
+.ps{padding:5px 11px;border-radius:5px;font-size:9.5px;font-weight:600;white-space:nowrap;position:relative;margin-bottom:4px}
+.ps:not(:last-child){margin-right:18px}
+.ps:not(:last-child)::after{content:'\2192';position:absolute;right:-13px;top:50%;transform:translateY(-50%);color:var(--t3);font-size:10px}
+
+/* Table */
+.tb{width:100%;border-collapse:collapse;font-size:10.5px;margin:8px 0}
+.tb th{padding:7px 5px;text-align:left;color:var(--t2);font-weight:700;border-bottom:2px solid var(--bd);font-size:9.5px;letter-spacing:.3px}
+.tb td{padding:6px 5px;border-bottom:1px solid rgba(37,43,69,.4);vertical-align:top}
+
+/* Note */
+.note{padding:11px 15px;border-radius:7px;font-size:11px;color:var(--t2);margin:10px 0;line-height:1.5}
+.note.blue{background:rgba(91,141,239,.04);border-left:3px solid var(--blue)}.note.blue strong{color:var(--blue)}
+.note.orange{background:rgba(247,164,76,.04);border-left:3px solid var(--orange)}.note.orange strong{color:var(--orange)}
+.note.green{background:rgba(78,205,196,.04);border-left:3px solid var(--green)}.note.green strong{color:var(--green)}
+.note.cyan{background:rgba(86,212,224,.04);border-left:3px solid var(--cyan)}.note.cyan strong{color:var(--cyan)}
+.note.red{background:rgba(239,104,104,.04);border-left:3px solid var(--red)}.note.red strong{color:var(--red)}
+.note.purple{background:rgba(155,127,237,.04);border-left:3px solid var(--purple)}.note.purple strong{color:var(--purple)}
+.note.yellow{background:rgba(239,208,96,.04);border-left:3px solid var(--yellow)}.note.yellow strong{color:var(--yellow)}
+.note.pink{background:rgba(232,127,196,.04);border-left:3px solid var(--pink)}.note.pink strong{color:var(--pink)}
+
+/* Divider */
+.dvd{height:1px;background:linear-gradient(to right,transparent,var(--bd),transparent);margin:32px 0}
+
+/* Colors per section */
+.cc .mblk-id,.cc .icon{background:rgba(86,212,224,.12);color:var(--cyan)}
+.cc .ps{background:rgba(86,212,224,.05);color:var(--cyan);border:1px solid rgba(86,212,224,.1)}
+.c1 .mblk-id,.c1 .icon{background:rgba(91,141,239,.12);color:var(--blue)}
+.c1 .ps{background:rgba(91,141,239,.05);color:var(--blue);border:1px solid rgba(91,141,239,.1)}
+.c2 .mblk-id,.c2 .icon{background:rgba(155,127,237,.12);color:var(--purple)}
+.c2 .ps{background:rgba(155,127,237,.05);color:var(--purple);border:1px solid rgba(155,127,237,.1)}
+.c3 .mblk-id,.c3 .icon{background:rgba(247,164,76,.12);color:var(--orange)}
+.c3 .ps{background:rgba(247,164,76,.05);color:var(--orange);border:1px solid rgba(247,164,76,.1)}
+.c4 .mblk-id,.c4 .icon{background:rgba(78,205,196,.12);color:var(--green)}
+.c4 .ps{background:rgba(78,205,196,.05);color:var(--green);border:1px solid rgba(78,205,196,.1)}
+.c5 .mblk-id,.c5 .icon{background:rgba(232,127,196,.12);color:var(--pink)}
+.c5 .ps{background:rgba(232,127,196,.05);color:var(--pink);border:1px solid rgba(232,127,196,.1)}
+.c6 .mblk-id,.c6 .icon{background:rgba(239,104,104,.12);color:var(--red)}
+.c6 .ps{background:rgba(239,104,104,.05);color:var(--red);border:1px solid rgba(239,104,104,.1)}
+.c7 .mblk-id,.c7 .icon{background:rgba(86,212,224,.12);color:var(--cyan)}
+.c7 .ps{background:rgba(86,212,224,.05);color:var(--cyan);border:1px solid rgba(86,212,224,.1)}
+.c8 .mblk-id,.c8 .icon{background:rgba(239,208,96,.12);color:var(--yellow)}
+.c8 .ps{background:rgba(239,208,96,.05);color:var(--yellow);border:1px solid rgba(239,208,96,.1)}
+.c9 .mblk-id,.c9 .icon{background:rgba(91,141,239,.12);color:var(--blue)}
+.c9 .ps{background:rgba(91,141,239,.05);color:var(--blue);border:1px solid rgba(91,141,239,.1)}
+.c10 .mblk-id,.c10 .icon{background:rgba(143,212,96,.12);color:var(--lime)}
+.c10 .ps{background:rgba(143,212,96,.05);color:var(--lime);border:1px solid rgba(143,212,96,.1)}
+/* Aux features */
+.cw .mblk-id,.cw .icon{background:rgba(91,141,239,.12);color:var(--blue)}
+.cw .ps{background:rgba(91,141,239,.05);color:var(--blue);border:1px solid rgba(91,141,239,.1)}
+.cs .mblk-id,.cs .icon{background:rgba(232,127,196,.12);color:var(--pink)}
+.cs .ps{background:rgba(232,127,196,.05);color:var(--pink);border:1px solid rgba(232,127,196,.1)}
+.cx .mblk-id,.cx .icon{background:rgba(247,164,76,.12);color:var(--orange)}
+.cx .ps{background:rgba(247,164,76,.05);color:var(--orange);border:1px solid rgba(247,164,76,.1)}
+.ct .mblk-id,.ct .icon{background:rgba(78,205,196,.12);color:var(--green)}
+.ct .ps{background:rgba(78,205,196,.05);color:var(--green);border:1px solid rgba(78,205,196,.1)}
+.cf .mblk-id,.cf .icon{background:rgba(155,127,237,.12);color:var(--purple)}
+.cf .ps{background:rgba(155,127,237,.05);color:var(--purple);border:1px solid rgba(155,127,237,.1)}
+.cn .mblk-id,.cn .icon{background:rgba(239,208,96,.12);color:var(--yellow)}
+.cn .ps{background:rgba(239,208,96,.05);color:var(--yellow);border:1px solid rgba(239,208,96,.1)}
+
+.ctrl{display:flex;justify-content:flex-end;gap:5px;margin-bottom:8px}
+.ctrl button{padding:4px 10px;border-radius:6px;font-size:9.5px;font-weight:600;background:var(--s2);color:var(--t2);border:1px solid var(--bd);cursor:pointer}
+.ctrl button:hover{background:var(--s3);color:var(--t)}
+.ftr{text-align:center;padding:20px 0 8px;border-top:1px solid var(--bd);margin-top:28px;font-size:9.5px;color:var(--t3)}
+
+/* Description text */
+.desc{font-size:11px;color:var(--t2);margin-bottom:8px}
+.func{font-size:11px;color:var(--t2);margin:5px 0;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="w">
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="pill">Macro Module Block Design v2.0</div>
+  <h1>Stock Trading AI System V2.0 거시적 모듈 블록 설계서</h1>
+  <p>모듈 = 블록. 각 블록의 IN/OUT은 정확히 1개. 블록을 조립하여 자동매매 파이프라인을 완성한다.<br>세부사항(보안, 버전 등)은 각 모듈 구현 직전에 별도 설계.</p>
+</div>
+
+<!-- 1. TECH STACK -->
+<div class="card">
+  <div class="card-head"><h2>1. 기술 스택</h2></div>
+  <div class="card-body">
+    <table class="tb">
+      <thead><tr><th>영역</th><th>기술</th><th>역할</th><th>배포</th></tr></thead>
+      <tbody>
+        <tr><td><b style="color:var(--blue)">백엔드</b></td><td><span class="tg tg-be">Python 3.12</span> <span class="tg tg-be">FastAPI</span></td><td>매매 오케스트레이션, 분석 파이프라인, 모니터링 API</td><td>Host (MPS)</td></tr>
+        <tr><td><b style="color:var(--purple)">AI 엔진</b></td><td><span class="tg tg-ai">Claude Opus/Sonnet</span> <span class="tg tg-ai">Qwen3-30B-A3B MLX</span></td><td>종합 분석, 의사결정, 뉴스 분류 (로컬 폴백)</td><td>API + Host MPS</td></tr>
+        <tr><td><b style="color:var(--green)">대시보드</b></td><td><span class="tg tg-fe">Flutter</span> <span class="tg tg-fe">macOS Desktop</span></td><td>실시간 모니터링, 매매 제어, 차트</td><td>Native App</td></tr>
+        <tr><td><b style="color:var(--orange)">데이터베이스</b></td><td><span class="tg tg-db">PostgreSQL 17</span> <span class="tg tg-db">pgvector</span></td><td>거래 내역, 뉴스, 포지션, 벡터 검색</td><td><span class="tg tg-if">Docker</span></td></tr>
+        <tr><td><b style="color:var(--red)">캐시</b></td><td><span class="tg tg-if">Redis 7</span></td><td>실시간 시세, OBI/CVD/VPIN, 세션, Pub/Sub</td><td><span class="tg tg-if">Docker</span></td></tr>
+        <tr><td><b style="color:var(--yellow)">브로커</b></td><td><span class="tg tg-db">KIS OpenAPI</span></td><td>미국 주식 주문, 시세, 잔고 조회</td><td>외부 API</td></tr>
+      </tbody>
+    </table>
+    <div class="note cyan"><strong>MPS 필수:</strong> MLX 로컬 AI(Qwen3-30B-A3B)는 Apple Silicon MPS 필요. Docker 불가 &rarr; Host에서 직접 실행한다.</div>
+    <div class="note blue"><strong>듀얼 인증:</strong> KIS API는 real_auth(시세 조회)와 virtual_auth(모의 매매) 이중 구조이다.</div>
+  </div>
+</div>
+
+<!-- 2. FOLDER STRUCTURE -->
+<div class="card">
+  <div class="card-head"><h2>2. 프로젝트 폴더 구조</h2></div>
+  <div class="card-body">
+    <div class="tree"><span class="f">Stock_Trading/</span>
+|
++-- <span class="f">src/</span>
+|   +-- <span class="f">common/</span>                          <span class="cm">-- C0 공통 모듈 (12개)</span>
+|   |   +-- secret_vault.py              <span class="cm">-- C0.1 SecretVault</span>
+|   |   +-- database_gateway.py          <span class="cm">-- C0.2 DatabaseGateway</span>
+|   |   +-- cache_gateway.py             <span class="cm">-- C0.3 CacheGateway</span>
+|   |   +-- http_client.py               <span class="cm">-- C0.4 HttpClient</span>
+|   |   +-- ai_gateway.py                <span class="cm">-- C0.5 AiGateway</span>
+|   |   +-- broker_gateway.py            <span class="cm">-- C0.6 BrokerGateway</span>
+|   |   +-- telegram_gateway.py          <span class="cm">-- C0.7 TelegramGateway</span>
+|   |   +-- logger.py                    <span class="cm">-- C0.8 Logger</span>
+|   |   +-- error_handler.py             <span class="cm">-- C0.9 ErrorHandler</span>
+|   |   +-- event_bus.py                 <span class="cm">-- C0.10 EventBus</span>
+|   |   +-- market_clock.py              <span class="cm">-- C0.11 MarketClock</span>
+|   |   +-- ticker_registry.py           <span class="cm">-- C0.12 TickerRegistry</span>
+|   |
+|   +-- <span class="f">f1_collection/</span>                   <span class="cm">-- F1 데이터 수집 (8개)</span>
+|   +-- <span class="f">f2_analysis/</span>                     <span class="cm">-- F2 AI 분석 (13개)</span>
+|   +-- <span class="f">f3_indicators/</span>                   <span class="cm">-- F3 지표 (14개)</span>
+|   +-- <span class="f">f4_strategy/</span>                     <span class="cm">-- F4 전략 (13개)</span>
+|   +-- <span class="f">f5_execution/</span>                    <span class="cm">-- F5 실행 (6개)</span>
+|   +-- <span class="f">f6_risk/</span>                         <span class="cm">-- F6 리스크 &amp; 안전 (20개)</span>
+|   +-- <span class="f">f7_monitoring/</span>                   <span class="cm">-- F7 모니터링 API (22개)</span>
+|   +-- <span class="f">f8_optimization/</span>                 <span class="cm">-- F8 최적화 &amp; ML (10개)</span>
+|   +-- <span class="f">f9_orchestration/</span>                <span class="cm">-- F9 오케스트레이션 (9개)</span>
+|   +-- <span class="f">fw_websocket/</span>                    <span class="cm">-- FW WebSocket (13개)</span>
+|   +-- <span class="f">fs_scalping/</span>                     <span class="cm">-- FS 스캘핑 (7개)</span>
+|   +-- <span class="f">fx_tax/</span>                          <span class="cm">-- FX 세금 &amp; 환율 (3개)</span>
+|   +-- <span class="f">ft_telegram/</span>                     <span class="cm">-- FT 텔레그램 봇 (6개)</span>
+|   +-- <span class="f">ff_feedback/</span>                     <span class="cm">-- FF 피드백 (6개)</span>
+|   +-- <span class="f">fn_filter/</span>                       <span class="cm">-- FN 뉴스 필터 (2개)</span>
+|   +-- main.py                          <span class="cm">-- 엔트리포인트 (50줄 이하)</span>
+|
++-- <span class="f">dashboard/</span>                           <span class="cm">-- F10 Flutter macOS Desktop</span>
+|   +-- <span class="f">lib/</span>
+|       +-- <span class="f">services/</span>                    <span class="cm">-- API 클라이언트, WebSocket</span>
+|       +-- <span class="f">providers/</span>                   <span class="cm">-- 26개 상태 관리</span>
+|       +-- <span class="f">screens/</span>                     <span class="cm">-- 28개 화면</span>
+|       +-- <span class="f">models/</span>                      <span class="cm">-- 22개 데이터 모델</span>
+|       +-- <span class="f">widgets/</span>                     <span class="cm">-- 30개 재사용 위젯</span>
+|       +-- <span class="f">theme/</span>                       <span class="cm">-- 7개 테마 파일</span>
+|
++-- <span class="f">scripts/</span>                             <span class="cm">-- 자동화 스크립트</span>
++-- <span class="f">data/</span>                                <span class="cm">-- KIS 토큰, strategy_params.json</span>
++-- <span class="f">docs/</span>                                <span class="cm">-- 설계서, 보고서</span>
++-- .env                                 <span class="cm">-- 시크릿 (34개 키)</span></div>
+  </div>
+</div>
+
+<!-- 3. TRADING TIMELINE -->
+<div class="card">
+  <div class="card-head"><h2>3. 매매 타임라인 (20:00 KST ~ 07:00 KST)</h2></div>
+  <div class="card-body">
+    <div class="pipe">
+      <div class="ps" style="background:rgba(155,127,237,.1);color:var(--purple);border:1px solid rgba(155,127,237,.15)">20:00 버튼 시작</div>
+      <div class="ps" style="background:rgba(91,141,239,.1);color:var(--blue);border:1px solid rgba(91,141,239,.15)">20:00~20:30 Preparation</div>
+      <div class="ps" style="background:rgba(78,205,196,.1);color:var(--green);border:1px solid rgba(78,205,196,.15)">20:30~06:00 Active Trading</div>
+      <div class="ps" style="background:rgba(247,164,76,.1);color:var(--orange);border:1px solid rgba(247,164,76,.15)">06:00~06:30 Final Monitor</div>
+      <div class="ps" style="background:rgba(239,104,104,.1);color:var(--red);border:1px solid rgba(239,104,104,.15)">06:30~07:00 EOD</div>
+      <div class="ps" style="background:rgba(86,212,224,.1);color:var(--cyan);border:1px solid rgba(86,212,224,.15)">07:00 Shutdown</div>
+    </div>
+    <table class="tb">
+      <thead><tr><th>Phase</th><th>KST</th><th>ET (EST)</th><th>내용</th><th>루프 주기</th></tr></thead>
+      <tbody>
+        <tr><td style="color:var(--purple)"><b>Preparation</b></td><td>20:00~20:30</td><td>-</td><td>KIS 토큰, 30개 소스 크롤링, 분류, 레짐 감지, 5인 분석, 안전 체크</td><td>1회</td></tr>
+        <tr><td style="color:var(--green)"><b>Pre-Market</b></td><td>20:30~23:30</td><td>06:30~09:30</td><td>연속 분석 (30분), 뉴스 파이프라인</td><td>분석 전용</td></tr>
+        <tr><td style="color:var(--green)"><b>Power Open</b></td><td>23:30~00:00</td><td>09:30~10:00</td><td>monitor_all() 전체 실행</td><td>90초</td></tr>
+        <tr><td style="color:var(--green)"><b>Mid Day</b></td><td>00:00~05:30</td><td>10:00~15:30</td><td>monitor_all() 전체 실행</td><td>180초</td></tr>
+        <tr><td style="color:var(--green)"><b>Power Hour</b></td><td>05:30~06:00</td><td>15:30~16:00</td><td>monitor_all() 전체 실행</td><td>120초</td></tr>
+        <tr><td style="color:var(--orange)"><b>Final Monitor</b></td><td>06:00~06:30</td><td>16:00~16:30</td><td>포지션 동기화, 오버나이트 판단, 안전 체크</td><td>30~60초</td></tr>
+        <tr><td style="color:var(--red)"><b>EOD</b></td><td>06:30~07:00</td><td>-</td><td>피드백, 파라미터 최적화, RAG 업데이트, 보고서</td><td>순차 실행</td></tr>
+      </tbody>
+    </table>
+    <div class="note purple"><strong>자정 넘김:</strong> 매매 윈도우 20:00~06:30 KST는 자정을 넘기므로, C0.11 MarketClock.is_trading_window()로 통일 판별한다.</div>
+    <div class="note red"><strong>비정규 세션:</strong> ET 16:00 이후(After Market)는 sync_positions() only. monitor_all() 호출 금지 (모의거래 주문 불가).</div>
+  </div>
+</div>
+
+<!-- 4. MAIN PIPELINE -->
+<div class="card">
+  <div class="card-head"><h2>4. 전체 파이프라인</h2></div>
+  <div class="card-body">
+    <div class="pipe">
+      <div class="ps" style="background:rgba(143,212,96,.1);color:var(--lime);border:1px solid rgba(143,212,96,.15)">Dashboard 버튼</div>
+      <div class="ps" style="background:rgba(86,212,224,.1);color:var(--cyan);border:1px solid rgba(86,212,224,.15)">C0.11 MarketClock</div>
+      <div class="ps" style="background:rgba(91,141,239,.1);color:var(--blue);border:1px solid rgba(91,141,239,.15)">F9.1 Init</div>
+      <div class="ps" style="background:rgba(91,141,239,.1);color:var(--blue);border:1px solid rgba(91,141,239,.15)">F9.2 DI</div>
+      <div class="ps" style="background:rgba(155,127,237,.1);color:var(--purple);border:1px solid rgba(155,127,237,.15)">F9.3 Preparation</div>
+      <div class="ps" style="background:rgba(78,205,196,.1);color:var(--green);border:1px solid rgba(78,205,196,.15)">F9.4 Trading Loop</div>
+      <div class="ps" style="background:rgba(247,164,76,.1);color:var(--orange);border:1px solid rgba(247,164,76,.15)">Final Monitor</div>
+      <div class="ps" style="background:rgba(239,104,104,.1);color:var(--red);border:1px solid rgba(239,104,104,.15)">F9.7 EOD</div>
+      <div class="ps" style="background:rgba(86,212,224,.1);color:var(--cyan);border:1px solid rgba(86,212,224,.15)">F9.8 Shutdown</div>
+    </div>
+    <div class="note blue"><strong>시작 플로우:</strong> Dashboard "매매 시작" 버튼 &rarr; POST /api/trading/start (Bearer 인증) &rarr; C0.11 시간 체크 &rarr; True면 F9.3 시작, False면 400 에러 반환.</div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- CONTROLS -->
+<div class="ctrl">
+  <button onclick="toggleAll(true)">&#9660; 모두 펼치기</button>
+  <button onclick="toggleAll(false)">&#9650; 모두 접기</button>
+</div>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- C0: COMMON MODULES                          -->
+<!-- ════════════════════════════════════════════ -->
+<div class="card cc">
+  <div class="card-head"><div class="icon">C0</div><h2>공통 모듈 (Common) &mdash; 12개</h2></div>
+  <div class="card-body">
+    <p class="desc">Feature 폴더 안에 절대 두지 않는다. <code>src/common/</code>에 구현. Manager가 여기서 인스턴스를 꺼내 Atom에 파라미터로 주입(DI).</p>
+
+    <div class="mblk open"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.1</span><h3>SecretVault &mdash; 환경변수 &amp; 키 관리</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: env_file_path (str) &mdash; .env 파일 경로</div></div>
+        <div class="io"><div class="io-l out">OUT: SecretProvider (get_secret, get_secret_or_none, has_secret)</div></div>
+        <p class="func">.env 파싱, 34개 시크릿 관리 (KIS, DB, AI, Telegram, 외부 API 등), 필수 키 누락 시 fail-fast, 로그 마스킹, 싱글톤. <b>모든 민감 정보의 유일한 접근 경로.</b></p>
+        <ul class="cl"><li>os.environ/os.getenv 직접 사용 금지 (SecretVault만 허용)</li><li>Gemini 키 로테이션, 키 변경 = .env만 수정</li></ul>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.2</span><h3>DatabaseGateway &mdash; PostgreSQL 비동기 세션</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: database_url (str) &mdash; C0.1.get_secret("DATABASE_URL")</div></div>
+        <div class="io"><div class="io-l out">OUT: SessionFactory (get_session, close)</div></div>
+        <p class="func">SQLAlchemy 2.0 async engine 생성, 세션 풀 관리, async with get_session() as session 패턴.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.3</span><h3>CacheGateway &mdash; Redis 비동기 CRUD &amp; Pub/Sub</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: redis_url (str) &mdash; C0.1.get_secret("REDIS_URL")</div></div>
+        <div class="io"><div class="io-l out">OUT: CacheClient (read, write, delete, publish, subscribe, aclose)</div></div>
+        <p class="func">redis-py 5.0+ async 클라이언트, 연결 풀, pub/sub, TTL 필수.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.4</span><h3>HttpClient &mdash; 공유 비동기 HTTP</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: timeout_config (TimeoutConfig) &mdash; 기본 total=30s, connect=10s</div></div>
+        <div class="io"><div class="io-l out">OUT: AsyncHttpClient (get, post, close)</div></div>
+        <p class="func">aiohttp.ClientSession 공유, 타임아웃, 재시도, 에러 래핑.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.5</span><h3>AiGateway &mdash; Claude API + MLX 로컬 통합</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: anthropic_api_key (C0.1), claude_mode (C0.1), http_client (C0.4)</div></div>
+        <div class="io"><div class="io-l out">OUT: AiClient (send_text, send_tools, local_classify)</div></div>
+        <p class="func">Claude API 호출 + MLX 로컬 추론 + 폴백 라우팅 (Claude 실패 &rarr; MLX). 기존 claude_client.py + fallback_router.py + local_model.py + mlx_classifier.py 통합.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.6</span><h3>BrokerGateway &mdash; KIS OpenAPI 통합</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: kis_app_key, kis_app_secret, kis_real_app_key, kis_real_app_secret, kis_virtual_account, kis_real_account (모두 C0.1), http_client (C0.4)</div></div>
+        <div class="io"><div class="io-l out">OUT: BrokerClient (get_price, get_balance, place_order, get_exchange_rate, get_daily_candles)</div></div>
+        <p class="func">듀얼 인증 (real_auth + virtual_auth), 토큰 캐시 (1일 1회), 모의거래 시장가&rarr;지정가 자동 변환. 기존 kis_auth.py + kis_client.py(1,261줄) 통합 분할.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.7</span><h3>TelegramGateway &mdash; Bot 발송</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: bot_token (C0.1), chat_id (C0.1)</div></div>
+        <div class="io"><div class="io-l out">OUT: TelegramSender (send_text, send_photo)</div></div>
+        <p class="func">python-telegram-bot SDK 래핑, 메시지 길이 분할, 에러 핸들링.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.8</span><h3>Logger &mdash; 구조화 로깅</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: module_name (str) &mdash; __name__</div></div>
+        <div class="io"><div class="io-l out">OUT: Logger (get_logger)</div></div>
+        <p class="func">모듈명 기반 Logger, 시크릿 값 자동 마스킹, 실행 시간 측정 데코레이터.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.9</span><h3>ErrorHandler &mdash; 예외 처리</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: exception (Exception)</div></div>
+        <div class="io"><div class="io-l out">OUT: ErrorResponse (error_code, message, detail, timestamp)</div></div>
+        <p class="func">도메인 예외 클래스 정의, 예외&rarr;HTTP 상태코드 매핑, GlobalExceptionHandler.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.10</span><h3>EventBus &mdash; Feature 간 비동기 이벤트</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: event_type (str), payload (BaseModel)</div></div>
+        <div class="io"><div class="io-l out">OUT: EventDeliveryResult (event_type, delivered_to, failed)</div></div>
+        <p class="func">Feature 간 직접 호출 금지. 11개 이벤트: ArticleCollected, TradingDecision, PositionChanged, EmergencyLiquidation, CrashDetected, EODStarted, BeastEntry, PyramidTriggered, TiltDetected, InfraHealthChanged, WeeklyReportGenerated.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.11</span><h3>MarketClock &mdash; 시간 &amp; 세션 판별</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: system_clock (Callable) &mdash; datetime.now(tz=KST)</div></div>
+        <div class="io"><div class="io-l out">OUT: TimeInfo (now_kst, now_et, is_trading_window, session_type, is_regular_session, is_danger_zone, loop_interval_seconds)</div></div>
+        <p class="func">is_trading_window(20:00~06:30 KST), 8개 세션 유형(preparation/pre_market/power_open/mid_day/power_hour/final_monitoring/eod_sequence/closed), danger zone 감지(ET 09:30~10:00, 15:30~16:00). 기존 market_hours.py(692줄) + account_safety.py + calendar_helpers.py 통합.</p>
+      </div>
+    </div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">C0.12</span><h3>TickerRegistry &mdash; ETF 유니버스 정보</h3><span class="arr">&#9654;</span></div>
+      <div class="mblk-b">
+        <div class="io"><div class="io-l inp">IN: db_session (SessionFactory) &mdash; C0.2</div></div>
+        <div class="io"><div class="io-l out">OUT: TickerInfo (get_universe, get_pair, get_exchange_code, get_sector, is_inverse, is_enabled)</div></div>
+        <p class="func">ETF 유니버스(SOXL/SOXS, QLD/QID, SSO/SDS, NVDL/NVDS 등), 인버스 페어 매핑, 거래소 코드(NAS/AMS/NYS), 섹터 매핑. 기존 etf_universe.py(888줄) + ticker_mapping.py 통합.</p>
+      </div>
+    </div>
+
+    <div class="note cyan"><strong>DI 흐름:</strong> C0.1(키 로드) &rarr; C0.2/3/4/5/6/7(인프라 생성) &rarr; Manager(인프라 주입받음) &rarr; Atom(파라미터로 전달, 외부 직접 접근 금지)</div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- F1: DATA COLLECTION                         -->
+<!-- ════════════════════════════════════════════ -->
+<div class="card c1">
+  <div class="card-head"><div class="icon">F1</div><h2>데이터 수집 (Data Collection) &mdash; 8개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f1_collection/</code> &middot; 사용 Common: C0.1, C0.2, C0.3, C0.4, C0.8, C0.9</p>
+    <div class="pipe"><div class="ps">CrawlScheduler</div><div class="ps">Crawlers (30개)</div><div class="ps">CrawlVerifier</div><div class="ps">ArticleDeduplicator</div><div class="ps">ArticlePersister</div><div class="ps">CrawlEngine</div><div class="ps">AiContextBuilder</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.1</span><h3>CrawlScheduler &mdash; 크롤링 스케줄 관리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: time_info (TimeInfo, C0.11)</div></div><div class="io"><div class="io-l out">OUT: CrawlSchedule (session_type, active_sources, intervals)</div></div><p class="func">KST 시각 기준 야간/주간 모드 판별, 소스별 크롤링 주기 계산.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.2</span><h3>CrawlerBase &mdash; 크롤러 공통 인터페이스</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: source_config (SourceConfig), http_client (AsyncHttpClient, C0.4)</div></div><div class="io"><div class="io-l out">OUT: list[RawArticle]</div></div><p class="func">모든 크롤러의 공통 인터페이스. 타임아웃/에러 격리.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.3</span><h3>Crawlers (30개 소스) &mdash; 개별 크롤러</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: source_config (SourceConfig), since (datetime|None), http_client (C0.4)</div></div><div class="io"><div class="io-l out">OUT: list[RawArticle]</div></div><p class="func">RSS 15개(reuters, bloomberg, yahoo_finance, cnbc, marketwatch, wsj, ft, fed, ecb, bbc, nikkei, scmp, yonhap, hankyung, mk), API 7개(finnhub, alphavantage, fred, fear_greed, finviz, stocktwits, dart), 스크래핑 4개(naver, stocknow, investing, sec_edgar), 소셜 2개(reddit, stocktwits), 예측시장 2개(kalshi, polymarket).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.4</span><h3>CrawlVerifier &mdash; 기사 품질 검증</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: raw_article (RawArticle)</div></div><div class="io"><div class="io-l out">OUT: VerifiedArticle | None</div></div><p class="func">필드 완전성, 언어, 나이, 품질 검증. 실패 시 None 반환.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.5</span><h3>ArticleDeduplicator &mdash; 중복 제거</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: verified_article (VerifiedArticle), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: DeduplicationResult (is_new: bool)</div></div><p class="func">SHA-256 해시 기반 Redis 중복 판별.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.6</span><h3>ArticlePersister &mdash; 기사 저장</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: verified_article (VerifiedArticle), session (AsyncSession, C0.2)</div></div><div class="io"><div class="io-l out">OUT: PersistResult (article_id, is_new)</div></div><p class="func">PostgreSQL upsert 저장.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.7</span><h3>CrawlEngine &mdash; 크롤링 오케스트레이션</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: crawl_schedule, crawlers, verifier, dedup, persister</div></div><div class="io"><div class="io-l out">OUT: CrawlResult (total, new_count, failed_sources, duration)</div></div><p class="func">전체 크롤링 파이프라인 오케스트레이션. 이벤트 발행: ArticleCollected &rarr; EventBus &rarr; F2.1.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F1.8</span><h3>AiContextBuilder &mdash; AI 분석용 컨텍스트</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: articles (list[VerifiedArticle]), max_tokens (int)</div></div><div class="io"><div class="io-l out">OUT: AiContext (context_text, article_count, truncated)</div></div><p class="func">수집된 기사를 AI 분석용 컨텍스트 문자열로 조합한다.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F2: AI ANALYSIS -->
+<div class="card c2">
+  <div class="card-head"><div class="icon">F2</div><h2>AI 분석 (Analysis) &mdash; 13개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f2_analysis/</code> &middot; 사용 Common: C0.2, C0.3, C0.5, C0.8, C0.12</p>
+    <div class="pipe"><div class="ps">NewsClassifier</div><div class="ps">RegimeDetector</div><div class="ps">ComprehensiveTeam</div><div class="ps">DecisionMaker</div><div class="ps">TradingDecision</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.1</span><h3>NewsClassifier &mdash; 뉴스 분류</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: articles (list[VerifiedArticle]), ai_client (AiClient, C0.5)</div></div><div class="io"><div class="io-l out">OUT: list[ClassifiedNews]</div></div><p class="func">영향도/방향/카테고리별 뉴스 분류. MLX 로컬 + Claude 폴백.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.2</span><h3>RegimeDetector &mdash; 시장 레짐 판별</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: vix_value (float)</div></div><div class="io"><div class="io-l out">OUT: MarketRegime (regime_type, vix, params: RegimeParams)</div></div><p class="func">VIX 기반 5단계 레짐: strong_bull(0~15), mild_bull(15~20), sideways(20~25), mild_bear(25~35), crash(35+). 레짐별 take_profit, trailing_stop, max_hold_days, position_multiplier 파라미터.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.3</span><h3>ComprehensiveTeam &mdash; 5인 AI 에이전트 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: analysis_context (AnalysisContext), ai_client (AiClient, C0.5)</div></div><div class="io"><div class="io-l out">OUT: ComprehensiveReport (signals, confidence, recommendations)</div></div><p class="func">5개 페르소나 순차 실행: MASTER_ANALYST(종합), NEWS_ANALYST(뉴스), RISK_MANAGER(리스크), MACRO_STRATEGIST(거시), SHORT_TERM_TRADER(단기). 기존 comprehensive_team.py + prompts.py(1,896줄).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.4</span><h3>DecisionMaker &mdash; 매매 판단</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: comprehensive_report (ComprehensiveReport), portfolio_state (PortfolioState)</div></div><div class="io"><div class="io-l out">OUT: TradingDecision (action, ticker, confidence, size_pct, reason)</div></div><p class="func">종합 분석 + 포트폴리오 &rarr; 진입/청산/홀드 판단. 이벤트 발행: TradingDecision &rarr; EventBus &rarr; F5.3.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.5</span><h3>OvernightJudge &mdash; 오버나이트 판단</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: positions (list[Position]), market_context (MarketContext), regime (MarketRegime)</div></div><div class="io"><div class="io-l out">OUT: list[OvernightDecision] (ticker, action, reason)</div></div><p class="func">장 마감 후 포지션 유지/청산 판단. Bear ETF는 하락장에서 홀딩(청산 제외).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.6</span><h3>ContinuousAnalysis &mdash; 30분 주기 Opus 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: market_session (TimeInfo, C0.11), ai_client (AiClient, C0.5), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: AnalysisSummary (issues, signals, timestamp)</div></div><p class="func">30분 주기 Opus 모델 호출, 실시간 이슈 분석.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.7</span><h3>PromptRegistry &mdash; AI 프롬프트 관리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: prompt_key (str)</div></div><div class="io"><div class="io-l out">OUT: str (프롬프트 텍스트)</div></div><p class="func">5개 AI 에이전트 시스템 프롬프트 템플릿 관리. 기존 prompts.py(1,896줄) &rarr; 5개 파일로 분할.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.8</span><h3><s>FallbackRouter</s> &mdash; C0.5 AiGateway로 통합됨</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><p class="func" style="color:var(--t3)">DEPRECATED: 폴백 라우팅 로직은 C0.5 AiGateway에 통합 완료. 마이그레이션 추적용.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.9</span><h3>KeyNewsFilter &mdash; 핵심 뉴스 필터</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: classified_news (list[ClassifiedNews]), threshold (float)</div></div><div class="io"><div class="io-l out">OUT: list[KeyNews]</div></div><p class="func">영향도 임계값 이상의 핵심 뉴스만 필터링.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.10</span><h3>EODFeedbackReport &mdash; 일일 피드백 보고서</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_trades (list[TradeRecord]), pnl_summary (PnlSummary), ai_client (AiClient)</div></div><div class="io"><div class="io-l out">OUT: FeedbackReport (summary, lessons, suggestions)</div></div><p class="func">일일 매매 결과 종합 피드백 보고서 생성.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.11</span><h3>NewsThemeTracker &mdash; 뉴스 테마 추적</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: articles (list[ClassifiedNews]), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: list[ThemeSummary] (theme, frequency, trend)</div></div><p class="func">반복 출현 뉴스 테마 감지 및 추적.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.12</span><h3>NewsTranslator &mdash; 뉴스 번역</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: article (ClassifiedNews), ai_client (AiClient, C0.5)</div></div><div class="io"><div class="io-l out">OUT: TranslatedNews</div></div><p class="func">영어 뉴스 &rarr; 한국어 번역.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F2.13</span><h3>TickerProfiler &mdash; 티커 종합 프로파일</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker (str), news (list[ClassifiedNews]), indicators (IndicatorBundle)</div></div><div class="io"><div class="io-l out">OUT: TickerProfile</div></div><p class="func">특정 티커의 종합 프로파일 (뉴스 + 지표 + 분석 결합) 생성.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F3: INDICATORS -->
+<div class="card c3">
+  <div class="card-head"><div class="icon">F3</div><h2>지표 (Indicators) &mdash; 14개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f3_indicators/</code> &middot; 사용 Common: C0.3, C0.4, C0.6, C0.8</p>
+    <div class="pipe"><div class="ps">PriceDataFetcher</div><div class="ps">TechnicalCalc</div><div class="ps">IntradayFetcher</div><div class="ps">IntradayCalc</div><div class="ps">CrossAsset</div><div class="ps">WhaleTracker</div><div class="ps">VolumeProfile</div><div class="ps">IndicatorAggregator</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.1</span><h3>PriceDataFetcher &mdash; 가격 데이터 조회</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker (str), broker (BrokerClient, C0.6), days (int)</div></div><div class="io"><div class="io-l out">OUT: list[OHLCV]</div></div><p class="func">KIS API 일봉/분봉 가격 데이터 조회. 최대 100 캔들/요청.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.2</span><h3>TechnicalCalculator &mdash; 기술적 지표</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles (list[OHLCV])</div></div><div class="io"><div class="io-l out">OUT: TechnicalIndicators (rsi, macd, macd_signal, macd_histogram, bb_upper/middle/lower, atr, ema_20/50, sma_200)</div></div><p class="func">Atom: calc_rsi(), calc_macd(), calc_bollinger(), calc_atr().</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.3</span><h3>HistoryAnalyzer &mdash; 과거 패턴 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles (list[OHLCV])</div></div><div class="io"><div class="io-l out">OUT: HistoryPattern (patterns, support_levels, resistance_levels)</div></div><p class="func">과거 가격 패턴, 지지/저항 수준 분석.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.4</span><h3>IndicatorAggregator &mdash; 지표 종합 점수</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: technical (TechnicalIndicators), weights (WeightConfig)</div></div><div class="io"><div class="io-l out">OUT: AggregatedScore (total_score, components)</div></div><p class="func">여러 기술적 지표를 가중합으로 종합 점수화.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.5</span><h3>IntradayFetcher &mdash; 5분봉 데이터</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker (str), http_client (AsyncHttpClient, C0.4), api_keys (C0.1)</div></div><div class="io"><div class="io-l out">OUT: list[Candle5m]</div></div><p class="func">Finnhub/AlphaVantage 5분봉 장중 데이터 조회.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.6</span><h3>IntradayCalculator &mdash; 장중 지표</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles_5m (list[Candle5m])</div></div><div class="io"><div class="io-l out">OUT: IntradayIndicators (vwap, intraday_rsi, intraday_bb)</div></div><p class="func">VWAP, 장중 RSI, 볼린저 밴드 계산.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.7</span><h3>CrossAssetMomentum &mdash; 교차 자산 모멘텀</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker (str), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: MomentumScore (alignment, divergence, leader_scores, has_bullish/bearish_divergence)</div></div><p class="func">리더 맵 17쌍(SOXL&rarr;[NVDA,AMD,TSM], QLD&rarr;[AAPL,MSFT,NVDA,GOOG] 등) ETF-기초주식 모멘텀 정렬/다이버전스 분석. Atom: leader_map, leader_aggregator, divergence_detector, momentum_scorer.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.8</span><h3>VolumeProfile &mdash; 볼륨 프로파일</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles (list[OHLCV]), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: VolumeProfileResult (poc_price, value_area_high/low, is_above_poc, signals)</div></div><p class="func">POC(Point of Control) + Value Area(70% 거래량) 계산, 지지/저항 도출.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.9</span><h3>WhaleTracker &mdash; 고래 감지</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: order_flow (OrderFlowData), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: WhaleSignal (block_score, iceberg_score, direction, total_score)</div></div><p class="func">블록 거래($200k+) + 아이스버그(5+ 체결/1s) 감지. Atom: block_detector, iceberg_detector, whale_scorer.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.10</span><h3>MACDDivergence &mdash; MACD 다이버전스</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles (list[OHLCV])</div></div><div class="io"><div class="io-l out">OUT: DivergenceSignal (type, strength, confidence)</div></div><p class="func">MACD 다이버전스(가격-지표 괴리) 분석.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.11</span><h3>ContangoDetector &mdash; 콘탱고/백워데이션</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: cache (CacheClient, C0.3), broker (BrokerClient, C0.6)</div></div><div class="io"><div class="io-l out">OUT: ContangoState (contango_ratio, drag_estimate, signal)</div></div><p class="func">VIX 기간구조 프록시 + 레버리지 드래그 측정.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.12</span><h3>NAVPremiumTracker &mdash; NAV 프리미엄 추적</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker (str), broker (BrokerClient, C0.6)</div></div><div class="io"><div class="io-l out">OUT: NAVPremiumState (premium_pct, multiplier_adjustment)</div></div><p class="func">레버리지 ETF 10종(SOXL, SOXS, QLD, QID, SSO, SDS, NVDL, NVDS, UWM, DDM) NAV 프리미엄/디스카운트 추적.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.13</span><h3>OrderFlowAggregator &mdash; 주문 흐름 집계</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: OrderFlowSnapshot (obi, cvd, vpin, execution_strength)</div></div><p class="func">WebSocket 실시간 체결 데이터 집계 &rarr; OBI/CVD/VPIN 등 주문 흐름 지표.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F3.14</span><h3>LeverageDecay &mdash; 레버리지 디케이</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles (list[OHLCV]), leverage (float)</div></div><div class="io"><div class="io-l out">OUT: DecayScore (decay_pct, force_exit: bool)</div></div><p class="func">변동성 드래그 인한 레버리지 디케이 정량화. 과도한 디케이 시 강제 청산.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F4: STRATEGY -->
+<div class="card c4">
+  <div class="card-head"><div class="icon">F4</div><h2>전략 (Strategy) &mdash; 13개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f4_strategy/</code> &middot; 사용 Common: C0.3, C0.8, C0.11, C0.12</p>
+    <div class="pipe"><div class="ps">EntryStrategy (7 gates)</div><div class="ps">ExitStrategy (10 types)</div><div class="ps">BeastMode</div><div class="ps">Pyramiding</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.1</span><h3>EntryStrategy &mdash; 7개 진입 게이트</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker, analysis_result, indicators, regime, positions, strategy_params</div></div><div class="io"><div class="io-l out">OUT: EntryDecision (should_enter, confidence, position_size_pct, blocked_by, gate_results)</div></div><p class="func">7 게이트 순차 평가: (1)OBI, (2)CrossAsset, (3)Whale, (4)MicroRegime, (5)ML, (6)Friction, (7)RAG 실패패턴. 기존 entry_strategy.py(1,450줄).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.2</span><h3>ExitStrategy &mdash; 10개 청산 유형</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: position, indicators, regime, strategy_params, market_data</div></div><div class="io"><div class="io-l out">OUT: ExitDecision (should_exit, exit_type, exit_pct, priority, reason)</div></div><p class="func">우선순위 체인: (0)emergency, (1)hard_stop, (2)beast_exit, (3)take_profit, (3.5)scaled_exit, (4.5)news_fade, (4.7)stat_arb, (5)trailing_stop, (6)time_stop, (9)eod. strong_bull에서 take_profit skip(트레일링만). 기존 exit_strategy.py(1,517줄).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.3</span><h3>BeastMode &mdash; A+ 고확신 공격 매매</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: confidence, obi_score, leader_momentum, volume_ratio, whale_alignment, regime, vix, strategy_params, daily_beast_count, last_failure_time</div></div><div class="io"><div class="io-l out">OUT: BeastDecision (activated, conviction_multiplier, ego_type, position_size_pct, rejection_reason)</div></div><p class="func">A+ 셋업(AND): confidence>0.9, OBI>+0.4, leader>0.6, volume 2x+, whale alignment. 3 에고: Cold-Blooded Sniper, Merciless Butcher(120s timestop), Greedy Surfer(-0.5% trail). 가중합성 &rarr; 컨빅션 2.5x~3.0x. 가드: bull 레짐만, VIX&lt;25, 최대 5/일, 5분 쿨다운.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.4</span><h3>Pyramiding &mdash; 3단계 추가 진입</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: position (Position), market_state (MarketState), strategy_params</div></div><div class="io"><div class="io-l out">OUT: PyramidDecision (should_add, level, add_size_pct, ratchet_stop)</div></div><p class="func">+1%&rarr;50%, +2%&rarr;30%, +3%&rarr;20%. 8개 안전 가드.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.5</span><h3>StatArb &mdash; 통계적 차익거래</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: pair_prices (PairPrices), cache (CacheClient, C0.3)</div></div><div class="io"><div class="io-l out">OUT: StatArbSignal (pair, z_score, direction, signal_type)</div></div><p class="func">5 페어(QQQ/QLD, SPY/SSO, IWM/UWM, DIA/DDM, SOXX/SOXL). Z>2&rarr;short, Z&lt;-2&rarr;long.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.6</span><h3>MicroRegime &mdash; 미시 레짐 분류</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: candles_5m (list[Candle5m])</div></div><div class="io"><div class="io-l out">OUT: MicroRegimeResult (regime, score, weights)</div></div><p class="func">가중: 0.35*ER + 0.30*DS + 0.20*AC + 0.15*vol. 4가지: trending, mean_reverting, volatile, quiet.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.7</span><h3>NewsFading &mdash; 뉴스 스파이크 역방향</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: price_spike (PriceSpike), news_context (NewsContext)</div></div><div class="io"><div class="io-l out">OUT: FadeSignal (should_fade, direction, decay_estimate, entry_price)</div></div><p class="func">뉴스 스파이크 >1%/60s 후 역방향 페이딩 신호.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.8</span><h3>WickCatcher &mdash; 급격한 하방 윅 포착</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: intraday_state (IntradayState: vpin, cvd, price)</div></div><div class="io"><div class="io-l out">OUT: WickDecision (should_catch, entry_prices, bounce_exit_pct)</div></div><p class="func">활성화: VPIN>0.7 + CVD&lt;-0.6. 진입: -2%/-3%/-4%. 반등 청산: +2%.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.9</span><h3>SectorRotation &mdash; 섹터 로테이션</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: sector_data (SectorData), broker (BrokerClient, C0.6)</div></div><div class="io"><div class="io-l out">OUT: RotationSignal (top3_prefer, bottom2_avoid, scores)</div></div><p class="func">7 섹터(Tech, Healthcare, Finance, Energy, Consumer, Industrial, Utilities) 상대 강도 분석.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.10</span><h3>StrategyParams &mdash; 전략 파라미터 관리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: params_file_path (str)</div></div><div class="io"><div class="io-l out">OUT: StrategyParams (40개 파라미터 타입 안전 접근)</div></div><p class="func">strategy_params.json 읽기/쓰기. 40개 전략 파라미터.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.11</span><h3>TickerParams &mdash; 티커별 파라미터</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker (str), params_file (str)</div></div><div class="io"><div class="io-l out">OUT: TickerConfig</div></div><p class="func">티커별 개별 파라미터 (ATR 배수, 스탑 거리 등).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.12</span><h3>Backtester &mdash; 백테스트 &amp; 그리드 서치</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: backtest_config (BacktestConfig), historical_data (list[OHLCV])</div></div><div class="io"><div class="io-l out">OUT: BacktestResult (pnl, win_rate, sharpe, max_drawdown, best_params)</div></div><p class="func">과거 데이터 전략 백테스트, 그리드 서치 파라미터 탐색.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F4.13</span><h3>ProfitTarget &mdash; 월간 수익 목표</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: monthly_pnl (MonthlyPnl)</div></div><div class="io"><div class="io-l out">OUT: TargetStatus (current_pnl, target_pnl, on_track, days_remaining)</div></div><p class="func">$300/월 최소 (생존 매매) 추적 관리.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F5: EXECUTION -->
+<div class="card c5">
+  <div class="card-head"><div class="icon">F5</div><h2>실행 (Execution) &mdash; 6개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f5_execution/</code> &middot; 사용 Common: C0.6, C0.8, C0.12</p>
+    <div class="pipe"><div class="ps">OrderManager</div><div class="ps">PositionMonitor</div><div class="ps">ForcedLiquidator</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F5.1</span><h3>OrderManager &mdash; 주문 실행</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: order_request (OrderRequest), broker (BrokerClient, C0.6)</div></div><div class="io"><div class="io-l out">OUT: OrderResult (order_id, status, filled_price, filled_qty)</div></div><p class="func">매수/매도/정정/취소. Atom: build_order_params, validate_order, submit_order, parse_order_response, convert_market_to_limit.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F5.2</span><h3>PositionMonitor &mdash; 포지션 실시간 모니터링</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: market_session (TimeInfo, C0.11), broker (BrokerClient, C0.6), regime (MarketRegime)</div></div><div class="io"><div class="io-l out">OUT: PositionState (positions, sync_result, blocked_tickers)</div></div><p class="func">monitor_all() (정규장) vs sync_positions() (비정규). _sell_blocked_tickers로 반복 실패 방지. 이벤트: PositionChanged &rarr; F7.18.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F5.3</span><h3>UniverseManager &mdash; ETF 유니버스 CRUD</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: universe_request (UniverseRequest), session (AsyncSession, C0.2)</div></div><div class="io"><div class="io-l out">OUT: UniverseResult (ticker_list, updated_count)</div></div><p class="func">ETF 유니버스 추가/삭제/활성화/비활성화.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F5.4</span><h3>ForcedLiquidator &mdash; 강제 청산</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: positions (list[Position]), broker (BrokerClient, C0.6)</div></div><div class="io"><div class="io-l out">OUT: LiquidationResult (liquidated_count, failed_tickers, total_value)</div></div><p class="func">긴급 상황 전체 포지션 강제 청산.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F5.5</span><h3>PositionBootstrap &mdash; 시작 시 동기화</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: broker (BrokerClient, C0.6)</div></div><div class="io"><div class="io-l out">OUT: BootstrapResult (positions, cash_available)</div></div><p class="func">시스템 시작 시 브로커에서 현재 포지션 동기화.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F5.6</span><h3>AccountModeManager &mdash; 모의/실전 전환</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: target_mode (Literal["virtual", "real"])</div></div><div class="io"><div class="io-l out">OUT: ModeChangeResult (success, current_mode)</div></div><p class="func">모의/실전 계좌 모드 전환.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F6: RISK & SAFETY -->
+<div class="card c6">
+  <div class="card-head"><div class="icon">F6</div><h2>리스크 &amp; 안전 (Risk &amp; Safety) &mdash; 20개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f6_risk/</code> &middot; 사용 Common: C0.2, C0.3, C0.8 &middot; 안전 체인: HardSafety &rarr; SafetyChecker &rarr; EmergencyProtocol &rarr; CapitalGuard</p>
+    <div class="pipe"><div class="ps">F6.1 HardSafety</div><div class="ps">F6.2 SafetyChecker</div><div class="ps">F6.3 EmergencyProtocol</div><div class="ps">F6.4 CapitalGuard</div><div class="ps">주문 허용</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.1</span><h3>HardSafety &mdash; 하드 리밋</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: order_intent, portfolio, regime</div></div><div class="io"><div class="io-l out">OUT: SafetyCheckResult (allowed, blocked_reason, checker_name, current_exposure_pct, max_allowed_pct)</div></div><p class="func">티커당 최대 15%, crash/mild_bear에서 Bull ETF 매수 이중 차단.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.2</span><h3>SafetyChecker &mdash; 종합 안전 파이프라인</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: system_state (SystemState)</div></div><div class="io"><div class="io-l out">OUT: SafetyResult (all_passed, failed_checks)</div></div><p class="func">다중 안전 조건 순차 검증.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.3</span><h3>EmergencyProtocol &mdash; 긴급 대응</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: emergency_trigger (EmergencyTrigger)</div></div><div class="io"><div class="io-l out">OUT: EmergencyResult (liquidated, halt_trading, scenario, actions_taken, cooldown_until)</div></div><p class="func">6개 시나리오: 일일 손실 한도, API 장애, VIX 급등, 데이터 단절, 매크로 급락, 수동 트리거. 이벤트: EmergencyLiquidation &rarr; F5.1.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.4</span><h3>CapitalGuard &mdash; 최소 자본</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: account_balance (AccountBalance)</div></div><div class="io"><div class="io-l out">OUT: CapitalGuardResult (sufficient, current_capital, min_required)</div></div><p class="func">최소 자본 유지 확인.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.5</span><h3>RiskGatePipeline &mdash; 7개 리스크 게이트</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade_context (TradeContext)</div></div><div class="io"><div class="io-l out">OUT: RiskGateResult (all_passed, blocked_gate, gate_details)</div></div><p class="func">7 게이트: (1)OBI, (2)CrossAsset, (3)Whale, (4)Tilt 중지, (5)섹터 상관관계, (6)Friction, (7)MacroLiquidity.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.6</span><h3>DailyLossLimiter &mdash; 일일 손실 한도</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_pnl, limit_pct</div></div><div class="io"><div class="io-l out">OUT: LossLimitResult (exceeded, current_loss_pct)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.7</span><h3>ConcentrationLimiter &mdash; 포지션 집중도</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: portfolio, max_pct</div></div><div class="io"><div class="io-l out">OUT: ConcentrationResult (exceeded, ticker, current_pct)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.8</span><h3>TiltDetector &mdash; 틸트 감지</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade_history (list[TradeRecord])</div></div><div class="io"><div class="io-l out">OUT: TiltState (is_tilted, lock_until, trigger_reason)</div></div><p class="func">연패(3손실/10분 OR -2%/30분) 감지. 1시간 잠금.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.9</span><h3>SimpleVaR &mdash; Value at Risk</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: portfolio, returns</div></div><div class="io"><div class="io-l out">OUT: VaRResult (var_99, expected_shortfall)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.10</span><h3>RiskBudget &mdash; Kelly Criterion 사이징</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: portfolio, win_rate, avg_win, avg_loss</div></div><div class="io"><div class="io-l out">OUT: PositionSizeResult (kelly_pct, adjusted_pct, max_position)</div></div><p class="func">Kelly Criterion 25% 분수, 최대 25% 캡.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.11</span><h3>StopLossManager &mdash; ATR 동적 손절</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: position, atr, regime</div></div><div class="io"><div class="io-l out">OUT: StopLossResult (stop_price, trailing_pct, break_even_active)</div></div><p class="func">ATR 동적 손절, 레짐 기반 트레일링, +1.5% 손익분기 스탑.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.12</span><h3>DeadmanSwitch &mdash; 데이터 단절 방어</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: websocket_state, beast_positions</div></div><div class="io"><div class="io-l out">OUT: DeadmanResult (triggered, liquidated_count)</div></div><p class="func">WebSocket 10초+ 무응답 &rarr; Beast 포지션 즉시 청산.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.13</span><h3>MacroFlashCrash &mdash; 급락 감지</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: index_prices (IndexPrices), cache (C0.3)</div></div><div class="io"><div class="io-l out">OUT: CrashDetectResult (crash_detected, severity, affected_indices)</div></div><p class="func">SPY/QQQ -1.0%/3분 &rarr; 전체 청산 + 매매 중지. 이벤트: CrashDetected &rarr; F6.3.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.14</span><h3>GapRiskProtector &mdash; 갭 리스크</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: gap_size, position</div></div><div class="io"><div class="io-l out">OUT: GapAction (level, size_reduction_pct, block_duration, stop_adjustment)</div></div><p class="func">4단계: Small(무시), Medium(-30%), Large(-50%+스탑 확대), Extreme(30분 차단+타이트).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.15</span><h3>FrictionCalculator &mdash; 거래 마찰 비용</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade_params (TradeParams)</div></div><div class="io"><div class="io-l out">OUT: FrictionResult (spread_cost, slippage_cost, total_friction, min_gain_hurdle)</div></div><p class="func">스프레드 + 슬리피지 = 최소 수익 허들(total x 2).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.16</span><h3>HouseMoneyMultiplier &mdash; 하우스 머니</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_pnl (DailyPnl)</div></div><div class="io"><div class="io-l out">OUT: MultiplierResult (multiplier, pnl_band)</div></div><p class="func">일일 PnL 기반 배수: 0.5x / 1.0x / 1.5x / 2.0x.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.17</span><h3>AccountSafety &mdash; 매매 윈도우 안전</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: market_clock (TimeInfo, C0.11)</div></div><div class="io"><div class="io-l out">OUT: AccountSafetyResult (should_stop, reason)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.18</span><h3>QuotaGuard &mdash; API 속도 제한</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: request_count, window_seconds</div></div><div class="io"><div class="io-l out">OUT: QuotaResult (allowed, remaining, reset_at)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.19</span><h3>NetLiquidityTracker &mdash; 거시 유동성</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: cache (C0.3), http_client (C0.4), fred_api_key (C0.1)</div></div><div class="io"><div class="io-l out">OUT: LiquidityBias (net_liquidity_bn, bias: INJECT/DRAIN/NEUTRAL, multiplier)</div></div><p class="func">FRED: TGA + WALCL + RRPONTSYD. Net Liquidity = WALCL - TGA - RRPONTSYD.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F6.20</span><h3>LosingStreakDetector &mdash; 연속 손실 추적</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade_history (list[TradeRecord])</div></div><div class="io"><div class="io-l out">OUT: StreakResult (consecutive_losses, max_streak, risk_level)</div></div></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F7: MONITORING API -->
+<div class="card c7">
+  <div class="card-head"><div class="icon">F7</div><h2>모니터링 API (Monitoring) &mdash; 22개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f7_monitoring/</code> &middot; 사용 Common: C0.2, C0.3, C0.5, C0.6, C0.7, C0.8</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.1</span><h3>ApiServer &mdash; FastAPI 앱 생성</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: all_routers, middleware_config, lifespan</div></div><div class="io"><div class="io-l out">OUT: FastAPI (앱 인스턴스)</div></div><p class="func">라우터 자동 등록, CORS, 미들웨어 설정. 포트 8000 항상 ON.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.2</span><h3>DashboardEndpoints &mdash; 대시보드 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /dashboard/summary, /positions, /trades/recent, /charts/*, /accounts, /decay</div></div><p class="func">대시보드 요약, 포지션, 거래 내역, 차트, 계좌 정보. 기존 1,840줄 &rarr; 8개 라우터로 분할.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.3</span><h3>AnalysisEndpoints &mdash; 분석 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/analysis/comprehensive/{ticker}, /tickers, /ticker-news/{ticker}</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.4</span><h3>TradingControlEndpoints &mdash; 매매 제어</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: POST /api/trading/start, POST /api/trading/stop, GET /api/trading/status</div></div><p class="func">Bearer 인증 필수. start 시 C0.11.is_trading_window() 검증. 실패 시 400.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.5</span><h3>MacroEndpoints &mdash; 거시 경제 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/macro/indicators, /history/{series_id}, /calendar, /rate-outlook, /analysis, /net-liquidity, /refresh</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.6</span><h3>NewsEndpoints &mdash; 뉴스 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/news/dates, /daily, /{id}, /summary, /collect-and-send</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.7</span><h3>UniverseEndpoints &mdash; 유니버스 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /universe, /add, /toggle, /{ticker}, /sectors, /mappings, /crawl/manual, /crawl/status/{task_id}</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.8</span><h3>EmergencyEndpoints &mdash; 긴급 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /emergency/stop, /resume, /status, /api/risk/*</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.9</span><h3>BenchmarkEndpoints &mdash; 벤치마크 비교</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /benchmark/comparison, /chart, /api/target</div></div><p class="func">SPY/QQQ 대비 수익률 비교.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.10</span><h3>TradeReasoningEndpoints &mdash; 매매 근거</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/trade-reasoning/dates, /daily, /stats, /{id}/feedback</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.11</span><h3>IndicatorEndpoints &mdash; 지표 API</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/indicators/weights, /rsi</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.12</span><h3>ManualTradeEndpoints &mdash; 수동 매매</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/manual/analyze, /execute</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.13</span><h3>PrinciplesEndpoints &mdash; 매매 원칙</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/principles/*</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.14</span><h3>AgentEndpoints &mdash; AI 에이전트</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/agents/*</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.15</span><h3>SystemEndpoints &mdash; 시스템 상태</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/system/health, /status, /logs</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.16</span><h3>PerformanceEndpoints &mdash; 성과 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/performance/*</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.17</span><h3>OrderFlowEndpoints &mdash; 주문 흐름</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l api">API: /api/orderflow/*</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.18</span><h3>WebSocketManager &mdash; 실시간 스트림</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: cache (C0.3), positions (PositionState)</div></div><div class="io"><div class="io-l out">OUT: WebSocketFrame (type, data, timestamp)</div></div><p class="func">5개 스트림(3초 갱신): /ws/dashboard, /ws/positions, /ws/orderflow, /ws/alerts, /ws/trades.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.19</span><h3>TelegramNotifier &mdash; 알림 발송</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: event_type (str), data (BaseModel), telegram (TelegramSender, C0.7)</div></div><div class="io"><div class="io-l out">OUT: NotifyResult (sent, message_id)</div></div><p class="func">매매 체결, 일일 보고서, 긴급 알림, 핵심 뉴스, 시스템 상태 알림.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.20</span><h3>IndicatorCrawler &mdash; FRED 거시 지표</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: http_client (C0.4), fred_api_key (C0.1)</div></div><div class="io"><div class="io-l out">OUT: IndicatorCrawlResult (indicators_updated, last_crawl)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.21</span><h3>AuthMiddleware &mdash; Bearer 인증</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: authorization_header (str), api_secret (C0.1)</div></div><div class="io"><div class="io-l out">OUT: AuthResult (authenticated, user_id)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F7.22</span><h3>Schemas &mdash; API Pydantic 스키마</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><p class="func">API 요청/응답 Pydantic 스키마 정의.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F8: OPTIMIZATION -->
+<div class="card c8">
+  <div class="card-head"><div class="icon">F8</div><h2>최적화 &amp; ML (Optimization) &mdash; 10개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f8_optimization/</code> &middot; 사용 Common: C0.2, C0.3, C0.5, C0.8</p>
+    <div class="pipe"><div class="ps">DataPreparer</div><div class="ps">FeatureEngineer</div><div class="ps">TargetBuilder</div><div class="ps">LGBMTrainer</div><div class="ps">OptunaOptimizer</div><div class="ps">WalkForward</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.1</span><h3>DataPreparer &mdash; 학습 데이터 준비</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: date_range, session (C0.2)</div></div><div class="io"><div class="io-l out">OUT: PreparedData (DataFrame)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.2</span><h3>FeatureEngineer &mdash; 21개 피처 생성</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: prepared_data (PreparedData)</div></div><div class="io"><div class="io-l out">OUT: FeatureMatrix (features, feature_names)</div></div><p class="func">기술적 + 주문흐름 + 거시 21개 피처.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.3</span><h3>TargetBuilder &mdash; 타겟 라벨</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: prepared_data</div></div><div class="io"><div class="io-l out">OUT: LabelVector (labels, positive_ratio)</div></div><p class="func">타겟: P(+1%/5min).</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.4</span><h3>LGBMTrainer &mdash; LightGBM 학습</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: features, labels</div></div><div class="io"><div class="io-l out">OUT: TrainedModel (model, metrics, feature_importance)</div></div><p class="func">TimeSeriesSplit 학습. LightGBM 4.6.0.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.5</span><h3>OptunaOptimizer &mdash; 하이퍼파라미터 최적화</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trained_model, features, labels</div></div><div class="io"><div class="io-l out">OUT: OptimizedParams (best_params, best_score, trials_count)</div></div><p class="func">TPE 200 트라이얼. Optuna 4.7.0.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.6</span><h3>WalkForward &mdash; 워크 포워드 검증</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: prepared_data, optimized_params</div></div><div class="io"><div class="io-l out">OUT: WalkForwardResult (folds, avg_score, stability)</div></div><p class="func">4주 학습 / 1주 테스트.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.7</span><h3>AutoTrainer &mdash; 주간 자동 학습</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: cron_trigger</div></div><div class="io"><div class="io-l out">OUT: TrainingReport (model_version, metrics, deployed)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.8</span><h3>TimeTravelTrainer &mdash; 분봉 리플레이 RAG</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: historical_data, knowledge_manager</div></div><div class="io"><div class="io-l out">OUT: TimeTravelResult (embeddings_count, patterns_found)</div></div><p class="func">분봉 리플레이 &rarr; ChromaDB RAG 임베딩.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.9</span><h3>ExecutionOptimizer &mdash; 파라미터 자동 조정</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_trades, current_params</div></div><div class="io"><div class="io-l out">OUT: OptimizedParams (adjusted_params, changes, backup_path)</div></div><p class="func">EOD 매매 분석 &rarr; 파라미터 &plusmn;5% 자동 조정 (최대 30% 이탈). 6개 룰.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F8.10</span><h3>KnowledgeManager &mdash; RAG 지식 베이스</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: document (Document) / query (str)</div></div><div class="io"><div class="io-l out">OUT: KnowledgeResult (documents, scores, embedding_count)</div></div><p class="func">ChromaDB + BGE-M3 기반. 저장/검색.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F9: ORCHESTRATION -->
+<div class="card c9">
+  <div class="card-head"><div class="icon">F9</div><h2>오케스트레이션 (Orchestration) &mdash; 9개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/f9_orchestration/</code> &middot; 사용 Common: ALL &middot; 현재 main.py(3,255줄) &rarr; 이 계층으로 분리</p>
+    <div class="pipe"><div class="ps">SystemInit</div><div class="ps">DI</div><div class="ps">Preparation</div><div class="ps">TradingLoop</div><div class="ps">ContinuousAnalysis</div><div class="ps">NewsPipeline</div><div class="ps">EOD</div><div class="ps">Shutdown</div><div class="ps">WeeklyAnalysis</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.1</span><h3>SystemInitializer &mdash; 전체 시스템 초기화</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: app_config (SecretProvider, C0.1)</div></div><div class="io"><div class="io-l out">OUT: SystemComponents (모든 Common + Feature 인스턴스)</div></div><p class="func">Common &rarr; Feature 순서로 인스턴스 생성. 기존 main.py 432~927줄.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.2</span><h3>DependencyInjector &mdash; 의존성 주입</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: system_components (SystemComponents)</div></div><div class="io"><div class="io-l out">OUT: InjectedSystem (모든 의존성 조립 완료)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.3</span><h3>PreparationPhase &mdash; 매매 사전 준비</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: market_clock (TimeInfo, C0.11), components (InjectedSystem)</div></div><div class="io"><div class="io-l out">OUT: PreparationResult (regime, classified_news, safety_status, ready, infra_health)</div></div><p class="func">Step 0: InfraHealthCheck(DB/Redis/KIS fail-fast) &rarr; Step 1: KIS 토큰 &rarr; Step 2: 크롤링(30개) &rarr; Step 3: 뉴스 분류 &rarr; Step 4: 레짐 감지 &rarr; Step 5: 5인 분석 &rarr; Step 6: 안전 체크.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.4</span><h3>TradingLoop &mdash; 매매 루프</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: market_session (TimeInfo, C0.11), components (InjectedSystem)</div></div><div class="io"><div class="io-l out">OUT: LoopIterationResult (trades_executed, errors, next_interval)</div></div><p class="func">세션별 동적 주기(90s/180s/120s/30~60s). 매 반복: MacroFlashCrash &rarr; DeadmanSwitch &rarr; 세션 판별 &rarr; 정규=monitor_all(), 비정규=sync_positions().</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.5</span><h3>ContinuousAnalysisLoop &mdash; 30분 주기 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: market_session (C0.11), ai_client (C0.5)</div></div><div class="io"><div class="io-l out">OUT: AnalysisLoopResult (iterations, issues_found)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.6</span><h3>NewsPipeline &mdash; 뉴스 수집&rarr;분류&rarr;전송</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: crawl_schedule, components</div></div><div class="io"><div class="io-l out">OUT: PipelineResult (crawled, classified, sent_count)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.7</span><h3>EODSequence &mdash; 일일 종료</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: eod_trigger, components</div></div><div class="io"><div class="io-l out">OUT: EODReport (feedback_sent, params_adjusted, positions_closed)</div></div><p class="func">11 Steps: 포지션 동기화 &rarr; PnL 기록 &rarr; 벤치마크 &rarr; 피드백 보고서 &rarr; 종합팀 EOD &rarr; 이익목표 &rarr; 리스크예산 &rarr; 파라미터최적화 &rarr; RAG+리셋 &rarr; 강제청산 &rarr; 보고서 발송. 이벤트: EODStarted.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.8</span><h3>GracefulShutdown &mdash; 정상 종료</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: shutdown_signal, components</div></div><div class="io"><div class="io-l out">OUT: ShutdownResult (connections_closed, positions_safe, clean_exit)</div></div><p class="func">SIGTERM/SIGINT &rarr; 포지션 정리 &rarr; DB/Redis/WebSocket/KIS 해제 &rarr; 종료.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F9.9</span><h3>WeeklyAnalysisSequence &mdash; 주간 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: week_number, trading_history, benchmark_data</div></div><div class="io"><div class="io-l out">OUT: WeeklyReport (win_rate, pnl, best_worst, patterns, model_retrained)</div></div><p class="func">일요일 00:00 KST 실행. 주간 성과 &rarr; 벤치마크 비교 &rarr; ML 재학습 &rarr; 보고서 발송.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- F10: DASHBOARD -->
+<div class="card c10">
+  <div class="card-head"><div class="icon">F10</div><h2>대시보드 Flutter (Dashboard) &mdash; 7개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>dashboard/</code> &middot; macOS Desktop 앱 &middot; Riverpod 상태관리</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.1</span><h3>ApiClient &mdash; 도메인별 HTTP 클라이언트 (11개)</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: baseUrl + Bearer token</div></div><div class="io"><div class="io-l out">OUT: 도메인별 응답 모델</div></div><p class="func">기존 api_service.dart(1,544줄) &rarr; 11개 분리: Dashboard, Trading, News, Analysis, Universe, Emergency, Macro, Benchmark, Performance, OrderFlow, ManualTrade.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.2</span><h3>WebSocketClient &mdash; 실시간 연결</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: server_url (ws://localhost:8000/ws/{channel})</div></div><div class="io"><div class="io-l out">OUT: Stream&lt;WebSocketEvent&gt;</div></div><p class="func">5개 채널(3초 갱신), 자동 재연결.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.3</span><h3>Providers &mdash; 26개 도메인 상태 관리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ApiClient / WebSocketClient (DI)</div></div><div class="io"><div class="io-l out">OUT: StateNotifier&lt;AsyncValue&lt;T&gt;&gt;</div></div><p class="func">26개 Provider: Dashboard, TradingControl, News, Universe, Emergency, Macro, Benchmark, Chart, Risk, Trade, TradeReasoning, StockAnalysis, Indicator, Agent, Principles, Settings, Theme, Locale, Navigation, TaxFx, ProfitTarget, Report, ScalperTape, ManualTrade, CrawlProgress, TradingMode.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.4</span><h3>Screens &mdash; 28개 화면</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><p class="func">HomeDashboard, OverviewScreen, NewsScreen, UniverseScreen, StockAnalysisScreen, TradeReasoningScreen, RsiScreen, PrinciplesScreen, SettingsScreen, RiskCenterScreen, TradingScreen, ChartDashboard, AnalyticsScreen, AlertHistory, AiReport, ManualTradeScreen, ManualCrawlScreen, StrategySettings, IndicatorSettings, TickerParamsScreen, ProfitTargetScreen, ReportsScreen, RiskDashboardScreen, ScalperTapeScreen, UniverseManagerScreen, AgentTeamScreen, AgentDetailScreen, ShellScreen. 각 150줄 이하 목표.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.5</span><h3>Models &mdash; 22개 데이터 모델</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><p class="func">Dashboard, Trade, News, Universe, Emergency, Macro, Benchmark, Chart, Risk, TradeReasoning, StockAnalysis, Indicator, Agent, Principles, Rsi, Tax, Fx, Slippage, ProfitTarget, Report, ScalperTape, TickerParams 모델.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.6</span><h3>Widgets &mdash; 30개 재사용 위젯</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><p class="func">GlassCard, StatCard, PositionCard, SidebarNav, StatusBar, SectionHeader, EmptyState, ConfirmationDialog, EmergencyButton, AlertPanel, PnlLineChart, CumulativeChart, DrawdownChart, RsiChart, RateChart, FearGreedGauge/Chart, CpiChart, HourlyHeatmap, TickerHeatmap, ObiGauge, CvdTrend, VpinToxicity, MacroStatsRow, WeightSlider, CrawlProgress, TickerAddDialog, AgentTeamTree, EconomicCalendar, AnimationUtils.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">F10.7</span><h3>Theme &amp; Design Tokens &mdash; 7개 파일</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><p class="func">app_theme.dart, app_colors.dart, app_typography.dart, app_spacing.dart, chart_colors.dart, domain_colors.dart, trading_colors.dart.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- FW: WEBSOCKET -->
+<div class="card cw">
+  <div class="card-head"><div class="icon">FW</div><h2>WebSocket 실시간 (WebSocket Engine) &mdash; 13개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/fw_websocket/</code> &middot; 사용 Common: C0.1, C0.3, C0.6, C0.8</p>
+    <div class="pipe"><div class="ps">Connection</div><div class="ps">Parser</div><div class="ps">TradeHandler</div><div class="ps">OrderbookHandler</div><div class="ps">OBI/CVD/VPIN</div><div class="ps">TickWriter</div><div class="ps">RedisPublisher</div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.1</span><h3>WebSocketConnection &mdash; KIS WS 연결</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: broker_config (C0.1, C0.6)</div></div><div class="io"><div class="io-l out">OUT: ConnectionState (connected, subscriptions)</div></div><p class="func">인증, 재연결, AES 복호화.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.2</span><h3>MessageParser &mdash; 메시지 파싱</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: raw_message (str|bytes)</div></div><div class="io"><div class="io-l out">OUT: ParsedMessage (type, data)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.3</span><h3>TradeHandler &mdash; 체결 처리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: parsed (ParsedMessage)</div></div><div class="io"><div class="io-l out">OUT: TradeEvent (ticker, price, volume, time)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.4</span><h3>OrderbookHandler &mdash; 호가창 처리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: parsed (ParsedMessage)</div></div><div class="io"><div class="io-l out">OUT: OrderbookSnapshot (bids, asks)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.5</span><h3>NoticeHandler &mdash; 공지/알림</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: parsed (ParsedMessage)</div></div><div class="io"><div class="io-l out">OUT: NoticeEvent (type, content)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.6</span><h3>OBICalculator &mdash; Order Book Imbalance</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: orderbook (OrderbookSnapshot)</div></div><div class="io"><div class="io-l out">OUT: OBIValue (score, direction)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.7</span><h3>VPINCalculator &mdash; Volume-Sync PIN</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trades (list[TradeEvent])</div></div><div class="io"><div class="io-l out">OUT: VPINValue (score, toxicity)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.8</span><h3>CVDCalculator &mdash; Cumulative Volume Delta</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trades (list[TradeEvent])</div></div><div class="io"><div class="io-l out">OUT: CVDValue (delta, trend)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.9</span><h3>ExecutionStrength &mdash; 체결 강도</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trades (list[TradeEvent])</div></div><div class="io"><div class="io-l out">OUT: StrengthValue (score)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.10</span><h3>TickWriter &mdash; 체결 데이터 DB 기록</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade_event, session (C0.2)</div></div><div class="io"><div class="io-l out">OUT: WriteResult (success, rows_written)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.11</span><h3>RedisPublisher &mdash; 실시간 Pub/Sub</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: event (TradeEvent|OrderbookSnapshot), cache (C0.3)</div></div><div class="io"><div class="io-l out">OUT: PublishResult (published, channel)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.12</span><h3>WebSocketSubscriber &mdash; 구독 관리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: tickers (list[str]), connection</div></div><div class="io"><div class="io-l out">OUT: SubscriptionResult (subscribed, failed)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FW.13</span><h3>WebSocketManager &mdash; WS 전체 생명주기</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: config, handlers</div></div><div class="io"><div class="io-l out">OUT: ManagerState (connected, active_subscriptions, last_message_time)</div></div></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- FS: SCALPING -->
+<div class="card cs">
+  <div class="card-head"><div class="icon">FS</div><h2>스캘핑 (Scalping) &mdash; 7개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/fs_scalping/</code> &middot; 사용 Common: C0.3, C0.6, C0.8</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.1</span><h3>ScalpingManager &mdash; 스캘핑 오케스트레이션</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: ticker, order_flow (OrderFlowSnapshot), strategy_params</div></div><div class="io"><div class="io-l out">OUT: ScalpingDecision (safe_to_trade, adjusted_size, warnings)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.2</span><h3>DepthAnalyzer &mdash; 호가창 깊이</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: orderbook</div></div><div class="io"><div class="io-l out">OUT: DepthAnalysis (depth_score, imbalance, support_levels)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.3</span><h3>ImpactEstimator &mdash; 시장 충격 추정</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: order_size, depth</div></div><div class="io"><div class="io-l out">OUT: ImpactEstimate (expected_slippage_pct, impact_cost)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.4</span><h3>SpreadMonitor &mdash; 스프레드 모니터링</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: orderbook</div></div><div class="io"><div class="io-l out">OUT: SpreadState (current_spread, avg_spread, spread_z_score)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.5</span><h3>LiquiditySizer &mdash; 유동성 사이징</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: depth, impact, spread</div></div><div class="io"><div class="io-l out">OUT: OptimalSize (max_shares, recommended_shares)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.6</span><h3>SpoofingDetector &mdash; 스푸핑 탐지</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: snapshots (list[OrderbookSnapshot])</div></div><div class="io"><div class="io-l out">OUT: SpoofingSignal (detected, pattern_type, confidence)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FS.7</span><h3>TimeStopManager &mdash; 시간 기반 청산</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: position, max_hold_seconds</div></div><div class="io"><div class="io-l out">OUT: TimeStopResult (should_exit, elapsed_seconds, reason)</div></div></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- FX: TAX & FX -->
+<div class="card cx">
+  <div class="card-head"><div class="icon">FX</div><h2>세금 &amp; 환율 (Tax &amp; FX) &mdash; 3개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/fx_tax/</code> &middot; 사용 Common: C0.2, C0.6, C0.8</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FX.1</span><h3>TaxTracker &mdash; 세금 계산/기록</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade, session (C0.2)</div></div><div class="io"><div class="io-l out">OUT: TaxResult (tax_amount, tax_rate, recorded)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FX.2</span><h3>FxManager &mdash; USD/KRW 환율</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: broker (C0.6)</div></div><div class="io"><div class="io-l out">OUT: FxRate (usd_krw, last_updated)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FX.3</span><h3>SlippageTracker &mdash; 슬리피지 추적</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: order (OrderResult), expected_price</div></div><div class="io"><div class="io-l out">OUT: SlippageRecord (slippage_pct, slippage_amount)</div></div></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- FT: TELEGRAM BOT -->
+<div class="card ct">
+  <div class="card-head"><div class="icon">FT</div><h2>텔레그램 봇 (Telegram Bot) &mdash; 6개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/ft_telegram/</code> &middot; 사용 Common: C0.7, C0.8</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FT.1</span><h3>BotHandler &mdash; 명령어 수신/라우팅</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: update (TelegramUpdate)</div></div><div class="io"><div class="io-l out">OUT: BotResponse (reply_text, parse_mode)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FT.2</span><h3>CommandProcessor &mdash; 명령어 처리</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: command (str), args</div></div><div class="io"><div class="io-l out">OUT: CommandResult (response_text, success)</div></div><p class="func">/status, /positions, /stop 등.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FT.3</span><h3>TradeCommands &mdash; 수동 매매 명령</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trade_command</div></div><div class="io"><div class="io-l out">OUT: TradeCommandResult (executed, order_result)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FT.4</span><h3>MessageFormatter &mdash; 메시지 포맷팅</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: data (BaseModel), template (str)</div></div><div class="io"><div class="io-l out">OUT: FormattedMessage (text, parse_mode)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FT.5</span><h3>NLProcessor &mdash; 자연어 명령 변환</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: natural_text (str), ai_client (C0.5)</div></div><div class="io"><div class="io-l out">OUT: ParsedCommand (command_type, params)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FT.6</span><h3>Permissions &mdash; 사용자 권한</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: user_id, chat_id</div></div><div class="io"><div class="io-l out">OUT: PermissionResult (allowed, reason)</div></div></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- FF: FEEDBACK -->
+<div class="card cf">
+  <div class="card-head"><div class="icon">FF</div><h2>피드백 (Feedback) &mdash; 6개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/ff_feedback/</code> &middot; 사용 Common: C0.2, C0.3, C0.5, C0.8</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FF.1</span><h3>DailyFeedback &mdash; 일일 성과 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_trades, session (C0.2)</div></div><div class="io"><div class="io-l out">OUT: DailyFeedbackResult (summary, lessons, improvements)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FF.2</span><h3>WeeklyAnalysis &mdash; 주간 성과 분석</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: weekly_data</div></div><div class="io"><div class="io-l out">OUT: WeeklyReport (win_rate, pnl, best_worst, patterns)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FF.3</span><h3>RAGDocUpdater &mdash; RAG 지식 업데이트</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_result, knowledge (KnowledgeManager)</div></div><div class="io"><div class="io-l out">OUT: UpdateResult (documents_added, embeddings_created)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FF.4</span><h3>ParamAdjuster &mdash; 파라미터 미세 조정</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: feedback, current_params</div></div><div class="io"><div class="io-l out">OUT: AdjustmentResult (adjusted_keys, before_after)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FF.5</span><h3>TimePerformance &mdash; 시간대별 성과</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: trades (list[TradeRecord])</div></div><div class="io"><div class="io-l out">OUT: TimePerformanceResult (hourly_pnl, best_hours, worst_hours)</div></div></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FF.6</span><h3>DailyReportGenerator &mdash; 일일 종합 보고서</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: daily_trades, portfolio_summary, analysis_results, regime_info</div></div><div class="io"><div class="io-l out">OUT: DailyReport (markdown_text, summary_dict, report_path, total_pnl_amount/pct, win_rate, trade_count, regime)</div></div><p class="func">일일 매매 요약, 포지션별 손익, 레짐 정보 종합. docs/report/latest_report.md 생성. 기존 main.py _send_final_daily_report() 추출.</p></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- FN: NEWS FILTER -->
+<div class="card cn">
+  <div class="card-head"><div class="icon">FN</div><h2>뉴스 필터 (News Filter) &mdash; 2개</h2></div>
+  <div class="card-body">
+    <p class="desc">위치: <code>src/fn_filter/</code> &middot; 사용 Common: C0.3, C0.8</p>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FN.1</span><h3>RuleFilter &mdash; 규칙 기반 필터</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: articles (list[ClassifiedNews]), rules (FilterRules)</div></div><div class="io"><div class="io-l out">OUT: FilterResult (passed, filtered_out, reasons)</div></div><p class="func">키워드, 소스, 시간 기반 규칙 필터링.</p></div></div>
+
+    <div class="mblk"><div class="mblk-h" onclick="this.parentElement.classList.toggle('open')"><span class="mblk-id">FN.2</span><h3>SimilarityChecker &mdash; 유사도 판별</h3><span class="arr">&#9654;</span></div><div class="mblk-b"><div class="io"><div class="io-l inp">IN: article, existing (list[ClassifiedNews])</div></div><div class="io"><div class="io-l out">OUT: SimilarityResult (is_duplicate, similarity_score, matched_id)</div></div></div></div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- SAFETY CHAIN DIAGRAM -->
+<div class="card c6">
+  <div class="card-head"><h2>안전 체인 (Safety Chain)</h2></div>
+  <div class="card-body">
+    <p class="desc">모든 매매 실행 전 반드시 통과해야 하는 4계층 안전 체인</p>
+    <div class="pipe">
+      <div class="ps">OrderIntent</div>
+      <div class="ps">F6.1 HardSafety (15%/Bull)</div>
+      <div class="ps">F6.2 SafetyChecker (종합)</div>
+      <div class="ps">F6.3 EmergencyProtocol (긴급)</div>
+      <div class="ps">F6.4 CapitalGuard (최소자본)</div>
+      <div class="ps">주문 실행 허용</div>
+    </div>
+  </div>
+</div>
+
+<!-- BEAST MODE DEFENSE -->
+<div class="card c6">
+  <div class="card-head"><h2>Beast Mode 4계층 방어망</h2></div>
+  <div class="card-body">
+    <div class="pipe">
+      <div class="ps">Network: F6.12 DeadmanSwitch (10s+)</div>
+      <div class="ps">Market: F6.13 MacroFlashCrash (-1%/3min)</div>
+      <div class="ps">Time: F4.3 DangerZone (09:30~10:00, 15:30~16:00 ET)</div>
+      <div class="ps">Price: Beast Hard Stop -1.0%</div>
+    </div>
+    <div class="note red"><strong>Fail-Closed:</strong> 에러 발생 시 즉시 청산 (홀드 아님). 4계층 중 하나라도 트리거되면 Beast 포지션 즉시 정리.</div>
+  </div>
+</div>
+
+<div class="dvd"></div>
+
+<!-- DESIGN PRINCIPLES CHECKLIST -->
+<div class="card">
+  <div class="card-head"><h2>설계 검증 체크리스트 (15항목)</h2></div>
+  <div class="card-body">
+    <ul class="cl">
+      <li>모든 모듈의 OUT이 정확히 1개인가?</li>
+      <li>SecretVault 외에 os.environ/os.getenv 호출이 없는가?</li>
+      <li>Atom이 30줄 이하인가?</li>
+      <li>Manager가 50줄 이하인가?</li>
+      <li>파일이 200줄 이하인가?</li>
+      <li>Atom 내부에서 DB/Redis/HTTP를 직접 import하지 않는가?</li>
+      <li>Feature 간 직접 함수 호출 없이 EventBus로만 통신하는가?</li>
+      <li>모든 IN/OUT이 Pydantic 스키마로 정의되어 있는가?</li>
+      <li>모든 함수에 타입 힌트가 있는가?</li>
+      <li>모든 docstring이 한국어로 작성되어 있는가?</li>
+      <li>main.py가 50줄 이하인가?</li>
+      <li>순환 의존성이 없는가?</li>
+      <li>매매 윈도우가 20:00~06:30 KST로 올바르게 구현되어 있는가?</li>
+      <li>LaunchAgent 참조가 모두 제거되었는가?</li>
+      <li>대시보드 버튼 &rarr; 시간 체크 &rarr; 매매 시작 플로우가 올바른가?</li>
+    </ul>
+  </div>
+</div>
+
+<!-- CROSS-CHECK STATS -->
+<div class="card">
+  <div class="card-head"><h2>크로스체크 통계</h2></div>
+  <div class="card-body">
+    <table class="tb">
+      <thead><tr><th>구분</th><th>현재</th><th>목표</th></tr></thead>
+      <tbody>
+        <tr><td>Python 파일</td><td>292개</td><td style="color:var(--green)">~200개 (통합)</td></tr>
+        <tr><td>Dart 파일</td><td>121개</td><td style="color:var(--blue)">~130개 (API 분리)</td></tr>
+        <tr><td>1000줄+ 파일</td><td style="color:var(--red)">10개</td><td style="color:var(--green)">0개</td></tr>
+        <tr><td>500줄+ 파일</td><td style="color:var(--red)">39개</td><td style="color:var(--green)">0개</td></tr>
+        <tr><td>200줄+ 파일</td><td style="color:var(--red)">159개</td><td style="color:var(--green)">0개</td></tr>
+        <tr><td>main.py 줄 수</td><td style="color:var(--red)">3,255줄</td><td style="color:var(--green)">50줄 이하</td></tr>
+        <tr><td>Lazy import</td><td>168개</td><td style="color:var(--green)">0개</td></tr>
+        <tr><td>Cross-layer 위반</td><td>4개</td><td style="color:var(--green)">0개</td></tr>
+        <tr><td>os.environ 직접 접근</td><td>다수</td><td style="color:var(--green)">0개 (SecretVault)</td></tr>
+        <tr><td>Feature 간 직접 호출</td><td>다수</td><td style="color:var(--green)">0개 (EventBus)</td></tr>
+        <tr><td><b>총 모듈 수</b></td><td colspan="2" style="color:var(--cyan)"><b>130+ 블록</b></td></tr>
+      </tbody>
+    </table>
+    <div class="note green"><strong>설계 원칙:</strong> IN 다수/OUT 1개 &middot; 1모듈=1기능 &middot; SecretVault 독점 &middot; 3계층(Feature/Manager/Atom) &middot; Pydantic 계약 &middot; 한국어 주석 &middot; 타입 힌트 필수</div>
+  </div>
+</div>
+
+<div class="ftr">Stock Trading AI System V2.0 &middot; 거시적 모듈 블록 설계서 &middot; 2026-02-26</div>
+</div>
+
+<script>
+function toggleAll(o){document.querySelectorAll('.mblk').forEach(e=>{o?e.classList.add('open'):e.classList.remove('open')})}
+</script>
+</body>
+</html>

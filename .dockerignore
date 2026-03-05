@@ -1,0 +1,100 @@
+# =============================================================================
+# Docker build context exclusions
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+*.egg-info
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment files (injected via env_file in docker-compose)
+.env
+.env.*
+!.env.example
+
+# Secrets
+secret.json
+secrets/
+*.pem
+*.key
+
+# KIS API tokens (regenerated at runtime)
+data/kis_token.json
+data/kis_real_token.json
+
+# Personal / agent memory
+Talk/
+data/agent_memory/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (local)
+postgres_data/
+redis_data/
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+tests/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Flutter dashboard (not needed in API container)
+dashboard/
+
+# Model files (not used in Docker)
+*.bin
+*.pt
+*.onnx
+*.safetensors
+models/
+
+# ChromaDB local data
+chroma_data/
+
+# Claude memory
+.claude/
+
+# Backup files
+*_backup_*.json
+
+# Knowledge base local data
+knowledge/*.db
+knowledge/*.sqlite
+
+# Documentation
+docs/
+*.md
+!requirements*.txt

@@ -1,0 +1,29 @@
+{"term":"HBM4","related":["SK하이닉스","삼성전자","MU","NVDA","AMD"],"category":"memory","date_added":"2025-06","definition":"4세대 고대역폭메모리. AI 가속기에 필수적인 초고속 메모리로, SK하이닉스와 삼성전자가 주도한다."}
+{"term":"HBM3E","related":["SK하이닉스","MU","NVDA"],"category":"memory","date_added":"2024-03","definition":"3세대 고대역폭메모리의 개선판. NVIDIA H200, B200 GPU에 탑재된다."}
+{"term":"CoWoS-L","related":["TSM","NVDA"],"category":"packaging","date_added":"2025-04","definition":"TSMC의 대형 칩 패키징 기술. NVIDIA Blackwell GPU의 대형 다이를 패키징하는 데 사용된다."}
+{"term":"MoE","related":["NVDA","META","GOOGL"],"category":"ai_architecture","date_added":"2024-01","definition":"Mixture of Experts. 전체 파라미터 중 일부만 활성화하는 효율적 AI 모델 구조이다."}
+{"term":"FOMC","related":["FED","SPY","QQQ"],"category":"macro","date_added":"2020-01","definition":"연방공개시장위원회. 미국 금리 결정 기구로, 회의 결과가 시장에 큰 영향을 미친다."}
+{"term":"CPI","related":["FED","SPY","TLT"],"category":"macro","date_added":"2020-01","definition":"소비자물가지수. 인플레이션 핵심 지표로, 금리 정책과 직결된다."}
+{"term":"PPI","related":["FED","SPY"],"category":"macro","date_added":"2020-01","definition":"생산자물가지수. 기업 비용 측면의 인플레이션 지표이다."}
+{"term":"PCE","related":["FED","SPY"],"category":"macro","date_added":"2020-01","definition":"개인소비지출 물가지수. 연준이 선호하는 인플레이션 지표이다."}
+{"term":"NFP","related":["FED","SPY"],"category":"macro","date_added":"2020-01","definition":"비농업 고용지표(Non-Farm Payrolls). 매월 첫째 금요일 발표되는 핵심 고용 지표이다."}
+{"term":"QE","related":["FED","TLT","SPY"],"category":"macro","date_added":"2020-01","definition":"양적완화(Quantitative Easing). 중앙은행이 채권을 매입하여 유동성을 공급하는 정책이다."}
+{"term":"QT","related":["FED","TLT","SPY"],"category":"macro","date_added":"2022-06","definition":"양적긴축(Quantitative Tightening). 중앙은행이 보유 채권을 축소하여 유동성을 회수하는 정책이다."}
+{"term":"VIX","related":["SPY","UVXY","SVXY"],"category":"volatility","date_added":"2020-01","definition":"변동성지수. S&P 500 옵션 내재변동성을 측정하며, 공포지수라고도 불린다."}
+{"term":"SOXX","related":["SOXL","SOXS","NVDA","AMD","INTC"],"category":"index","date_added":"2020-01","definition":"PHLX 반도체 지수를 추종하는 ETF. SOXL(3X 레버리지), SOXS(3X 인버스)의 기초 지수이다."}
+{"term":"carry trade","related":["JPY","USD","SPY"],"category":"strategy","date_added":"2020-01","definition":"저금리 통화로 차입하여 고금리 자산에 투자하는 전략. 엔 캐리 트레이드가 대표적이다."}
+{"term":"risk-off","related":["VIX","TLT","GLD"],"category":"market_regime","date_added":"2020-01","definition":"위험자산 회피 국면. 주식 매도, 채권/금 매수가 동시에 나타난다."}
+{"term":"risk-on","related":["SPY","QQQ","SOXL"],"category":"market_regime","date_added":"2020-01","definition":"위험자산 선호 국면. 주식, 하이일드 채권 등 위험자산으로 자금이 유입된다."}
+{"term":"death cross","related":["SPY","QQQ"],"category":"technical","date_added":"2020-01","definition":"50일 이동평균선이 200일 이동평균선을 하향 돌파하는 약세 시그널이다."}
+{"term":"golden cross","related":["SPY","QQQ"],"category":"technical","date_added":"2020-01","definition":"50일 이동평균선이 200일 이동평균선을 상향 돌파하는 강세 시그널이다."}
+{"term":"short squeeze","related":["GME","AMC"],"category":"market_event","date_added":"2021-01","definition":"공매도 세력이 급격한 주가 상승에 의해 손절매를 강제당하며 추가 상승을 유발하는 현상이다."}
+{"term":"CHIPS Act","related":["INTC","TSM","NVDA","AMD"],"category":"regulation","date_added":"2022-08","definition":"미국 반도체법. 자국 내 반도체 생산 촉진을 위한 520억 달러 규모 보조금 법안이다."}
+{"term":"AI Act","related":["GOOGL","META","MSFT"],"category":"regulation","date_added":"2024-03","definition":"EU 인공지능법. AI 시스템의 위험도에 따라 규제 수준을 차등 적용하는 법률이다."}
+{"term":"tariff","related":["SPY","QQQ","AAPL"],"category":"trade_policy","date_added":"2018-03","definition":"관세. 수입품에 부과하는 세금으로, 무역전쟁의 핵심 수단이다."}
+{"term":"backwardation","related":["CL","NG","USO"],"category":"commodity","date_added":"2020-01","definition":"선물 가격이 현물 가격보다 낮은 상태. 공급 부족 시 나타난다."}
+{"term":"contango","related":["CL","VIX","UVXY"],"category":"commodity","date_added":"2020-01","definition":"선물 가격이 현물 가격보다 높은 상태. VIX 선물은 대부분 콘탱고 상태이다."}
+{"term":"leverage decay","related":["TQQQ","SOXL","QLD"],"category":"etf_risk","date_added":"2020-01","definition":"레버리지 ETF의 일일 리밸런싱으로 인한 장기 수익률 괴리 현상이다. 횡보장에서 특히 손실이 크다."}
+{"term":"IV crush","related":["VIX","UVXY","options"],"category":"volatility","date_added":"2020-01","definition":"내재변동성 급락. 실적 발표나 이벤트 이후 옵션 프리미엄이 급감하는 현상이다."}
+{"term":"ASIC","related":["AVGO","GOOGL","AMZN"],"category":"semiconductor","date_added":"2023-01","definition":"주문형반도체(Application-Specific Integrated Circuit). 특정 용도에 최적화된 맞춤형 칩이다."}
+{"term":"sovereign AI","related":["NVDA","INTC","AMD"],"category":"ai_policy","date_added":"2024-06","definition":"국가 주권 AI. 각국이 자체 AI 인프라를 구축하려는 움직임으로, GPU 수요를 촉진한다."}
+{"term":"agentic AI","related":["MSFT","GOOGL","META","CRM"],"category":"ai_trend","date_added":"2025-01","definition":"에이전트형 AI. 자율적으로 작업을 수행하는 AI 시스템으로, 차세대 AI 패러다임이다."}

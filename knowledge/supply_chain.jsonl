@@ -1,0 +1,26 @@
+{"from":"TSMC","to":"NVDA","relation":"foundry","detail":"3nm/5nm GPU 위탁생산 (Blackwell, Hopper 시리즈)"}
+{"from":"TSMC","to":"AMD","relation":"foundry","detail":"5nm/4nm CPU/GPU 위탁생산 (EPYC, MI300)"}
+{"from":"TSMC","to":"AAPL","relation":"foundry","detail":"3nm SoC 위탁생산 (M시리즈, A시리즈 칩)"}
+{"from":"TSMC","to":"QCOM","relation":"foundry","detail":"4nm 모바일 AP 위탁생산 (Snapdragon 시리즈)"}
+{"from":"TSMC","to":"AVGO","relation":"foundry","detail":"AI ASIC, 네트워킹 칩 위탁생산"}
+{"from":"TSMC","to":"INTC","relation":"foundry","detail":"일부 칩 위탁생산 (Meteor Lake 타일 등)"}
+{"from":"SK하이닉스","to":"NVDA","relation":"memory","detail":"HBM3E 독점 공급 (H200, B200 GPU용)"}
+{"from":"삼성전자","to":"NVDA","relation":"memory","detail":"HBM3E 부분 공급 (HBM4부터 점유율 확대 목표)"}
+{"from":"MU","to":"NVDA","relation":"memory","detail":"HBM3E 공급 (3번째 HBM 공급사)"}
+{"from":"SK하이닉스","to":"AMD","relation":"memory","detail":"HBM3E 공급 (MI300X, MI325X용)"}
+{"from":"ASML","to":"TSMC","relation":"equipment","detail":"EUV/High-NA EUV 노광장비 공급 (3nm/2nm 공정용)"}
+{"from":"ASML","to":"삼성전자","relation":"equipment","detail":"EUV 노광장비 공급 (GAA 3nm 공정용)"}
+{"from":"ASML","to":"INTC","relation":"equipment","detail":"High-NA EUV 노광장비 공급 (18A 공정용)"}
+{"from":"LRCX","to":"TSMC","relation":"equipment","detail":"식각장비 공급 (멀티패터닝, HAR 식각)"}
+{"from":"AMAT","to":"TSMC","relation":"equipment","detail":"증착/CMP 장비 공급"}
+{"from":"KLAC","to":"TSMC","relation":"equipment","detail":"웨이퍼 검사/계측장비 공급"}
+{"from":"NVDA","to":"MSFT","relation":"customer","detail":"Azure AI 데이터센터 GPU 납품 (H100, B200)"}
+{"from":"NVDA","to":"GOOGL","relation":"customer","detail":"Google Cloud AI GPU 납품"}
+{"from":"NVDA","to":"AMZN","relation":"customer","detail":"AWS AI GPU 납품 (EC2 P5 인스턴스)"}
+{"from":"NVDA","to":"META","relation":"customer","detail":"AI 연구/추론 인프라 GPU 납품"}
+{"from":"ARM","to":"AAPL","relation":"license","detail":"CPU 아키텍처 라이선스 (M시리즈 칩 기반)"}
+{"from":"ARM","to":"QCOM","relation":"license","detail":"CPU 아키텍처 라이선스 (Snapdragon 기반)"}
+{"from":"ARM","to":"AMZN","relation":"license","detail":"CPU 아키텍처 라이선스 (Graviton 기반)"}
+{"from":"GOOGL","to":"AVGO","relation":"customer","detail":"커스텀 AI TPU 칩 설계 위탁"}
+{"from":"AMZN","to":"AVGO","relation":"customer","detail":"커스텀 AI Trainium 칩 설계 협력"}
+{"from":"META","to":"AVGO","relation":"customer","detail":"커스텀 AI 칩(MTIA) 설계 협력"}

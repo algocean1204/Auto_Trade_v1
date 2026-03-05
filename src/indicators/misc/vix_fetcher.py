@@ -1,0 +1,134 @@
+"""VIX 지수 조회기이다. Redis 캐시 -> FRED API -> 폴백 순서로 VIX를 조회한다.
+
+ContangoDetector와 동일한 market:vix 키를 사용하므로 두 모듈이 공유 캐시를 참조한다.
+"""
+from __future__ import annotations
+
+from src.common.cache_gateway import CacheClient
+from src.common.http_client import AsyncHttpClient
+from src.common.logger import get_logger
+from src.common.secret_vault import SecretProvider
+
+logger = get_logger(__name__)
+
+_VIX_CACHE_KEY: str = "market:vix"
+_VIX_TTL: int = 3600  # 1시간 캐시 TTL이다
+_FALLBACK_VIX: float = 20.0  # 모든 소스 실패 시 사용하는 폴백 VIX이다
+
+# FRED VIXCLS API 엔드포인트이다. sort_order=desc&limit=1로 최신값만 가져온다
+_FRED_URL: str = (
+    "https://api.stlouisfed.org/fred/series/observations"
+)
+_FRED_SERIES_ID: str = "VIXCLS"
+
+
+def _parse_fred_response(body: dict) -> float | None:
+    """FRED API 응답에서 최신 VIX 값을 파싱한다.
+
+    observations 리스트의 첫 번째 항목(최신 데이터)에서 value를 추출한다.
+    FRED는 주말/공휴일에 '.'을 반환할 수 있으므로 변환 실패 시 None을 반환한다.
+    """
+    observations: list[dict] = body.get("observations", [])
+    if not observations:
+        logger.warning("FRED 응답에 observations가 없다")
+        return None
+    raw_value: str = observations[0].get("value", "")
+    try:
+        return float(raw_value)
+    except (ValueError, TypeError):
+        logger.warning("FRED VIX 값 파싱 실패: '%s'", raw_value)
+        return None
+
+
+class VixFetcher:
+    """VIX 지수를 조회하는 모듈이다.
+
+    조회 우선순위:
+        1. Redis 캐시 (market:vix 키)
+        2. FRED VIXCLS API (FRED_API_KEY 또는 DEMO_KEY)
+        3. 폴백 값 20.0
+    """
+
+    def __init__(
+        self,
+        cache: CacheClient,
+        http: AsyncHttpClient,
+        vault: SecretProvider,
+    ) -> None:
+        """의존성을 주입받는다.
+
+        Args:
+            cache: Redis 캐시 클라이언트
+            http: 비동기 HTTP 클라이언트
+            vault: 시크릿 제공자 (FRED_API_KEY 조회용)
+        """
+        self._cache = cache
+        self._http = http
+        # FRED API 키가 없으면 DEMO_KEY를 사용한다 (일일 500회 제한)
+        self._fred_api_key: str = (
+            vault.get_secret_or_none("FRED_API_KEY") or "DEMO_KEY"
+        )
+
+    async def get_vix(self) -> float:
+        """현재 VIX 값을 반환한다.
+
+        캐시 히트 시 즉시 반환하고, 캐시 미스 시 FRED API를 호출한다.
+        모든 소스 실패 시 폴백 값(20.0)을 반환한다.
+
+        Returns:
+            VIX 지수 값 (실수)
+        """
+        cached = await self._read_from_cache()
+        if cached is not None:
+            logger.debug("VIX 캐시 히트: %.2f", cached)
+            return cached
+
+        fetched = await self._fetch_from_fred()
+        if fetched is not None:
+            await self._write_to_cache(fetched)
+            logger.info("FRED에서 VIX 조회 성공: %.2f", fetched)
+            return fetched
+
+        logger.warning("VIX 조회 실패 -- 폴백 값 사용: %.1f", _FALLBACK_VIX)
+        return _FALLBACK_VIX
+
+    async def _read_from_cache(self) -> float | None:
+        """Redis 캐시에서 VIX 값을 읽는다. 없거나 파싱 실패 시 None을 반환한다."""
+        try:
+            raw = await self._cache.read(_VIX_CACHE_KEY)
+            if raw is None:
+                return None
+            return float(raw)
+        except (ValueError, TypeError, Exception) as exc:
+            logger.debug("VIX 캐시 읽기 실패 (무시): %s", exc)
+            return None
+
+    async def _fetch_from_fred(self) -> float | None:
+        """FRED API에서 최신 VIXCLS 값을 조회한다. 실패 시 None을 반환한다."""
+        try:
+            params = {
+                "series_id": _FRED_SERIES_ID,
+                "api_key": self._fred_api_key,
+                "file_type": "json",
+                "sort_order": "desc",
+                "limit": "1",
+            }
+            response = await self._http.get(_FRED_URL, params=params)
+            if not response.ok:
+                logger.warning(
+                    "FRED API 응답 오류: status=%d", response.status
+                )
+                return None
+            body: dict = response.json()
+            return _parse_fred_response(body)
+        except Exception as exc:
+            logger.warning("FRED API 호출 실패: %s", exc)
+            return None
+
+    async def _write_to_cache(self, vix: float) -> None:
+        """VIX 값을 Redis에 TTL과 함께 저장한다. 실패 시 무시한다."""
+        try:
+            await self._cache.write(_VIX_CACHE_KEY, str(vix), ttl=_VIX_TTL)
+            logger.debug("VIX 캐시 저장 완료: %.2f (TTL=%ds)", vix, _VIX_TTL)
+        except Exception as exc:
+            logger.warning("VIX 캐시 저장 실패 (무시): %s", exc)

@@ -1,0 +1,37 @@
+{"name":"Blackwell Ultra","company":"NVDA","category":"GPU","date_added":"2025-03","aliases":["블랙웰울트라","B300","GB300"]}
+{"name":"Blackwell","company":"NVDA","category":"GPU","date_added":"2024-03","aliases":["블랙웰","B100","B200","GB200"]}
+{"name":"Hopper","company":"NVDA","category":"GPU","date_added":"2022-09","aliases":["호퍼","H100","H200","H800"]}
+{"name":"Grace Hopper","company":"NVDA","category":"CPU-GPU","date_added":"2023-06","aliases":["그레이스호퍼","GH200"]}
+{"name":"DGX","company":"NVDA","category":"AI_system","date_added":"2020-05","aliases":["DGX B200","DGX H100","DGX SuperPOD"]}
+{"name":"CUDA","company":"NVDA","category":"software","date_added":"2007-06","aliases":["쿠다"]}
+{"name":"NVLink","company":"NVDA","category":"interconnect","date_added":"2016-04","aliases":["엔브이링크","NVSwitch"]}
+{"name":"GeForce RTX 50","company":"NVDA","category":"consumer_GPU","date_added":"2025-01","aliases":["RTX 5090","RTX 5080","RTX 5070","지포스"]}
+{"name":"MI300X","company":"AMD","category":"GPU","date_added":"2023-12","aliases":["MI300","MI300A","MI325X"]}
+{"name":"MI350","company":"AMD","category":"GPU","date_added":"2025-06","aliases":["MI350X"]}
+{"name":"Strix Halo","company":"AMD","category":"APU","date_added":"2025-01","aliases":["스트릭스헤일로","Ryzen AI Max"]}
+{"name":"EPYC Turin","company":"AMD","category":"server_CPU","date_added":"2024-10","aliases":["에픽 투린","EPYC 9005"]}
+{"name":"Zen 5","company":"AMD","category":"CPU_arch","date_added":"2024-07","aliases":["젠5"]}
+{"name":"Gaudi 3","company":"INTC","category":"AI_accelerator","date_added":"2024-04","aliases":["가우디3"]}
+{"name":"Lunar Lake","company":"INTC","category":"mobile_CPU","date_added":"2024-09","aliases":["루나레이크","Core Ultra 200V"]}
+{"name":"Arrow Lake","company":"INTC","category":"desktop_CPU","date_added":"2024-10","aliases":["애로우레이크","Core Ultra 200S"]}
+{"name":"18A","company":"INTC","category":"process","date_added":"2025-06","aliases":["인텔 18A","Intel 18A"]}
+{"name":"Apple Intelligence","company":"AAPL","category":"AI","date_added":"2024-06","aliases":["애플 인텔리전스","Apple AI"]}
+{"name":"M4 Ultra","company":"AAPL","category":"chip","date_added":"2025-03","aliases":["M4울트라"]}
+{"name":"Vision Pro","company":"AAPL","category":"XR","date_added":"2024-02","aliases":["비전프로","Apple Vision"]}
+{"name":"Azure AI","company":"MSFT","category":"cloud_AI","date_added":"2023-01","aliases":["Azure OpenAI","애저 AI"]}
+{"name":"Copilot","company":"MSFT","category":"AI_assistant","date_added":"2023-03","aliases":["코파일럿","Microsoft Copilot","MS 코파일럿"]}
+{"name":"Gemini","company":"GOOGL","category":"AI_model","date_added":"2023-12","aliases":["제미나이","Gemini Ultra","Gemini Pro"]}
+{"name":"TPU","company":"GOOGL","category":"AI_chip","date_added":"2016-05","aliases":["Tensor Processing Unit","TPU v5","TPU v6","Trillium"]}
+{"name":"Trainium","company":"AMZN","category":"AI_chip","date_added":"2022-10","aliases":["트레이니움","Trainium2","Trainium3"]}
+{"name":"Graviton","company":"AMZN","category":"server_CPU","date_added":"2018-11","aliases":["그래비톤","Graviton4"]}
+{"name":"Llama","company":"META","category":"AI_model","date_added":"2023-02","aliases":["라마","Llama 3","Llama 4"]}
+{"name":"Snapdragon X","company":"QCOM","category":"PC_chip","date_added":"2024-06","aliases":["스냅드래곤X","Snapdragon X Elite","Snapdragon X Plus"]}
+{"name":"Snapdragon 8 Gen 4","company":"QCOM","category":"mobile_AP","date_added":"2025-10","aliases":["스냅드래곤8세대4"]}
+{"name":"HBM3E","company":"MU","category":"memory","date_added":"2024-03","aliases":["HBM3E","고대역폭메모리"]}
+{"name":"EUV","company":"ASML","category":"lithography","date_added":"2019-01","aliases":["극자외선","High-NA EUV","고개구 EUV"]}
+{"name":"FSD","company":"TSLA","category":"autonomous_driving","date_added":"2019-04","aliases":["Full Self-Driving","완전자율주행","FSD v13"]}
+{"name":"Optimus","company":"TSLA","category":"robotics","date_added":"2022-10","aliases":["옵티머스","Tesla Bot","테슬라봇"]}
+{"name":"CoWoS","company":"TSM","category":"packaging","date_added":"2012-01","aliases":["코워스","CoWoS-S","CoWoS-L","CoWoS-R"]}
+{"name":"N3","company":"TSM","category":"process","date_added":"2022-12","aliases":["3나노","3nm","N3E","N3P","N3X"]}
+{"name":"N2","company":"TSM","category":"process","date_added":"2025-06","aliases":["2나노","2nm","N2P"]}
+{"name":"SoIC","company":"TSM","category":"packaging","date_added":"2021-01","aliases":["소익","3D IC","System on Integrated Chips"]}
