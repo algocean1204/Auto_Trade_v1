@@ -129,7 +129,9 @@ def _launch_trading_task(system: InjectedSystem) -> None:
     system.running = True
 
     async def _lifecycle() -> None:
-        """preparation -> trading_loop + continuous_analysis -> finally running=False."""
+        """preparation -> trading_loop + continuous_analysis -> EOD -> finally running=False."""
+        cancelled = False
+        loop_finished_normally = False
         try:
             from src.orchestration.loops.continuous_analysis import (
                 run_continuous_analysis,
@@ -147,20 +149,61 @@ def _launch_trading_task(system: InjectedSystem) -> None:
             )
             try:
                 await run_trading_loop(system, _shutdown_event)  # type: ignore[arg-type]
+                loop_finished_normally = True
+                _logger.info("매매 루프 정상 반환 완료")
             finally:
-                analysis_task.cancel()
+                _logger.info("analysis_task 정리 시작 (done=%s)", analysis_task.done())
+                if not analysis_task.done():
+                    analysis_task.cancel()
                 try:
+                    await asyncio.shield(asyncio.sleep(0))  # yield point 확보
                     await analysis_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                except (asyncio.CancelledError, Exception) as exc:
+                    _logger.debug("analysis_task 정리 완료: %s", type(exc).__name__)
+                _logger.info("analysis_task 정리 끝")
         except asyncio.CancelledError:
+            cancelled = True
             _logger.info("매매 태스크 취소됨")
         except Exception:
             _logger.exception("매매 태스크 예외 발생")
         finally:
+            # EOD 시퀀스: 루프가 정상 종료된 경우 반드시 실행한다
+            if loop_finished_normally and not cancelled:
+                try:
+                    _logger.info("매매 루프 자동 종료 -- EOD 시퀀스 실행")
+                    await _run_auto_eod(system)
+                except Exception:
+                    _logger.exception("자동 EOD 시퀀스 finally 블록 실행 실패")
+            elif cancelled:
+                _logger.info("매매 취소됨 -- EOD 건너뜀 (수동 stop에서 EOD 실행)")
+            else:
+                _logger.warning("매매 루프 비정상 종료 -- EOD 건너뜀")
             system.running = False
+            _logger.info("매매 태스크 생명주기 종료 (running=False)")
 
     system.trading_task = asyncio.create_task(_lifecycle())
+
+
+async def _run_auto_eod(system: InjectedSystem) -> None:
+    """매매 루프 자동 종료 후 EOD 시퀀스 + 주간 분석을 실행한다."""
+    try:
+        from src.orchestration.phases.eod_sequence import run_eod_sequence
+        await run_eod_sequence(system)
+    except Exception:
+        _logger.exception("자동 EOD 시퀀스 실행 실패")
+
+    # 주간 분석: 토요일 아침 (금요일 미국장 종료 후)
+    try:
+        from src.orchestration.phases.weekly_analysis import (
+            run_weekly_analysis,
+            should_run_weekly,
+        )
+        time_info = get_market_clock().get_time_info()
+        if time_info.now_kst.weekday() == 5 or should_run_weekly(time_info):
+            _logger.info("주간 분석 시작 (자동 EOD 후)")
+            await run_weekly_analysis(system)
+    except Exception as exc:
+        _logger.warning("주간 분석 실행 실패 (건너뜀): %s", exc)
 
 
 async def _stop_trading_task(

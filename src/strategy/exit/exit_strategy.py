@@ -39,6 +39,13 @@ _REGIME_HARD_STOP: dict[str, float] = {
     "crash": -1.0,
 }
 
+# Beast Mode 전용 하드스톱 (-1.0%) -- 일반 레짐 하드스톱보다 타이트하다
+_BEAST_HARD_STOP_PCT = -1.0
+
+# Beast Mode 공격적 트레일링: +1.5% 수익 진입 시 고점 대비 -0.5% 하락으로 청산한다
+_BEAST_TRAILING_ACTIVATION_PCT = 1.5
+_BEAST_TRAILING_DRAWDOWN_PCT = 0.5
+
 # 분할 청산 단계 정의: (PnL 배수, 청산 비율)이다
 _SCALED_LEVELS: list[tuple[float, float, int]] = [
     (1.5, 40.0, 3),  # 150% 도달: 40% 청산 (3단계)
@@ -145,6 +152,25 @@ def _check_news_fade_exit(
     return None
 
 
+def _check_beast_exit(position: Position) -> ExitDecision | None:
+    """Beast Mode 하드스톱 -- Beast 포지션이 -1.0% 도달 시 즉시 청산한다.
+
+    Beast 포지션은 비중이 크므로 일반 하드스톱보다 타이트한 -1.0%를 적용한다.
+    position.is_beast 필드가 True인 포지션에만 작동한다.
+    """
+    if not getattr(position, "is_beast", False):
+        return None
+    if position.unrealized_pnl_pct <= _BEAST_HARD_STOP_PCT:
+        return ExitDecision(
+            should_exit=True, exit_type="beast_exit", exit_pct=100.0,
+            priority=2.0,
+            reason=f"Beast 하드스톱 {_BEAST_HARD_STOP_PCT}% 도달",
+            ticker=position.ticker,
+            estimated_pnl_pct=position.unrealized_pnl_pct,
+        )
+    return None
+
+
 def _no_exit(ticker: str) -> ExitDecision:
     """청산 조건 미충족 시 반환한다."""
     return ExitDecision(
@@ -199,6 +225,9 @@ class ExitStrategy:
         checks: list[ExitDecision | None] = [
             _check_emergency(bundle),
             _check_hard_stop(position, regime),
+            _check_beast_exit(position),
+            # Beast 공격적 트레일링 (+1.5% 진입 → -0.5% 하락 청산)
+            self._check_beast_trailing(position),
             # news_fade(4.5) - StatArb(4.7)보다 우선한다
             _check_news_fade_exit(position, news_context, price_spike)
             if params.news_fading_enabled else None,
@@ -256,6 +285,35 @@ class ExitStrategy:
             self._executed_scales[ticker] = set()
         self._executed_scales[ticker].add(level)
         logger.debug("분할 청산 단계 기록: %s level=%d", ticker, level)
+
+    def _check_beast_trailing(self, position: Position) -> ExitDecision | None:
+        """Beast 공격적 트레일링 -- +1.5% 수익권 진입 후 고점 대비 -0.5% 하락 시 청산한다.
+
+        고정 익절을 없애고, 수익이 +1.5%에 진입하면 고점 대비 -0.5% 하락할 때까지
+        끝까지 수익을 쫓아가는 탐욕적 파도타기(Greedy Ride) 전략이다.
+        Beast 포지션에만 적용한다.
+        """
+        if not getattr(position, "is_beast", False):
+            return None
+        ticker = position.ticker
+        peak = self._peak_pnl.get(ticker, 0.0)
+        # 고점이 +1.5% 이상이었을 때만 Beast 트레일링을 활성화한다
+        if peak < _BEAST_TRAILING_ACTIVATION_PCT:
+            return None
+        drawdown = peak - position.unrealized_pnl_pct
+        if drawdown >= _BEAST_TRAILING_DRAWDOWN_PCT:
+            return ExitDecision(
+                should_exit=True, exit_type="trailing_stop", exit_pct=100.0,
+                priority=2.5,
+                reason=(
+                    f"Beast 트레일링: 고점 {peak:.1f}% → 현재 "
+                    f"{position.unrealized_pnl_pct:.1f}% "
+                    f"(하락 {drawdown:.1f}% >= {_BEAST_TRAILING_DRAWDOWN_PCT}%)"
+                ),
+                ticker=ticker,
+                estimated_pnl_pct=position.unrealized_pnl_pct,
+            )
+        return None
 
     def _check_trailing_stop(
         self, position: Position, regime: MarketRegime,

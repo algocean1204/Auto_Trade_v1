@@ -65,7 +65,15 @@ class AsyncHttpClient:
             timeout = aiohttp.ClientTimeout(
                 total=self._config.total, connect=self._config.connect,
             )
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            # TCP_NODELAY: 패킷 모으지 않고 즉시 전송하여 지연 최소화한다
+            connector = aiohttp.TCPConnector(
+                force_close=False,
+                enable_cleanup_closed=True,
+            )
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+            )
         return self._session
 
     async def _send_once(

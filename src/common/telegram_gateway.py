@@ -1,7 +1,8 @@
 """
 TelegramGateway (C0.7) -- Telegram Bot API 메시지 발송 게이트웨이이다.
 
-python-telegram-bot SDK 사용. 4096자 초과 시 자동 분할, 네트워크 실패 시 최대 2회 재시도.
+python-telegram-bot SDK 사용. 4096자 초과 시 자동 분할, 네트워크 실패 시 최대 3회 재시도.
+connect=10s, read=15s, write=15s 타임아웃 적용.
 """
 from __future__ import annotations
 
@@ -16,8 +17,11 @@ from src.common.logger import get_logger
 logger: logging.Logger = get_logger(__name__)
 
 _MAX_MSG_LEN: int = 4096
-_MAX_RETRIES: int = 2
-_RETRY_DELAY: float = 1.0
+_MAX_RETRIES: int = 3
+_RETRY_DELAY: float = 2.0
+_CONNECT_TIMEOUT: float = 10.0
+_READ_TIMEOUT: float = 15.0
+_WRITE_TIMEOUT: float = 15.0
 _instance: TelegramSender | None = None
 
 
@@ -74,8 +78,17 @@ class TelegramSender:
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self._chat_id = chat_id
         from telegram import Bot
-        self._bot = Bot(token=bot_token)
-        logger.info("TelegramSender 초기화 완료 (chat_id=%s)", chat_id)
+        from telegram.request import HTTPXRequest
+        request = HTTPXRequest(
+            connect_timeout=_CONNECT_TIMEOUT,
+            read_timeout=_READ_TIMEOUT,
+            write_timeout=_WRITE_TIMEOUT,
+        )
+        self._bot = Bot(token=bot_token, request=request)
+        logger.info(
+            "TelegramSender 초기화 완료 (chat_id=%s, timeout=%.0f/%.0f/%.0fs)",
+            chat_id, _CONNECT_TIMEOUT, _READ_TIMEOUT, _WRITE_TIMEOUT,
+        )
 
     async def send_text(self, message: str, parse_mode: str = "HTML") -> SendResult:
         """텍스트 메시지를 발송한다. 4096자 초과 시 자동 분할한다."""

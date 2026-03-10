@@ -29,12 +29,12 @@ _GATE_FRICTION = "friction"
 _GATE_RAG = "rag"
 
 # 데이터 미가용 시 게이트별 확신도 페널티이다
-# 핵심 지표(OBI, ML)는 높은 페널티, 보조 지표는 낮은 페널티를 부과한다
+# 페널티를 완화하여 데이터 부재 시에도 적극적 매매를 허용한다
 _MISSING_DATA_PENALTY: dict[str, float] = {
-    _GATE_OBI: 0.20,         # OBI 주문흐름: 핵심 — 20% 감점
-    _GATE_CROSS_ASSET: 0.10, # 크로스에셋: 보조 — 10% 감점
-    _GATE_WHALE: 0.10,       # 고래활동: 보조 — 10% 감점
-    _GATE_ML: 0.20,          # ML 실행강도: 핵심 — 20% 감점
+    _GATE_OBI: 0.10,         # OBI 주문흐름: 10% 감점 (데이터 부재 시 통과+페널티)
+    _GATE_CROSS_ASSET: 0.05, # 크로스에셋: 5% 감점
+    _GATE_WHALE: 0.05,       # 고래활동: 5% 감점
+    _GATE_ML: 0.10,          # ML 실행강도: 10% 감점
 }
 
 
@@ -177,22 +177,27 @@ def _calculate_confidence(bundle: IndicatorBundle, missing_penalty: float) -> fl
 
     실제 데이터가 있는 지표의 평균 점수를 기반으로 하되,
     데이터 미가용 게이트의 페널티를 차감한다.
-    모든 데이터가 없으면 0.0을 반환하여 진입을 차단한다.
+    핵심 데이터가 없으면 기술적 지표 기반 기본 확신도(0.5)를 사용한다.
     """
     scores: list[float] = []
     if bundle.order_flow is not None:
-        scores.append(min(bundle.order_flow.obi, 1.0))
+        scores.append(min(abs(bundle.order_flow.obi), 1.0))
     if bundle.momentum is not None:
         scores.append(min(bundle.momentum.alignment, 1.0))
     if bundle.whale is not None:
         scores.append(min(bundle.whale.total_score, 1.0))
 
     if not scores:
-        # 모든 핵심 데이터가 없으면 진입하지 않는다
-        logger.warning("진입 확신도 0.0: 핵심 지표 데이터가 전혀 없다")
-        return 0.0
+        # 핵심 데이터가 없어도 기술적 지표가 있으면 기본 확신도를 부여한다
+        if bundle.technical is not None:
+            logger.info("핵심 지표 부재 → 기술적 지표 기반 기본 확신도 0.5 적용")
+            base_confidence = 0.5
+        else:
+            logger.warning("진입 확신도 0.0: 모든 지표 데이터가 전혀 없다")
+            return 0.0
+    else:
+        base_confidence = sum(scores) / len(scores)
 
-    base_confidence = sum(scores) / len(scores)
     # 데이터 미가용 페널티를 차감한다
     adjusted = max(0.0, base_confidence - missing_penalty)
     return round(adjusted, 4)
@@ -210,15 +215,15 @@ def _calculate_position_size(
     실제 주식 수 변환은 trading_loop에서 수행한다.
     """
     base = params.default_position_size_pct
-    # 확신도에 따라 50~100% 범위로 조정한다
-    adjusted = base * (0.5 + 0.5 * confidence)
+    # 확신도에 따라 70~100% 범위로 조정한다 (더 공격적)
+    adjusted = base * (0.7 + 0.3 * confidence)
     # 레짐 배수를 적용한다 (mild_bear=0.5, crash=1.5 등)
     adjusted *= regime_multiplier
-    # 기존 포지션이 많으면 축소한다
+    # 기존 포지션이 많으면 축소하되 최소 50% 유지한다
     position_count = len(positions)
-    if position_count >= 5:
+    if position_count >= 7:
         adjusted *= 0.5
-    elif position_count >= 3:
+    elif position_count >= 5:
         adjusted *= 0.7
     return round(min(adjusted, params.max_position_pct), 2)
 
@@ -284,8 +289,8 @@ class EntryStrategy:
         all_passed = all(gates.values())
         confidence = _calculate_confidence(bundle, total_penalty) if all_passed else 0.0
 
-        # 확신도가 최소 임계값(0.3) 미만이면 사실상 차단한다
-        if all_passed and confidence < 0.3:
+        # 확신도가 최소 임계값(0.15) 미만이면 차단한다
+        if all_passed and confidence < 0.15:
             all_passed = False
             blocked_by = "low_confidence"
             logger.info(

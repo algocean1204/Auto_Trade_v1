@@ -83,19 +83,24 @@ class OrderFlowAggregator:
         """CacheClient 의존성을 주입받는다."""
         self._cache = cache
 
-    async def aggregate(self, ticker: str) -> OrderFlowSnapshot:
+    async def aggregate(self, ticker: str) -> OrderFlowSnapshot | None:
         """체결 데이터를 집계하여 주문 흐름 스냅샷을 반환한다.
 
         Args:
             ticker: 종목 코드
 
         Returns:
-            OrderFlowSnapshot (OBI, CVD, VPIN, 체결 강도)
+            OrderFlowSnapshot (OBI, CVD, VPIN, 체결 강도) 또는 데이터 부재 시 None
         """
         data = await self._load_flow_data(ticker)
         trades = data.get("trades", [])
         bids = data.get("bids", [])
         asks = data.get("asks", [])
+
+        # 체결/호가 데이터가 모두 비어있으면 데이터 부재로 판단한다
+        if not trades and not bids and not asks:
+            logger.debug("%s 주문 흐름 데이터 부재 (Redis 키 비어있음)", ticker)
+            return None
 
         obi = _calc_obi(bids, asks)
         cvd = _calc_cvd(trades)

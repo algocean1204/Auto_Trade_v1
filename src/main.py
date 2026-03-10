@@ -17,6 +17,12 @@ if _src_dir in _sys.path:
 
 import asyncio
 
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+except ImportError:
+    pass  # uvloop 미설치 시 기본 asyncio 폴백
+
 from src.common.logger import get_logger
 from src.monitoring.server.api_server import (
     create_app,

@@ -59,20 +59,27 @@ class CrossAssetMomentum:
         """CacheClient 의존성을 주입받는다."""
         self._cache = cache
 
-    async def calculate(self, ticker: str) -> MomentumScore:
+    async def calculate(self, ticker: str) -> MomentumScore | None:
         """ETF의 크로스 에셋 모멘텀을 분석한다.
 
         Args:
             ticker: ETF 종목 코드
 
         Returns:
-            MomentumScore (정렬도, 다이버전스, 리더 점수)
+            MomentumScore 또는 None (리더맵 미등록 / 데이터 미가용 시)
         """
         leaders = _LEADER_MAP.get(ticker, [])
         if not leaders:
-            return self._neutral_score()
+            logger.debug("크로스에셋 스킵: %s 리더맵 미등록", ticker)
+            return None
 
         leader_scores = await self._fetch_leader_scores(leaders)
+
+        # 리더 점수가 모두 기본값(0.0)이면 실제 데이터가 없는 것이다
+        if all(v == 0.0 for v in leader_scores.values()):
+            logger.debug("크로스에셋 스킵: %s 리더 모멘텀 데이터 없음", ticker)
+            return None
+
         etf_obi = await _read_obi(self._cache, ticker)
 
         alignment = self._calc_alignment(leader_scores)

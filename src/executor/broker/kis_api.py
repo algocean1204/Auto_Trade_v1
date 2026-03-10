@@ -28,6 +28,7 @@ from src.executor.broker.kis_response import (
     safe_float,
     safe_int,
 )
+from src.executor.broker.kis_throttle import get_kis_throttle
 
 logger = get_logger(__name__)
 
@@ -99,6 +100,7 @@ async def fetch_price(
     url = build_url(auth, _GET_PRICE)
 
     async def _call() -> dict:
+        await get_kis_throttle().before_query()
         headers = await auth.get_headers(_TR_PRICE)
         resp = await http.get(url, headers=headers, params=params)
         return check_response(resp, f"현재가 조회 {ticker}")
@@ -143,6 +145,7 @@ async def _fetch_present_balance(
     url = build_url(auth, _GET_PRESENT_BALANCE)
 
     async def _call() -> dict:
+        await get_kis_throttle().before_query()
         headers = await auth.get_headers(tr_id)
         resp = await http.get(url, headers=headers, params=params)
         return check_response(resp, "체결기준잔고 조회")
@@ -199,6 +202,7 @@ async def fetch_balance(
     url = build_url(auth, _GET_BALANCE)
 
     async def _call() -> dict:
+        await get_kis_throttle().before_query()
         headers = await auth.get_headers(tr_id)
         resp = await http.get(url, headers=headers, params=params)
         return check_response(resp, "잔고 조회")
@@ -288,6 +292,7 @@ async def fetch_buy_power(
     url = build_url(auth, _GET_BUY_POWER)
 
     async def _call() -> dict:
+        await get_kis_throttle().before_query()
         headers = await auth.get_headers(tr_id)
         resp = await http.get(url, headers=headers, params=params)
         return check_response(resp, "매수가능금액 조회")
@@ -313,6 +318,7 @@ async def submit_order(
     url = build_url(auth, _ORDER_PATH)
 
     async def _call() -> dict:
+        await get_kis_throttle().before_order()
         headers = await auth.get_headers(tr_id)
         resp = await http.post(url, json=body, headers=headers)
         return check_response(resp, f"주문 {order.side} {order.ticker}")
@@ -346,6 +352,7 @@ async def fetch_daily_candles(
     url = build_url(auth, _GET_DAILY)
 
     async def _call() -> dict:
+        await get_kis_throttle().before_query()
         headers = await auth.get_headers(_TR_DAILY)
         resp = await http.get(url, headers=headers, params=params)
         return check_response(resp, f"일봉 조회 {ticker}")

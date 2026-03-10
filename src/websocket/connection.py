@@ -10,6 +10,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
+import socket
+
 import aiohttp
 import websockets
 from Crypto.Cipher import AES
@@ -98,8 +100,22 @@ class WebSocketConnection:
         ws_url = _WS_URL_REAL if self._is_real else _WS_URL_VIRTUAL
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                self._ws = await websockets.connect(ws_url)
+                # TCP_NODELAY: 패킷 즉시 전송으로 지연 최소화한다
+                sock_factory = lambda: socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._ws = await websockets.connect(
+                    ws_url,
+                    additional_headers=None,
+                    ping_interval=20,
+                    ping_timeout=10,
+                )
                 self._connected = True
+                # TCP_NODELAY 적용: Nagle 알고리즘 비활성화로 즉시 전송한다
+                transport = self._ws.transport
+                if transport is not None:
+                    sock = transport.get_extra_info("socket")
+                    if sock is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        _logger.debug("TCP_NODELAY 적용 완료")
                 _logger.info("KIS WebSocket 연결 성공 (시도 %d)", attempt)
                 return
             except Exception as exc:

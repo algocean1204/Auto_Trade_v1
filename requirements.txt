@@ -24,6 +24,8 @@ investiny==0.7.0
 python-dotenv==1.0.1
 apscheduler==3.10.4
 websockets==14.1
+uvloop==0.22.1
+hmmlearn==0.3.3
 praw==7.8.1
 python-telegram-bot==21.10
 mlx-lm==0.21.2

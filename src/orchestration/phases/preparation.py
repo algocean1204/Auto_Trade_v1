@@ -116,7 +116,11 @@ async def _classify_news(system: InjectedSystem, articles: list[Any]) -> int:
         if classifier is None:
             logger.warning("[Step 3] NewsClassifier 미등록 (건너뜀)")
             return 0
-        classified = await classifier.classify(articles)  # type: ignore[union-attr]
+        import asyncio as _asyncio
+        classified = await _asyncio.wait_for(
+            classifier.classify(articles),  # type: ignore[union-attr]
+            timeout=120.0,  # 2분 타임아웃 — stuck 방지
+        )
         classified_dicts = [item.model_dump() for item in classified]
         logger.info("[Step 3] 뉴스 분류 완료: %d건", len(classified_dicts))
         high_impact = [a for a in classified_dicts
@@ -228,7 +232,11 @@ async def _run_comprehensive_analysis(system: InjectedSystem) -> None:
         )
 
         logger.info("[Step 5] 종합 분석 시작 (5개 AI 에이전트 순차 실행)")
-        report = await team.analyze(context)  # type: ignore[union-attr]
+        import asyncio as _asyncio
+        report = await _asyncio.wait_for(
+            team.analyze(context),  # type: ignore[union-attr]
+            timeout=180.0,  # 3분 타임아웃 — stuck 방지
+        )
 
         # 분석 결과를 Redis에 캐시하여 trading_loop에서 활용할 수 있도록 한다
         report_data = report.model_dump(mode="json")

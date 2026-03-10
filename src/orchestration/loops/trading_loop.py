@@ -39,12 +39,27 @@ def _pct_to_shares(pct: float, total_equity: float, price: float) -> int:
 
 
 def _get_current_price(bundle: object) -> float:
-    """IndicatorBundle에서 현재가를 추출한다. 없으면 0.0이다."""
+    """IndicatorBundle에서 현재가를 추출한다. 없으면 0.0이다.
+
+    우선순위: technical.ema_20 → intraday.vwap → volume_profile.poc_price
+    """
     tech = getattr(bundle, "technical", None)
     if tech is not None:
         ema = getattr(tech, "ema_20", 0.0)
         if ema > 0:
             return ema
+    # 기술적 지표 미가용 시 장중 VWAP을 폴백으로 사용한다
+    intraday = getattr(bundle, "intraday", None)
+    if intraday is not None:
+        vwap = getattr(intraday, "vwap", 0.0)
+        if vwap > 0:
+            return vwap
+    # 장중 지표도 미가용 시 볼륨 프로파일 POC를 폴백으로 사용한다
+    vp = getattr(bundle, "volume_profile", None)
+    if vp is not None:
+        poc = getattr(vp, "poc_price", 0.0)
+        if poc > 0:
+            return poc
     return 0.0
 
 
@@ -1102,7 +1117,14 @@ async def _run_regular_session(system: InjectedSystem) -> int:  # noqa: C901
                 # 퍼센트를 실제 주수로 변환한다
                 entry_price = _get_current_price(bun)
                 if entry_price <= 0:
-                    logger.debug("진입 건너뜀: %s 현재가 미확보", mt.ticker)
+                    # 번들에 가격 정보가 없으면 브로커 API로 직접 현재가를 조회한다
+                    try:
+                        pd = await system.components.broker.get_price(mt.ticker, exchange=mt.exchange)
+                        entry_price = pd.price
+                    except Exception:
+                        pass
+                if entry_price <= 0:
+                    logger.info("진입 건너뜀: %s 현재가 미확보 (지표+브로커 모두 실패)", mt.ticker)
                     continue
                 q = _pct_to_shares(final_pct, balance.total_equity, entry_price)
                 if q <= 0:

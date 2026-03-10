@@ -60,16 +60,19 @@ class WhaleTracker:
         """CacheClient 의존성을 주입받는다."""
         self._cache = cache
 
-    async def track(self, ticker: str) -> WhaleSignal:
+    async def track(self, ticker: str) -> WhaleSignal | None:
         """고래 활동을 분석한다.
 
         Args:
             ticker: 종목 코드
 
         Returns:
-            WhaleSignal (블록/아이스버그 점수, 방향)
+            WhaleSignal 또는 None (Redis 데이터 미가용 시)
         """
         trades = await self._load_trades(ticker)
+        if not trades:
+            logger.debug("고래 추적 스킵: %s Redis 체결 데이터 없음", ticker)
+            return None
         block_score, block_count, block_dir = _score_blocks(trades, _BLOCK_THRESHOLD_USD)
         ice_score, ice_count, ice_dir = _score_icebergs(trades, _ICEBERG_MIN_TRADES)
 
