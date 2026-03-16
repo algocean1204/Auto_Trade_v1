@@ -308,8 +308,8 @@ class _TradingScreenState extends State<TradingScreen> {
           cmp = ((a['current_value'] as num?) ?? 0)
               .compareTo((b['current_value'] as num?) ?? 0);
         default:
-          cmp = ((a['pnl_pct'] as num?) ?? 0)
-              .compareTo((b['pnl_pct'] as num?) ?? 0);
+          cmp = ((a['unrealized_pnl_pct'] as num?) ?? 0)
+              .compareTo((b['unrealized_pnl_pct'] as num?) ?? 0);
       }
       return _sortAsc ? cmp : -cmp;
     });
@@ -322,7 +322,7 @@ class _TradingScreenState extends State<TradingScreen> {
     final qty = pos['quantity'] as int? ?? 0;
     final avgPrice = (pos['avg_price'] as num?)?.toDouble() ?? 0.0;
     final currentPrice = (pos['current_price'] as num?)?.toDouble() ?? 0.0;
-    final pnlPct = (pos['pnl_pct'] as num?)?.toDouble() ?? 0.0;
+    final pnlPct = (pos['unrealized_pnl_pct'] as num?)?.toDouble() ?? 0.0;
     final currentValue = (pos['current_value'] as num?)?.toDouble() ?? 0.0;
     final pnlColor = tc.pnlColor(pnlPct);
 

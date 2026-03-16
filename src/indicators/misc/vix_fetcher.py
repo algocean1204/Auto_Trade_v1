@@ -1,4 +1,4 @@
-"""VIX 지수 조회기이다. Redis 캐시 -> FRED API -> 폴백 순서로 VIX를 조회한다.
+"""VIX 지수 조회기이다. 캐시 -> FRED API -> 폴백 순서로 VIX를 조회한다.
 
 ContangoDetector와 동일한 market:vix 키를 사용하므로 두 모듈이 공유 캐시를 참조한다.
 """
@@ -12,14 +12,16 @@ from src.common.secret_vault import SecretProvider
 logger = get_logger(__name__)
 
 _VIX_CACHE_KEY: str = "market:vix"
+_VIX3M_CACHE_KEY: str = "market:vix3m"
 _VIX_TTL: int = 3600  # 1시간 캐시 TTL이다
 _FALLBACK_VIX: float = 20.0  # 모든 소스 실패 시 사용하는 폴백 VIX이다
 
-# FRED VIXCLS API 엔드포인트이다. sort_order=desc&limit=1로 최신값만 가져온다
+# FRED API 엔드포인트이다. sort_order=desc&limit=1로 최신값만 가져온다
 _FRED_URL: str = (
     "https://api.stlouisfed.org/fred/series/observations"
 )
 _FRED_SERIES_ID: str = "VIXCLS"
+_FRED_VIX3M_SERIES_ID: str = "VXVCLS"  # CBOE VIX 3-Month (VIX3M)
 
 
 def _parse_fred_response(body: dict) -> float | None:
@@ -44,7 +46,7 @@ class VixFetcher:
     """VIX 지수를 조회하는 모듈이다.
 
     조회 우선순위:
-        1. Redis 캐시 (market:vix 키)
+        1. 캐시 (market:vix 키)
         2. FRED VIXCLS API (FRED_API_KEY 또는 DEMO_KEY)
         3. 폴백 값 20.0
     """
@@ -58,7 +60,7 @@ class VixFetcher:
         """의존성을 주입받는다.
 
         Args:
-            cache: Redis 캐시 클라이언트
+            cache: 캐시 클라이언트
             http: 비동기 HTTP 클라이언트
             vault: 시크릿 제공자 (FRED_API_KEY 조회용)
         """
@@ -74,10 +76,14 @@ class VixFetcher:
 
         캐시 히트 시 즉시 반환하고, 캐시 미스 시 FRED API를 호출한다.
         모든 소스 실패 시 폴백 값(20.0)을 반환한다.
+        VIX3M은 VIX 캐시 히트 여부와 무관하게 매번 갱신을 시도한다 (콘탱고 정합성).
 
         Returns:
             VIX 지수 값 (실수)
         """
+        # VIX3M도 매번 갱신 시도한다 — VIX가 캐시되어도 VIX3M이 stale하지 않도록 한다
+        await self._refresh_vix3m()
+
         cached = await self._read_from_cache()
         if cached is not None:
             logger.debug("VIX 캐시 히트: %.2f", cached)
@@ -93,7 +99,7 @@ class VixFetcher:
         return _FALLBACK_VIX
 
     async def _read_from_cache(self) -> float | None:
-        """Redis 캐시에서 VIX 값을 읽는다. 없거나 파싱 실패 시 None을 반환한다."""
+        """캐시에서 VIX 값을 읽는다. 없거나 파싱 실패 시 None을 반환한다."""
         try:
             raw = await self._cache.read(_VIX_CACHE_KEY)
             if raw is None:
@@ -126,9 +132,40 @@ class VixFetcher:
             return None
 
     async def _write_to_cache(self, vix: float) -> None:
-        """VIX 값을 Redis에 TTL과 함께 저장한다. 실패 시 무시한다."""
+        """VIX 값을 캐시에 TTL과 함께 저장한다. 실패 시 무시한다."""
         try:
             await self._cache.write(_VIX_CACHE_KEY, str(vix), ttl=_VIX_TTL)
             logger.debug("VIX 캐시 저장 완료: %.2f (TTL=%ds)", vix, _VIX_TTL)
         except Exception as exc:
             logger.warning("VIX 캐시 저장 실패 (무시): %s", exc)
+
+    async def _refresh_vix3m(self) -> None:
+        """FRED에서 VIX3M(VXVCLS)을 조회하여 캐시에 저장한다.
+
+        ContangoDetector가 market:vix3m 키로 읽어 콘탱고/백워데이션을 판별한다.
+        VIX와 동일한 TTL로 캐시하되, 캐시 유무와 무관하게 TTL 만료 시 갱신된다.
+        실패해도 VIX 조회에는 영향을 주지 않는다.
+        """
+        try:
+            # VIX3M도 VIX 캐시와 동일한 주기로 갱신한다 — 캐시 존재 시 건너뛴다
+            cached = await self._cache.read(_VIX3M_CACHE_KEY)
+            if cached is not None:
+                return
+            params = {
+                "series_id": _FRED_VIX3M_SERIES_ID,
+                "api_key": self._fred_api_key,
+                "file_type": "json",
+                "sort_order": "desc",
+                "limit": "1",
+            }
+            response = await self._http.get(_FRED_URL, params=params)
+            if not response.ok:
+                logger.warning("FRED VIX3M 응답 오류: status=%d", response.status)
+                return
+            body: dict = response.json()
+            value = _parse_fred_response(body)
+            if value is not None:
+                await self._cache.write(_VIX3M_CACHE_KEY, str(value), ttl=_VIX_TTL)
+                logger.info("FRED VIX3M 조회 성공: %.2f", value)
+        except Exception as exc:
+            logger.warning("VIX3M 조회 실패 (무시): %s", exc)

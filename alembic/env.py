@@ -1,4 +1,4 @@
-"""Alembic 마이그레이션 환경 설정이다."""
+"""Alembic 마이그레이션 환경 설정이다. SQLite(aiosqlite) 기반으로 동작한다."""
 from __future__ import annotations
 
 import os
@@ -21,25 +21,20 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 def get_url() -> str:
-    """DATABASE_URL 또는 개별 DB_* 환경변수에서 DB URL을 구성한다.
+    """DATABASE_URL 환경변수에서 DB URL을 구성한다.
 
-    SecretVault의 _build_composite_secrets()와 동일한 로직이다.
-    Alembic은 동기 드라이버(psycopg2)를 사용하므로 asyncpg를 변환한다.
+    SQLite 기반이므로 aiosqlite → sqlite 동기 드라이버로 변환한다.
+    Alembic은 동기 드라이버만 지원하기 때문이다.
     """
     from dotenv import load_dotenv
     load_dotenv()
 
-    url = os.getenv("DATABASE_URL", "")
-    if not url:
-        host = os.getenv("DB_HOST", "localhost")
-        port = os.getenv("DB_PORT", "5432")
-        user = os.getenv("DB_USER", "trading")
-        pw = os.getenv("DB_PASSWORD", "")
-        name = os.getenv("DB_NAME", "trading_system")
-        url = f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{name}"
+    url = os.getenv("DATABASE_URL", "sqlite:///data/trading.db")
 
-    # asyncpg -> psycopg2 변환 (Alembic은 동기 드라이버 사용)
-    return url.replace("+asyncpg", "+psycopg2").replace("postgresql://", "postgresql+psycopg2://")
+    # aiosqlite → sqlite 변환 (Alembic은 동기 드라이버 사용)
+    url = url.replace("sqlite+aiosqlite", "sqlite")
+
+    return url
 
 def run_migrations_offline() -> None:
     """오프라인 모드로 마이그레이션을 실행한다."""
@@ -49,6 +44,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_as_batch=True,  # SQLite는 ALTER TABLE 제한이 있으므로 batch 모드 사용
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -66,6 +62,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            render_as_batch=True,  # SQLite는 ALTER TABLE 제한이 있으므로 batch 모드 사용
         )
         with context.begin_transaction():
             context.run_migrations()

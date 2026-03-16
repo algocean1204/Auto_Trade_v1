@@ -102,6 +102,8 @@ class TradingControlProvider with ChangeNotifier {
 
   /// 폴링을 시작한다. 화면 진입 시 1회 호출한다.
   void startPolling() {
+    // 서버 포트를 감지한다 (외부에서 시작된 서버도 포트를 인식하기 위함).
+    _serverLauncher.isServerRunning();
     _fetchStatus();
     _pollingTimer?.cancel();
     _pollingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
@@ -159,6 +161,8 @@ class TradingControlProvider with ChangeNotifier {
     if (result.success) {
       _isConnected = true;
       _error = null;
+      // 서버가 바인드한 포트로 API/WS 연결을 갱신한다.
+      _apiService.refreshBaseUrl();
       notifyListeners();
       // 서버가 막 시작됐으므로 상태를 한 번 갱신한다.
       await _fetchStatus();
@@ -242,6 +246,16 @@ class TradingControlProvider with ChangeNotifier {
     }
   }
 
+  /// 서버를 수동으로 시작한다.
+  ///
+  /// 체인 구조에서 서버 시작 버튼이 직접 호출한다.
+  /// 이미 연결되어 있으면 즉시 true를 반환한다.
+  /// 시작 실패 시 false를 반환하고 _error에 메시지를 저장한다.
+  Future<bool> startServer() async {
+    if (_isConnected) return true;
+    return _ensureServer();
+  }
+
   /// 서버 프로세스를 중지한다.
   ///
   /// 이 앱이 시작한 프로세스만 종료한다.
@@ -318,6 +332,9 @@ class TradingControlProvider with ChangeNotifier {
 
       if (!_isConnected) {
         _isConnected = true;
+        // 서버 연결 성공 시 포트를 감지하고 갱신한다.
+        await _serverLauncher.isServerRunning();
+        _apiService.refreshBaseUrl();
         changed = true;
       }
       if (_isRunning != running) {

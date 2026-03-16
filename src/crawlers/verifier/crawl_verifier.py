@@ -1,7 +1,8 @@
 """F1 데이터 수집 -- 수집된 기사 품질 검증기이다.
 
-필드 완전성, 최소 내용 길이, 발행일 유효성, SHA-256 해시를 검증한다.
+필드 완전성, 발행일 유효성, SHA-256 해시를 검증한다.
 통과하지 못한 기사는 None으로 반환하여 파이프라인에서 제외된다.
+URL 정규화를 적용하여 추적 파라미터에 의한 해시 오판을 방지한다.
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from src.common.logger import get_logger
+from src.crawlers.dedup.article_dedup import _normalize_url
 from src.crawlers.models import RawArticle, VerifiedArticle
 
 logger = get_logger(__name__)
@@ -31,8 +33,12 @@ _CONTENT_LENGTH_CAP: int = 2000
 
 
 def _compute_content_hash(title: str, url: str) -> str:
-    """제목과 URL의 SHA-256 해시를 생성한다."""
-    raw = f"{title}|{url}"
+    """제목과 정규화된 URL의 SHA-256 해시를 생성한다.
+
+    URL을 정규화하여 utm 파라미터/www 등 변형에 의한 해시 불일치를 방지한다.
+    """
+    normalized = _normalize_url(url)
+    raw = f"{title}|{normalized}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -71,18 +77,18 @@ def _check_required_fields(article: RawArticle) -> bool:
 class CrawlVerifier:
     """크롤링된 기사 품질 검증기이다.
 
-    필드 완전성, 최소 내용 길이(50자), 24시간 이내 기사,
-    SHA-256 해시 생성을 수행한다.
+    필드 완전성(제목+URL), 24시간 이내 기사, SHA-256 해시 생성을 수행한다.
+    본문 길이는 quality_score에만 반영하고 하드 필터링하지 않는다.
     """
 
     def verify(self, article: RawArticle) -> VerifiedArticle | None:
-        """기사를 검증한다. 통과 시 VerifiedArticle, 실패 시 None을 반환한다."""
+        """기사를 검증한다. 통과 시 VerifiedArticle, 실패 시 None을 반환한다.
+
+        제목+URL만 있으면 유효하다. 본문 길이는 quality_score에 반영될 뿐
+        하드 필터로 사용하지 않는다 (Finviz/FRED/FearGreed 등 짧은 속보 보존).
+        """
         if not _check_required_fields(article):
             logger.debug("필수 필드 누락: %s", article.url)
-            return None
-
-        if len(article.content) < _MIN_CONTENT_LENGTH:
-            logger.debug("본문 길이 부족: %s (%d자)", article.url, len(article.content))
             return None
 
         if not _is_within_age_limit(article.published_at):

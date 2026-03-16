@@ -17,7 +17,23 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_PATH="$PROJECT_ROOT/.venv"
 LOG_DIR="$HOME/Library/Logs/trading"
 PID_FILE="$LOG_DIR/server.pid"
-PORT=9501
+PORT_FILE="$PROJECT_ROOT/data/server_port.txt"
+DEFAULT_PORT=9500
+
+# 포트 파일에서 현재 서버 포트를 읽는다. 파일이 없으면 기본값을 반환한다.
+read_port() {
+    if [ -f "$PORT_FILE" ]; then
+        local port
+        port=$(cat "$PORT_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$port" ] && [ "$port" -ge 9500 ] 2>/dev/null && [ "$port" -le 9505 ] 2>/dev/null; then
+            echo "$port"
+            return
+        fi
+    fi
+    echo "$DEFAULT_PORT"
+}
+
+PORT=$(read_port)
 
 # 로그 디렉토리 생성
 mkdir -p "$LOG_DIR"
@@ -100,7 +116,7 @@ start_docker_services() {
 }
 
 # ============================================
-# 포트 정리 (9501)
+# 포트 정리 (서버가 사용 중인 포트를 해제한다)
 # ============================================
 cleanup_port() {
     local port_pid
@@ -208,7 +224,7 @@ main() {
     unset CLAUDECODE
     unset CLAUDE_CODE
 
-    # 포트 사전 정리
+    # 포트 사전 정리 (이전 세션의 포트를 해제한다)
     cleanup_port
     wait_for_port_free
 
@@ -216,14 +232,19 @@ main() {
     export PYTHONPATH="$PROJECT_ROOT"
     export PYTHONUNBUFFERED=1
 
-    # 서버 시작 -- 종료 시간 제한 없이 영구 실행한다
-    log "서버 시작 중 (포트: $PORT)..."
+    # 서버 시작 -- 동적 포트 선택 (9500-9505), 종료 시간 제한 없이 영구 실행한다
+    log "서버 시작 중 (초기 포트: $PORT, 동적 선택 가능)..."
     python3 -m src.main \
         >> "$LOG_DIR/server_stdout.log" \
         2>> "$LOG_DIR/server_stderr.log" &
     local server_pid=$!
     echo "$server_pid" > "$PID_FILE"
     log "서버 PID: $server_pid"
+
+    # 서버가 포트 파일을 기록할 때까지 잠시 대기한 후 실제 포트를 갱신한다
+    sleep 5
+    PORT=$(read_port)
+    log "실제 서버 포트: $PORT (포트 파일: $PORT_FILE)"
 
     # 서버 프로세스가 종료될 때까지 대기한다
     # KeepAlive=true이므로 LaunchAgent가 비정상 종료 시 재시작한다

@@ -1,8 +1,9 @@
 """
-DatabaseGateway (C0.2) -- PostgreSQL 비동기 세션 팩토리를 생성하고 제공한다.
+DatabaseGateway (C0.2) -- SQLite 비동기 세션 팩토리를 생성하고 제공한다.
 
-asyncpg 드라이버 기반 SQLAlchemy 2.0 비동기 엔진을 관리한다.
-싱글톤 SessionFactory를 통해 프로젝트 전체에서 동일한 커넥션 풀을 공유한다.
+aiosqlite 드라이버 기반 SQLAlchemy 2.0 비동기 엔진을 관리한다.
+NullPool + WAL 모드로 동시성을 처리하며, 싱글톤 SessionFactory를 통해
+프로젝트 전체에서 동일한 엔진 인스턴스를 공유한다.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from contextlib import asynccontextmanager
 
 from src.common.logger import get_logger
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 logger = get_logger(__name__)
 
@@ -38,29 +41,45 @@ class Base(DeclarativeBase):
 class SessionFactory:
     """DB 세션 팩토리 -- async with get_session() as session 패턴이다.
 
-    SQLAlchemy 2.0 비동기 엔진과 세션 메이커를 내부에 보유하며,
+    SQLAlchemy 2.0 비동기 엔진(aiosqlite)과 세션 메이커를 내부에 보유하며,
     get_session() 컨텍스트 매니저로 자동 커밋/롤백을 관리한다.
+    NullPool을 사용하여 SQLite 파일 잠금 충돌을 방지한다.
     """
 
     def __init__(self, database_url: str) -> None:
-        """엔진과 세션 메이커를 초기화한다.
+        """엔진과 세션 메이커를 초기화한다. WAL PRAGMA를 커넥션 생성 시 자동 적용한다.
 
         Args:
-            database_url: PostgreSQL 접속 URL (asyncpg 드라이버 포함)
+            database_url: SQLite 접속 URL (aiosqlite 드라이버 포함)
         """
         self._engine: AsyncEngine = create_async_engine(
             database_url,
-            pool_size=10,
-            max_overflow=20,
-            pool_pre_ping=True,
+            poolclass=NullPool,
             echo=False,
         )
+
+        @event.listens_for(self._engine.sync_engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn: object, connection_record: object) -> None:
+            """커넥션 생성 시 SQLite WAL 모드와 성능 PRAGMA를 설정한다."""
+            cursor = dbapi_conn.cursor()  # type: ignore[union-attr]
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA cache_size=-64000")
+            cursor.close()
+
         self._session_maker: async_sessionmaker[AsyncSession] = async_sessionmaker(
             bind=self._engine,
             class_=AsyncSession,
             expire_on_commit=False,
         )
-        logger.info("DatabaseGateway 엔진 생성 완료 (pool_size=10, max_overflow=20)")
+        logger.info("DatabaseGateway 엔진 생성 완료 (SQLite WAL mode)")
+
+    async def create_tables(self) -> None:
+        """SQLite 테이블을 생성한다. 이미 존재하는 테이블은 건너뛴다."""
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("DatabaseGateway 테이블 생성/확인 완료")
 
     @asynccontextmanager
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
@@ -87,7 +106,7 @@ def get_session_factory(database_url: str | None = None) -> SessionFactory:
     최초 호출 시 database_url이 필수이다. 이후에는 캐싱된 인스턴스를 반환한다.
 
     Args:
-        database_url: PostgreSQL 접속 URL. 최초 호출 시 필수.
+        database_url: SQLite 접속 URL (aiosqlite 드라이버 포함). 최초 호출 시 필수.
 
     Returns:
         SessionFactory 싱글톤 인스턴스

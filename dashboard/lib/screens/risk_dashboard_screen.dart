@@ -455,7 +455,7 @@ class _RiskDashboardScreenState extends State<RiskDashboardScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Value at Risk (${var_.confidenceLevel.toStringAsFixed(0)}%)',
+                  'Value at Risk (${(var_.confidenceLevel <= 1.0 ? var_.confidenceLevel * 100 : var_.confidenceLevel).toStringAsFixed(0)}%)',
                   style: AppTypography.bodyMedium,
                 ),
                 AppSpacing.vGapXs,

@@ -23,7 +23,7 @@ from src.websocket.subscriber import subscribe_tickers, unsubscribe_tickers
 
 if TYPE_CHECKING:
     from src.websocket.connection import WebSocketConnection
-    from src.websocket.storage.redis_publisher import RedisPublisher
+    from src.websocket.storage.cache_publisher import CachePublisher
     from src.websocket.storage.tick_writer import TickWriter
 
 _logger = get_logger(__name__)
@@ -36,14 +36,14 @@ class WebSocketManager:
     """KIS WebSocket 전체 생명주기 관리자이다.
 
     연결, 메시지 수신 루프, 핸들러 디스패치, 인디케이터 업데이트,
-    DB 기록, Redis 발행을 오케스트레이션한다.
+    DB 기록, 캐시 발행을 오케스트레이션한다.
     """
 
     def __init__(
         self,
         connection: WebSocketConnection,
         tick_writer: TickWriter | None = None,
-        publisher: RedisPublisher | None = None,
+        publisher: CachePublisher | None = None,
     ) -> None:
         """연결 및 저장소 의존성으로 초기화한다."""
         self._conn = connection

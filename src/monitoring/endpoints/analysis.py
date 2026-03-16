@@ -10,9 +10,14 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
+from src.monitoring.schemas.analysis_schemas import (
+    AnalysisTickersResponse,
+    ComprehensiveAnalysisResponse,
+    TickerItem,
+    TickerNewsResponse,
+)
 
 if TYPE_CHECKING:
     from src.orchestration.init.dependency_injector import InjectedSystem
@@ -28,37 +33,6 @@ _ANALYSIS_CACHE_TTL: int = 1800
 
 # 캐시 신선도 판별 기준(초) -- 30분이다
 _CACHE_FRESHNESS_SECONDS: int = 1800
-
-
-class TickerItem(BaseModel):
-    """티커 항목 모델이다."""
-
-    ticker: str
-    name: str
-    sector: str
-
-
-class AnalysisTickersResponse(BaseModel):
-    """분석 가능 티커 목록 응답 모델이다."""
-
-    tickers: list[TickerItem] = Field(default_factory=list)
-    count: int = 0
-
-
-class ComprehensiveAnalysisResponse(BaseModel):
-    """종합 분석 응답 모델이다."""
-
-    ticker: str
-    analysis: dict[str, Any] | None = None
-    source: str = ""
-    message: str = ""
-
-
-class TickerNewsResponse(BaseModel):
-    """티커별 뉴스 응답 모델이다."""
-
-    ticker: str
-    articles: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def set_analysis_deps(system: InjectedSystem) -> None:
@@ -89,6 +63,44 @@ def _is_cache_fresh(cached: dict) -> bool:
     except (ValueError, TypeError):
         _logger.debug("캐시 timestamp 파싱 실패: %s", ts_str)
         return False
+
+
+def _extract_news_summary(data: Any, ticker: str) -> str:
+    """JSON으로 파싱된 뉴스 캐시 데이터에서 AI 분석용 텍스트 요약을 추출한다.
+
+    잘린 JSON 문자열이 AI에 전달되는 것을 방지한다.
+    dict이면 title/summary/headline 등의 필드를, list이면 각 항목의 제목을 연결한다.
+    """
+    if isinstance(data, dict):
+        # 요약 필드 우선, 없으면 title/headline 사용
+        text = (
+            data.get("summary")
+            or data.get("title")
+            or data.get("headline")
+            or data.get("headline_kr")
+            or ""
+        )
+        return str(text)[:500] if text else f"{ticker} 분석 요청"
+
+    if isinstance(data, list):
+        # 뉴스 기사 목록에서 제목만 추출하여 세미콜론으로 연결한다
+        titles: list[str] = []
+        for item in data[:10]:
+            if isinstance(item, dict):
+                t = (
+                    item.get("headline_kr")
+                    or item.get("headline")
+                    or item.get("title")
+                    or ""
+                )
+                if t:
+                    titles.append(str(t))
+            elif isinstance(item, str):
+                titles.append(item)
+        return "; ".join(titles)[:500] if titles else f"{ticker} 분석 요청"
+
+    # str이나 기타 타입이면 문자열로 변환 후 자른다
+    return str(data)[:500]
 
 
 async def _trigger_realtime_analysis(ticker: str) -> dict[str, Any] | None:
@@ -329,13 +341,15 @@ async def _build_ticker_context(ticker: str) -> object:
     news_summary = f"{ticker} 분석 요청"
     indicators: dict = {}
     try:
-        raw_news = await cache.read(f"news:{ticker}")
-        if raw_news:
-            news_summary = raw_news[:500]
+        # 티커별 뉴스를 JSON으로 읽어 요약 텍스트를 구성한다
+        ticker_news = await cache.read_json(f"news:{ticker}")
+        if ticker_news:
+            news_summary = _extract_news_summary(ticker_news, ticker)
         else:
-            raw_global = await cache.read("news:latest_summary")
-            if raw_global:
-                news_summary = raw_global[:500]
+            # 글로벌 뉴스 요약도 JSON으로 읽어 잘린 JSON이 AI에 전달되지 않도록 한다
+            global_news = await cache.read_json("news:latest_summary")
+            if global_news:
+                news_summary = _extract_news_summary(global_news, ticker)
 
         raw_ind = await cache.read_json("indicators:latest")
         if raw_ind and isinstance(raw_ind, dict):
@@ -367,8 +381,12 @@ async def _enrich_analysis_data(
     if "analysis_timestamp" not in data and "timestamp" in data:
         data["analysis_timestamp"] = data["timestamp"]
 
-    # current_price / price_change_pct 보강 — 실가격이 아닌 근사값이 있으면 덮어쓴다
-    if "current_price" not in data or "price_change_pct" not in data:
+    # current_price / price_change_pct 보강
+    # 키가 없거나 값이 0 이하(이전 실패 결과)이면 실시간 가격을 조회한다
+    existing_price = data.get("current_price")
+    needs_price = existing_price is None or existing_price <= 0
+    needs_change = "price_change_pct" not in data
+    if needs_price or needs_change:
         try:
             broker = _system.components.broker
             # TickerRegistry에서 정확한 거래소 코드를 가져온다
@@ -378,12 +396,37 @@ async def _enrich_analysis_data(
             except (KeyError, AttributeError):
                 pass
             price_data = await broker.get_price(ticker_upper, _exc)
-            data["current_price"] = round(price_data.price, 2)
-            data["price_change_pct"] = round(price_data.change_pct, 2)
+            if price_data.price > 0:
+                data["current_price"] = round(price_data.price, 2)
+                data["price_change_pct"] = round(price_data.change_pct, 2)
+            else:
+                _logger.debug("브로커 가격 0 반환, 일봉 폴백 시도: %s", ticker_upper)
+                raise ValueError("브로커 가격 0")
         except Exception:
-            _logger.debug("가격 보강 실패: %s", ticker_upper)
-            data.setdefault("current_price", 0.0)
-            data.setdefault("price_change_pct", 0.0)
+            _logger.debug("브로커 가격 조회 실패, 일봉 폴백: %s", ticker_upper)
+            # 일봉 데이터에서 최신 종가를 추출한다
+            try:
+                broker = _system.components.broker
+                _exc2 = "NAS"
+                try:
+                    _exc2 = _system.components.registry.get_exchange_code(ticker_upper)
+                except (KeyError, AttributeError):
+                    pass
+                candles = await broker.get_daily_candles(ticker_upper, days=5, exchange=_exc2)
+                if candles and candles[0].close > 0:
+                    data["current_price"] = round(candles[0].close, 2)
+                    if len(candles) > 1 and candles[1].close > 0:
+                        pct = ((candles[0].close - candles[1].close) / candles[1].close) * 100
+                        data["price_change_pct"] = round(pct, 2)
+                    else:
+                        data.setdefault("price_change_pct", 0.0)
+                else:
+                    data.setdefault("current_price", 0.0)
+                    data.setdefault("price_change_pct", 0.0)
+            except Exception:
+                _logger.debug("일봉 폴백도 실패: %s", ticker_upper)
+                data.setdefault("current_price", 0.0)
+                data.setdefault("price_change_pct", 0.0)
 
     # technical_summary 보강
     if "technical_summary" not in data:
@@ -567,12 +610,12 @@ async def get_comprehensive_analysis(
 ) -> ComprehensiveAnalysisResponse:
     """티커 종합 분석 결과를 반환한다.
 
-    1. Redis 캐시에서 조회한다 -- 30분 이내 결과가 있으면 즉시 반환한다.
+    1. 캐시에서 조회한다 -- 30분 이내 결과가 있으면 즉시 반환한다.
     2. 캐시 미스 또는 stale이면 실시간 분석을 트리거한다:
        a. ComprehensiveTeam AI 분석 (ai=True일 때)
        b. IndicatorBundleBuilder 기술 지표 폴백
        c. yfinance 기본 시장 데이터 폴백
-    3. 분석 결과를 Redis에 30분 TTL로 캐시한다.
+    3. 분석 결과를 30분 TTL로 캐시에 저장한다.
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -581,7 +624,7 @@ async def get_comprehensive_analysis(
         cache = _system.components.cache
         cache_key = f"analysis:{ticker_upper}"
 
-        # 1. Redis 캐시에서 신선한 결과를 조회한다
+        # 1. 캐시에서 신선한 결과를 조회한다
         cached = await cache.read_json(cache_key)
         if cached and isinstance(cached, dict) and _is_cache_fresh(cached):
             _logger.debug("종합 분석 캐시 히트 (fresh): %s", ticker_upper)
@@ -607,7 +650,7 @@ async def get_comprehensive_analysis(
         if analysis_data is not None:
             # 2.5. 대시보드 렌더링에 필요한 부가 데이터를 보강한다
             analysis_data = await _enrich_analysis_data(ticker_upper, analysis_data)
-            # 3. 결과를 Redis에 캐시한다
+            # 3. 결과를 캐시에 저장한다
             await cache.write_json(cache_key, analysis_data, ttl=_ANALYSIS_CACHE_TTL)
             _logger.info(
                 "실시간 분석 완료 및 캐시 저장: %s (source=%s)",

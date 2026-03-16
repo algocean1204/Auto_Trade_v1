@@ -1,7 +1,7 @@
 """F7.26 AlertsEndpoints -- 알림/경보 조회 API이다.
 
-안전 모듈에서 Redis에 저장한 알림 목록 조회, 읽음 처리 기능을 제공한다.
-Redis 키 구조:
+안전 모듈에서 캐시에 저장한 알림 목록 조회, 읽음 처리 기능을 제공한다.
+캐시 키 구조:
   - alerts:list  : list[dict] 형태의 알림 전체 목록 (안전 모듈이 저장)
   - alerts:read  : set 형태의 읽음 처리된 alert_id 집합
 """
@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.common.logger import get_logger
-from src.monitoring.server.auth import verify_api_key  # noqa: F401 -- 필요 시 사용
+from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
     from src.orchestration.init.dependency_injector import InjectedSystem
@@ -28,7 +28,11 @@ _system: InjectedSystem | None = None
 # ── 응답 모델 ──────────────────────────────────────────────────────────────
 
 class AlertItem(BaseModel):
-    """알림 단건 모델이다."""
+    """알림 단건 모델이다.
+
+    Flutter가 alert_type, title, data, created_at 키를 기대하므로
+    기존 type/timestamp와 동일한 값을 중복 필드로 제공한다.
+    """
 
     id: str
     type: str
@@ -36,6 +40,21 @@ class AlertItem(BaseModel):
     severity: str          # INFO | WARNING | CRITICAL
     timestamp: str
     read: bool
+    # Flutter 호환 중복 필드
+    alert_type: str = ""
+    title: str = ""
+    data: dict | None = None
+    created_at: str = ""
+
+    def model_post_init(self, __context: object) -> None:
+        """type → alert_type, timestamp → created_at, message → title 동기화."""
+        if not self.alert_type:
+            self.alert_type = self.type
+        if not self.created_at:
+            self.created_at = self.timestamp
+        if not self.title:
+            # type을 기반으로 간결한 제목을 생성한다
+            self.title = self.type.replace("_", " ").title() if self.type else self.message[:50]
 
 
 class AlertListResponse(BaseModel):
@@ -77,7 +96,7 @@ def _require_system() -> None:
 
 
 async def _get_read_ids() -> set[str]:
-    """Redis에서 읽음 처리된 alert_id 집합을 가져온다.
+    """캐시에서 읽음 처리된 alert_id 집합을 가져온다.
 
     저장 형식: alerts:read 키에 list[str]로 저장되어 있다.
     """
@@ -89,7 +108,7 @@ async def _get_read_ids() -> set[str]:
 
 
 async def _get_raw_alerts() -> list[dict]:
-    """Redis alerts:list에서 원시 알림 목록을 가져온다."""
+    """캐시 alerts:list에서 원시 알림 목록을 가져온다."""
     cache = _system.components.cache  # type: ignore[union-attr]
     cached = await cache.read_json("alerts:list")
     if isinstance(cached, list):
@@ -98,7 +117,10 @@ async def _get_raw_alerts() -> list[dict]:
 
 
 def _build_alert_item(raw: dict, read_ids: set[str]) -> AlertItem:
-    """원시 dict를 AlertItem으로 변환한다."""
+    """원시 dict를 AlertItem으로 변환한다.
+
+    원시 데이터에 data 필드가 있으면 함께 전달한다.
+    """
     alert_id = str(raw.get("id", ""))
     return AlertItem(
         id=alert_id,
@@ -107,22 +129,42 @@ def _build_alert_item(raw: dict, read_ids: set[str]) -> AlertItem:
         severity=str(raw.get("severity", "INFO")),
         timestamp=str(raw.get("timestamp", "")),
         read=alert_id in read_ids,
+        data=raw.get("data"),
     )
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────
 
 @alerts_router.get("/", response_model=AlertListResponse)
-async def get_alerts(limit: int = 100) -> AlertListResponse:
+async def get_alerts(
+    limit: int = 100,
+    alert_type: str | None = None,
+    severity: str | None = None,
+) -> AlertListResponse:
     """전체 알림 목록을 반환한다.
 
-    Redis alerts:list에서 최신 알림을 읽고, 읽음 상태를 합산하여 반환한다.
+    캐시 alerts:list에서 최신 알림을 읽고, 읽음 상태를 합산하여 반환한다.
+    alert_type, severity 쿼리 파라미터로 필터링할 수 있다.
     limit 파라미터로 최대 반환 건수를 제한한다.
     """
     _require_system()
     try:
         raw_alerts = await _get_raw_alerts()
         read_ids = await _get_read_ids()
+
+        # alert_type 필터: 해당 type만 남긴다
+        if alert_type is not None:
+            raw_alerts = [
+                a for a in raw_alerts
+                if str(a.get("type", "")).upper() == alert_type.upper()
+            ]
+
+        # severity 필터: 해당 severity만 남긴다
+        if severity is not None:
+            raw_alerts = [
+                a for a in raw_alerts
+                if str(a.get("severity", "")).upper() == severity.upper()
+            ]
 
         # 최신 순으로 정렬 (timestamp 기준 역순)
         sorted_alerts = sorted(
@@ -168,10 +210,13 @@ async def get_unread_count() -> AlertUnreadCountResponse:
 
 
 @alerts_router.post("/{alert_id}/read", response_model=AlertMarkReadResponse)
-async def mark_alert_read(alert_id: str) -> AlertMarkReadResponse:
-    """지정된 알림을 읽음 처리한다.
+async def mark_alert_read(
+    alert_id: str,
+    _key: str = Depends(verify_api_key),
+) -> AlertMarkReadResponse:
+    """지정된 알림을 읽음 처리한다. 인증 필수.
 
-    Redis alerts:read 목록에 alert_id를 추가한다.
+    캐시 alerts:read 목록에 alert_id를 추가한다.
     존재하지 않는 alert_id여도 읽음 처리는 성공으로 간주한다.
     """
     _require_system()

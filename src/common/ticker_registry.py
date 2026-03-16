@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from src.common.universe_persister import UniversePersister
@@ -17,7 +17,13 @@ _instance: TickerRegistry | None = None
 
 
 class TickerMeta(BaseModel):
-    """개별 ETF 메타 정보이다."""
+    """개별 ETF 메타 정보이다.
+
+    DB(UniverseConfig)에서 로드 시 id, created_at, updated_at 등
+    extra 필드가 전달될 수 있으므로 무시한다.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     ticker: str
     name: str

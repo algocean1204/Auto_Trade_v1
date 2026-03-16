@@ -193,3 +193,90 @@ async def ensemble_classify(
     return await loop.run_in_executor(
         _executor, _sync_ensemble_classify, text, categories,
     )
+
+
+def _single_fast_classify(model: Any, text: str, categories: list[str]) -> str:
+    """센티넬용 금융 뉴스 특화 단일 모델 분류이다. 카테고리 문자열을 반환한다."""
+    cats_str = ", ".join(categories)
+    response: dict = model.create_chat_completion(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"You are a financial news urgency classifier for US leveraged ETF trading.\n"
+                    f"Classify the headline into exactly one of: [{cats_str}].\n"
+                    f"urgent: market crash, Fed emergency, circuit breaker, flash crash, war outbreak, "
+                    f"major bankruptcy, sanctions, tariff shock — anything requiring immediate trading action.\n"
+                    f"watch: significant earnings miss/beat, sector rotation, policy change, "
+                    f"notable market move — important but not immediately actionable.\n"
+                    f"normal: routine reports, minor moves, opinion pieces, scheduled events.\n"
+                    "Output ONLY the category name. No explanation."
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+        max_tokens=20,
+        temperature=0.0,
+    )
+    raw: str = response["choices"][0]["message"]["content"].strip()
+    cleaned = _strip_thinking(raw)
+    matched = next((c for c in categories if c.lower() in cleaned.lower()), None)
+    if matched is None:
+        matched = next((c for c in categories if c.lower() in raw.lower()), None)
+    return matched or categories[-1]  # 매칭 실패 시 normal(마지막) 반환
+
+
+def _sync_fast_classify(
+    text: str, categories: list[str],
+) -> tuple[str, float, str]:
+    """센티넬용 빠른 3모델 앙상블이다.
+
+    일반 앙상블과 동일한 3모델 다수결이지만,
+    입력 텍스트를 200자로 제한하고 금융 도메인 특화 프롬프트를 사용한다.
+    """
+    models = _load_classifiers()
+    votes: dict[str, str] = {}
+    short_text = text[:200]
+
+    for name, model in models.items():
+        try:
+            votes[name] = _single_fast_classify(model, short_text, categories)
+        except Exception:
+            logger.warning("%s 빠른 분류 실패, 건너뜀", name)
+
+    if not votes:
+        return categories[0], 0.3, "모든 모델 빠른 분류 실패"
+
+    counter: Counter[str] = Counter(votes.values())
+    winner, count = counter.most_common(1)[0]
+
+    confidence_map: dict[int, float] = {3: 0.95, 2: 0.80, 1: 0.50}
+    confidence = confidence_map.get(count, 0.50)
+
+    reasoning = " | ".join(f"{k}={v}" for k, v in votes.items())
+    return winner, confidence, reasoning
+
+
+# 센티넬 fast_classify 타임아웃 — 뉴스 파이프라인이 executor를 점유해도 대기하지 않는다
+_FAST_CLASSIFY_TIMEOUT: float = 30.0
+
+
+async def fast_classify(
+    text: str, categories: list[str],
+) -> tuple[str, float, str]:
+    """센티넬용 빠른 3모델 앙상블이다. 헤드라인 200자 제한으로 속도 우선한다.
+
+    뉴스 파이프라인이 executor를 점유 중이면 최대 30초만 대기한다.
+    타임아웃 시 첫 번째 카테고리 + 낮은 confidence를 반환한다.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(
+                _executor, _sync_fast_classify, text, categories,
+            ),
+            timeout=_FAST_CLASSIFY_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("fast_classify 타임아웃 (%.0fs) — executor 점유 중", _FAST_CLASSIFY_TIMEOUT)
+        return categories[0], 0.3, "executor 점유로 타임아웃"

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from src.common.broker_gateway import BalanceData
 from src.common.logger import get_logger
 from src.common.ticker_registry import get_ticker_registry
+from src.strategy.params.strategy_params import StrategyParamsManager
 
 _logger = get_logger(__name__)
 
@@ -30,13 +31,23 @@ class SafetyCheckResult(BaseModel):
 class HardSafety:
     """최상위 안전 장치이다. 모든 매매 전 반드시 통과해야 한다."""
 
-    def __init__(self, max_position_pct: float = 15.0) -> None:
+    def __init__(self, max_position_pct: float | None = None) -> None:
         """초기화한다.
 
         Args:
-            max_position_pct: 단일 종목 최대 비중(%). 기본 15%.
+            max_position_pct: 단일 종목 최대 비중(%). None이면
+                strategy_params.json에서 로드한다.
         """
-        self._max_position_pct = max_position_pct
+        if max_position_pct is not None:
+            self._max_position_pct = max_position_pct
+        else:
+            # strategy_params.json의 max_position_pct를 기준으로 사용한다
+            params = StrategyParamsManager().load()
+            self._max_position_pct = params.max_position_pct
+            _logger.info(
+                "HardSafety max_position_pct=%.2f%% (strategy_params.json)",
+                self._max_position_pct,
+            )
         self._registry = get_ticker_registry()
 
     def check(

@@ -29,6 +29,7 @@ import 'providers/trading_mode_provider.dart';
 import 'providers/trading_control_provider.dart';
 import 'providers/scalper_tape_provider.dart';
 import 'providers/manual_trade_provider.dart';
+import 'providers/token_provider.dart';
 import 'screens/shell_screen.dart';
 
 class AiTradingApp extends StatelessWidget {
@@ -101,6 +102,8 @@ class AiTradingApp extends StatelessWidget {
         // 수동 매매 상태
         ChangeNotifierProvider(
             create: (_) => ManualTradeProvider(apiService)),
+        // KIS 토큰 발급 및 유효성 상태
+        ChangeNotifierProvider(create: (_) => TokenProvider()..initialize()),
         // WebSocket 서비스 (Provider로 노출)
         Provider<WebSocketService>(create: (_) => wsService),
         Provider<ApiService>(create: (_) => apiService),

@@ -92,7 +92,7 @@ class KeyNews(BaseModel):
     category: str
     tickers_affected: list[str]
     summary: str
-    source: str = ""
+    source: str = "unknown"
 
 
 class FeedbackReport(BaseModel):

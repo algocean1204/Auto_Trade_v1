@@ -1,7 +1,7 @@
 """F7.25 ChartsEndpoints -- 차트 데이터 API이다.
 
 일별 수익률, 누적 수익률, 히트맵, 낙폭 차트 데이터를 제공한다.
-Redis 캐시에서 읽으며, 데이터 없으면 빈 배열을 반환한다.
+캐시에서 읽으며, 데이터 없으면 빈 배열을 반환한다.
 Flutter 대시보드에서 /dashboard/charts/* 경로로 호출한다.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ def set_charts_deps(system: InjectedSystem) -> None:
 async def get_daily_returns(days: int = 30) -> ChartListResponse:
     """일별 PnL 수익률 목록을 반환한다.
 
-    Redis 캐시 키: charts:daily_returns
+    캐시 키: charts:daily_returns
     EOD 시퀀스에서 저장한다. 데이터 없으면 빈 배열 반환.
     Flutter DailyReturn.fromJson 형식:
       [{"date": "YYYY-MM-DD", "pnl": float, "pnl_pct": float}, ...]
@@ -68,7 +68,7 @@ async def get_daily_returns(days: int = 30) -> ChartListResponse:
 async def get_cumulative_returns() -> ChartListResponse:
     """누적 수익률 데이터를 반환한다.
 
-    Redis 캐시 키: charts:cumulative_returns
+    캐시 키: charts:cumulative_returns
     데이터가 없는 경우 빈 배열을 반환한다.
     Flutter CumulativeReturn.fromJson 형식:
       [{"date": "YYYY-MM-DD", "cumulative_pct": float, "benchmark_pct": float}, ...]
@@ -91,7 +91,7 @@ async def get_cumulative_returns() -> ChartListResponse:
 async def get_ticker_heatmap(days: int = 30) -> ChartListResponse:
     """티커별 히트맵 데이터를 반환한다.
 
-    Redis 캐시 키: charts:heatmap_ticker
+    캐시 키: charts:heatmap_ticker
     Flutter HeatmapPoint.fromJson 형식:
       [{"ticker": str, "value": float, "label": str}, ...]
     """
@@ -113,7 +113,7 @@ async def get_ticker_heatmap(days: int = 30) -> ChartListResponse:
 async def get_hourly_heatmap() -> ChartListResponse:
     """시간대별 히트맵 데이터를 반환한다.
 
-    Redis 캐시 키: charts:heatmap_hourly
+    캐시 키: charts:heatmap_hourly
     Flutter HeatmapPoint.fromJson 형식:
       [{"hour": int, "value": float, "label": str}, ...]
     """
@@ -135,7 +135,7 @@ async def get_hourly_heatmap() -> ChartListResponse:
 async def get_drawdown() -> ChartListResponse:
     """최대 낙폭(Drawdown) 데이터를 반환한다.
 
-    Redis 캐시 키: charts:drawdown
+    캐시 키: charts:drawdown
     Flutter DrawdownPoint.fromJson 형식:
       [{"date": "YYYY-MM-DD", "drawdown_pct": float}, ...]
     """

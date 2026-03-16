@@ -22,7 +22,7 @@ def _to_key_news(news: ClassifiedNews) -> KeyNews:
         category=news.category,
         tickers_affected=news.tickers_affected,
         summary=summary,
-        source=news.source,
+        source=news.source or "unknown",
     )
 
 

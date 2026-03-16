@@ -6,11 +6,11 @@
 조립 대상 필드:
   technical      -- 일봉 기반 RSI/MACD/볼린저/ATR/EMA/SMA
   intraday       -- 5분봉 기반 VWAP/장중RSI/볼린저
-  momentum       -- Redis 기반 크로스 에셋 모멘텀
+  momentum       -- 캐시 기반 크로스 에셋 모멘텀
   volume_profile -- 일봉 기반 POC + Value Area 70%
-  whale          -- Redis 기반 블록/아이스버그 고래 감지
-  order_flow     -- Redis 기반 OBI/CVD/VPIN/체결강도
-  contango       -- Redis VIX 기간구조 콘탱고 감지
+  whale          -- 캐시 기반 블록/아이스버그 고래 감지
+  order_flow     -- 캐시 기반 OBI/CVD/VPIN/체결강도
+  contango       -- 캐시 VIX 기간구조 콘탱고 감지
   nav_premium    -- 브로커 실시간 NAV 프리미엄 추적
   decay          -- 일봉 기반 레버리지 변동성 드래그 정량화
 """
@@ -89,7 +89,7 @@ async def _fetch_intraday(
 
 
 async def _fetch_order_flow(cache: CacheClient, ticker: str) -> OrderFlowSnapshot | None:
-    """Redis에서 주문 흐름 스냅샷을 조회한다. 실패 시 None을 반환한다."""
+    """캐시에서 주문 흐름 스냅샷을 조회한다. 실패 시 None을 반환한다."""
     try:
         from src.indicators.misc.order_flow_aggregator import OrderFlowAggregator
 
@@ -100,7 +100,7 @@ async def _fetch_order_flow(cache: CacheClient, ticker: str) -> OrderFlowSnapsho
 
 
 async def _fetch_momentum(cache: CacheClient, ticker: str) -> MomentumScore | None:
-    """Redis에서 크로스 에셋 모멘텀을 계산한다. 실패 시 None을 반환한다."""
+    """캐시에서 크로스 에셋 모멘텀을 계산한다. 실패 시 None을 반환한다."""
     try:
         from src.indicators.cross_asset.cross_asset_momentum import CrossAssetMomentum
 
@@ -141,7 +141,7 @@ async def _fetch_volume_profile(
 
 
 async def _fetch_whale(cache: CacheClient, ticker: str) -> WhaleSignal | None:
-    """Redis 체결 데이터에서 고래 활동(블록/아이스버그)을 감지한다. 실패 시 None을 반환한다."""
+    """캐시 체결 데이터에서 고래 활동(블록/아이스버그)을 감지한다. 실패 시 None을 반환한다."""
     try:
         from src.indicators.whale.whale_tracker import WhaleTracker
 
@@ -152,7 +152,7 @@ async def _fetch_whale(cache: CacheClient, ticker: str) -> WhaleSignal | None:
 
 
 async def _fetch_contango(cache: CacheClient, broker: BrokerClient) -> ContangoState | None:
-    """Redis VIX 기간구조로 콘탱고/백워데이션 상태를 감지한다. 실패 시 None을 반환한다.
+    """캐시 VIX 기간구조로 콘탱고/백워데이션 상태를 감지한다. 실패 시 None을 반환한다.
 
     종목별 계산이 아닌 시장 전체 상태를 반환하므로 ticker 인수가 없다.
     """
@@ -232,7 +232,7 @@ class IndicatorBundleBuilder:
 
         Args:
             broker: KIS 브로커 클라이언트 (일봉/현재가/NAV 조회용)
-            cache: Redis 캐시 클라이언트 (주문흐름/고래/모멘텀/VIX 조회용)
+            cache: 캐시 클라이언트 (주문흐름/고래/모멘텀/VIX 조회용)
             registry: 티커 메타 레지스트리 (거래소 코드/레버리지 조회용)
             http: Finnhub HTTP 클라이언트 (5분봉 조회용, None이면 장중 지표 스킵)
             finnhub_api_key: Finnhub API 키 (None이면 장중 지표 스킵)
@@ -249,11 +249,11 @@ class IndicatorBundleBuilder:
         조립 순서:
           1. technical      -- 일봉 → RSI/MACD/볼린저/ATR/EMA/SMA
           2. intraday       -- 5분봉 → VWAP/장중RSI/볼린저
-          3. momentum       -- Redis → 크로스 에셋 모멘텀
+          3. momentum       -- 캐시 → 크로스 에셋 모멘텀
           4. volume_profile -- 일봉 → POC/Value Area
-          5. whale          -- Redis → 블록/아이스버그 고래 감지
-          6. order_flow     -- Redis → OBI/CVD/VPIN/체결강도
-          7. contango       -- Redis VIX → 콘탱고/백워데이션
+          5. whale          -- 캐시 → 블록/아이스버그 고래 감지
+          6. order_flow     -- 캐시 → OBI/CVD/VPIN/체결강도
+          7. contango       -- 캐시 VIX → 콘탱고/백워데이션
           8. nav_premium    -- 브로커 실시간가 → NAV 프리미엄
           9. decay          -- 일봉 → 레버리지 변동성 드래그
 

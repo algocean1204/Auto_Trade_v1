@@ -99,7 +99,7 @@ class OrderFlowAggregator:
 
         # 체결/호가 데이터가 모두 비어있으면 데이터 부재로 판단한다
         if not trades and not bids and not asks:
-            logger.debug("%s 주문 흐름 데이터 부재 (Redis 키 비어있음)", ticker)
+            logger.debug("%s 주문 흐름 데이터 부재 (캐시 키 비어있음)", ticker)
             return None
 
         obi = _calc_obi(bids, asks)
@@ -119,7 +119,7 @@ class OrderFlowAggregator:
         )
 
     async def _load_flow_data(self, ticker: str) -> dict:
-        """Redis에서 주문 흐름 데이터를 조회한다."""
+        """캐시에서 주문 흐름 데이터를 조회한다."""
         key = _ORDER_FLOW_KEY.format(ticker=ticker)
         data = await self._cache.read_json(key)
         return data or {"trades": [], "bids": [], "asks": []}

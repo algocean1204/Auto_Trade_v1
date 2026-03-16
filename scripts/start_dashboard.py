@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 
 async def main() -> None:
     """대시보드 전용 서버를 시작한다. 매매 루프는 실행하지 않는다."""
-    port = int(os.environ.get("API_PORT", "9501"))
+    port = int(os.environ.get("API_PORT", "9500"))
 
     logger.info("=" * 60)
     logger.info("  Dashboard-Only Server (V2)")

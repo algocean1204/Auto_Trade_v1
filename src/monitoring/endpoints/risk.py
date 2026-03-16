@@ -15,9 +15,18 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 from src.common.logger import get_logger
+from src.monitoring.schemas.risk_schemas import (
+    ConcentrationData,
+    GateEntry,
+    PositionConcentrationEntry,
+    RiskBudgetData,
+    RiskDashboardResponse,
+    StreakData,
+    TrailingStopData,
+    VarData,
+)
 
 if TYPE_CHECKING:
     from src.orchestration.init.dependency_injector import InjectedSystem
@@ -44,123 +53,6 @@ def set_risk_deps(system: InjectedSystem) -> None:
     global _system
     _system = system
     _logger.info("RiskEndpoints 의존성 주입 완료")
-
-
-# ---------------------------------------------------------------------------
-# 응답 모델 정의
-# ---------------------------------------------------------------------------
-
-
-class GateEntry(BaseModel):
-    """리스크 게이트 개별 항목이다. 각 게이트의 통과/차단 상태를 표현한다."""
-
-    gate_name: str
-    passed: bool
-    action: str = "allow"
-    message: str = ""
-    details: dict[str, Any] = {}
-
-
-class RiskBudgetData(BaseModel):
-    """리스크 예산 현황이다. 일일/주간 손실 예산 소비율을 반환한다."""
-
-    budget_pct: float = 10.0
-    consumption_pct: float = 0.0
-    budget_amount_usd: float = 0.0
-    total_losses_usd: float = 0.0
-    remaining_budget_usd: float = 0.0
-    current_tier: int = 1
-    position_scale: float = 1.0
-    daily_limit_pct: float = 0.0
-    daily_used_pct: float = 0.0
-
-
-class VarData(BaseModel):
-    """VaR(Value at Risk) 지표 데이터이다."""
-
-    var_pct: float = 0.0
-    confidence: float = 0.95
-    risk_level: str = "low"
-    max_var_pct: float = 5.0
-    lookback_days: int = 20
-    z_score: float = 1.645
-
-
-class StreakData(BaseModel):
-    """연승/연패 카운터 데이터이다."""
-
-    current_streak: int = 0
-    daily_loss_days: int = 0
-    daily_loss_streak_threshold: int = 3
-    streak_rules: dict[str, Any] = {}
-    max_win_streak: int = 0
-    max_loss_streak: int = 0
-
-
-class PositionConcentrationEntry(BaseModel):
-    """개별 종목 집중도 항목이다."""
-
-    ticker: str
-    market_value: float = 0.0
-    weight_pct: float = 0.0
-
-
-class ConcentrationData(BaseModel):
-    """포지션 집중도 현황이다. 종목별 비중 목록을 반환한다."""
-
-    limits: dict[str, Any] = {}
-    positions: list[PositionConcentrationEntry] = []
-
-
-class TrailingStopData(BaseModel):
-    """트레일링 스톱 현황이다."""
-
-    active: bool = False
-    initial_stop_pct: float = 3.0
-    trailing_stop_pct: float = 5.0
-    tracked_positions: int = 0
-    positions: dict[str, Any] = {}
-
-
-class RiskDashboardResponse(BaseModel):
-    """리스크 대시보드 종합 응답이다.
-
-    기존 플랫 필드(하위 호환) + 중첩 구조(Flutter 대시보드용)를 모두 포함한다.
-    """
-
-    # -- 기존 플랫 필드 (하위 호환성 유지) --
-    portfolio_var: float
-    """포트폴리오 Value at Risk (95%, USD 추정)이다."""
-    max_drawdown_pct: float
-    """최대 낙폭(%)이다. 음수 값으로 표현한다."""
-    current_drawdown_pct: float
-    """현재 낙폭(%)이다. 피크 대비 현재 손실률이다."""
-    position_concentration: float
-    """가장 큰 단일 포지션 비중(%)이다."""
-    regime: str
-    """현재 시장 레짐이다 (strong_bull / mild_bull / sideways / mild_bear / crash)."""
-    vix_current: float
-    """현재 VIX 지수이다."""
-    risk_score: float
-    """종합 리스크 스코어이다 (0.0~10.0, 높을수록 위험)."""
-    warnings: list[str]
-    """활성화된 리스크 경고 목록이다."""
-
-    # -- 중첩 구조 필드 (Flutter 대시보드용) --
-    updated_at: str = ""
-    """데이터 갱신 시각 (ISO 8601)이다."""
-    gates: list[GateEntry] = []
-    """리스크 게이트 통과/차단 상태 목록이다."""
-    risk_budget: RiskBudgetData | None = None
-    """리스크 예산 현황이다."""
-    var_indicator: VarData | None = None
-    """VaR 지표 데이터이다."""
-    streak_counter: StreakData | None = None
-    """연승/연패 카운터이다."""
-    concentrations: ConcentrationData | None = None
-    """포지션 집중도 현황이다."""
-    trailing_stop: TrailingStopData | None = None
-    """트레일링 스톱 현황이다."""
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +255,7 @@ async def get_risk_dashboard() -> RiskDashboardResponse:
             except Exception:
                 _logger.debug("CapitalGuard 조회 실패 -- 기본값 사용")
 
-        # --- 최대 낙폭은 Redis 캐시에서 읽는다 ---
+        # --- 최대 낙폭은 캐시에서 읽는다 ---
         max_drawdown_pct: float = 0.0
         try:
             cache = _system.components.cache
@@ -432,7 +324,7 @@ async def get_risk_dashboard() -> RiskDashboardResponse:
         trailing_data = _build_trailing_stop(features)
 
         # --- 연승/연패 카운터 구성 ---
-        streak_data = _build_streak(features)
+        streak_data = await _build_streak(features, _system)
 
         return RiskDashboardResponse(
             # 기존 플랫 필드
@@ -598,30 +490,109 @@ def _build_concentrations(
 
 
 def _build_trailing_stop(features: dict[str, Any]) -> TrailingStopData:
-    """트레일링 스톱 현황을 구성한다."""
+    """트레일링 스톱 현황을 구성한다.
+
+    stop_loss 설정값과 position_monitor의 보유 포지션을 결합하여
+    활성 상태 및 종목별 스톱 정보를 반환한다.
+    """
     stop_loss = features.get("stop_loss")
     if stop_loss is None:
         return TrailingStopData()
 
     try:
+        initial_pct = float(getattr(stop_loss, "initial_stop_pct", 3.0))
+        trailing_pct = float(getattr(stop_loss, "trailing_stop_pct", 5.0))
+
+        # 보유 포지션에서 트레일링 스톱 적용 종목 정보를 구성한다
+        positions_info: dict[str, Any] = {}
+        pos_monitor = features.get("position_monitor")
+        if pos_monitor is not None:
+            all_positions = pos_monitor.get_all_positions()
+            for ticker, pos in all_positions.items():
+                avg = float(pos.avg_price)
+                cur = float(pos.current_price)
+                pnl_pct = ((cur - avg) / avg * 100) if avg > 0 else 0.0
+                # 트레일링 손절가: 현재가 기준으로 trailing_pct만큼 아래
+                trailing_stop_price = round(cur * (1 - trailing_pct / 100), 4)
+                positions_info[ticker] = {
+                    "entry_price": avg,
+                    "current_price": cur,
+                    "pnl_pct": round(pnl_pct, 2),
+                    "trailing_stop_price": trailing_stop_price,
+                }
+
+        tracked = len(positions_info)
         return TrailingStopData(
-            initial_stop_pct=float(getattr(stop_loss, "initial_stop_pct", 3.0)),
-            trailing_stop_pct=float(getattr(stop_loss, "trailing_stop_pct", 5.0)),
+            active=tracked > 0,
+            initial_stop_pct=initial_pct,
+            trailing_stop_pct=trailing_pct,
+            tracked_positions=tracked,
+            positions=positions_info,
         )
     except Exception:
         _logger.debug("트레일링 스톱 구성 실패 -- 기본값 사용")
         return TrailingStopData()
 
 
-def _build_streak(features: dict[str, Any]) -> StreakData:
-    """연승/연패 카운터를 구성한다."""
+async def _build_streak(
+    features: dict[str, Any],
+    system: InjectedSystem | None,
+) -> StreakData:
+    """연승/연패 카운터를 구성한다.
+
+    losing_streak 피처의 현재 값과 캐시의 거래 이력을 결합하여
+    역대 최대 연승/연패를 계산한다.
+    """
     losing_streak = features.get("losing_streak")
-    if losing_streak is None:
-        return StreakData()
+    current = 0
+    if losing_streak is not None:
+        try:
+            current = int(getattr(losing_streak, "current_streak", 0))
+        except Exception:
+            _logger.debug("현재 연패 값 읽기 실패")
+
+    # 캐시에서 당일 거래 이력을 읽어 최대 연승/연패를 계산한다
+    max_win: int = 0
+    max_loss: int = 0
+    if system is not None:
+        try:
+            cache = system.components.cache
+            trades: list[dict] = await cache.read_json("trades:today") or []
+            if trades:
+                win_run = 0
+                loss_run = 0
+                for trade in trades:
+                    # 매수 거래(pnl 없음)는 스트릭 계산에서 제외한다
+                    if trade.get("side") == "buy":
+                        continue
+                    pnl = float(trade.get("pnl") or 0.0)
+                    if pnl > 0:
+                        win_run += 1
+                        loss_run = 0
+                        max_win = max(max_win, win_run)
+                    elif pnl < 0:
+                        loss_run += 1
+                        win_run = 0
+                        max_loss = max(max_loss, loss_run)
+                    else:
+                        # pnl == 0: 무승부는 스트릭을 끊지 않는다
+                        pass
+        except Exception:
+            _logger.debug("거래 이력에서 최대 스트릭 계산 실패")
+
+    # losing_streak 피처에 누적된 역대 max_streak도 반영한다
+    if losing_streak is not None:
+        try:
+            feature_max = int(getattr(losing_streak, "max_streak", 0))
+            max_loss = max(max_loss, feature_max)
+        except Exception:
+            pass
 
     try:
         return StreakData(
-            current_streak=int(getattr(losing_streak, "current_streak", 0)),
+            current_streak=current,
+            max_win_streak=max_win,
+            max_loss_streak=max_loss,
         )
     except Exception:
         _logger.debug("연패 카운터 구성 실패 -- 기본값 사용")

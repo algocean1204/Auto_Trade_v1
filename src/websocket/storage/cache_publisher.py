@@ -1,8 +1,8 @@
-"""FW Redis 발행기 -- 실시간 이벤트를 Redis Pub/Sub 채널에 발행한다.
+"""FW 캐시 발행기 -- 실시간 이벤트를 Pub/Sub 채널에 발행한다.
 
 TradeEvent, OrderbookSnapshot을 JSON 직렬화하여 채널에 발행한다.
 동시에 OrderFlowAggregator가 읽는 KV 스토어(order_flow:raw:{ticker})에도 기록한다.
-CacheClient를 주입받아 Redis 접근한다.
+CacheClient를 주입받아 캐시에 접근한다.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-# Redis 채널 접두사이다
+# 캐시 채널 접두사이다
 _CHANNEL_TRADE = "ws:trade"
 _CHANNEL_ORDERBOOK = "ws:orderbook"
 
@@ -73,8 +73,8 @@ def _trade_to_dict(event: TradeEvent) -> dict:
     }
 
 
-class RedisPublisher:
-    """실시간 이벤트를 Redis 채널에 발행하는 퍼블리셔이다.
+class CachePublisher:
+    """실시간 이벤트를 캐시 채널에 발행하는 퍼블리셔이다.
 
     Pub/Sub 발행과 동시에 OrderFlowAggregator가 읽는 KV 스토어에도
     슬라이딩 윈도우 형태로 데이터를 적재한다.
@@ -85,7 +85,7 @@ class RedisPublisher:
         self._cache = cache
 
     async def publish_trade(self, event: TradeEvent) -> PublishResult:
-        """체결 이벤트를 Redis 채널에 발행하고 KV 스토어에도 기록한다.
+        """체결 이벤트를 캐시 채널에 발행하고 KV 스토어에도 기록한다.
 
         Pub/Sub 채널 발행 후, order_flow:raw:{ticker} 키에 슬라이딩 윈도우로
         최근 체결 목록을 유지한다. OrderFlowAggregator가 이 키를 직접 읽는다.
@@ -104,7 +104,7 @@ class RedisPublisher:
     async def publish_orderbook(
         self, snapshot: OrderbookSnapshot,
     ) -> PublishResult:
-        """호가창 스냅샷을 Redis 채널에 발행하고 KV 스토어에도 기록한다.
+        """호가창 스냅샷을 캐시 채널에 발행하고 KV 스토어에도 기록한다.
 
         Pub/Sub 채널 발행 후, order_flow:raw:{ticker} 키의 bids/asks를
         최신 스냅샷으로 교체한다. OrderFlowAggregator가 이 키를 직접 읽는다.

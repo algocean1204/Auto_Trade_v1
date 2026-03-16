@@ -55,7 +55,13 @@ class _RiskCenterScreenState extends State<RiskCenterScreen> {
           }
 
           return RefreshIndicator(
-            onRefresh: () => provider.refresh(),
+            onRefresh: () async {
+              // 리스크 데이터와 거시경제 데이터를 동시에 새로고침한다
+              await Future.wait([
+                provider.refresh(),
+                context.read<MacroProvider>().refresh(),
+              ]);
+            },
             color: context.tc.primary,
             backgroundColor: context.tc.surfaceElevated,
             child: SingleChildScrollView(

@@ -5,10 +5,11 @@ InjectedSystem은 DI로 주입받는다.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.logger import get_logger
 from src.common.market_clock import get_market_clock
@@ -26,17 +27,20 @@ _system: InjectedSystem | None = None
 
 
 class PositionItem(BaseModel):
-    """포지션 항목 응답 모델이다."""
+    """포지션 항목 응답 모델이다. Flutter Position.fromJson 호환."""
 
     ticker: str
     quantity: int
     avg_price: float
     current_price: float
-    pnl_pct: float
-    pnl_amount: float
+    unrealized_pnl_pct: float
+    unrealized_pnl: float
     current_value: float
     name: str
     exchange: str
+    hold_days: int = 0
+    entry_time: str = ""
+    strategy: str = ""
 
 
 class PositionsResponse(BaseModel):
@@ -62,11 +66,48 @@ class AccountsResponse(BaseModel):
     real: AccountBalanceItem = Field(default_factory=AccountBalanceItem)
 
 
+class RecentTradeItem(BaseModel):
+    """개별 거래 항목 응답 모델이다. Flutter Trade.fromJson 호환."""
+
+    model_config = ConfigDict(extra="allow")  # 추가 필드 허용
+
+    ticker: str = ""
+    action: str = ""       # buy / sell
+    quantity: int = 0
+    price: float = 0.0
+    pnl: float = 0.0
+    pnl_pct: float = 0.0
+    reason: str = ""
+    timestamp: str = ""
+
+
 class RecentTradesResponse(BaseModel):
     """최근 거래 목록 응답 모델이다."""
 
-    trades: list[dict] = Field(default_factory=list)
+    trades: list[RecentTradeItem] = Field(default_factory=list)
     count: int = 0
+
+
+def _convert_position_dict(d: dict) -> dict:
+    """PositionData.model_dump() 결과를 Flutter Position.fromJson 호환 키로 변환한다.
+
+    pnl_pct → unrealized_pnl_pct, pnl_amount → unrealized_pnl 로 매핑하고
+    hold_days, entry_time, strategy 기본값을 추가한다.
+    """
+    out = dict(d)
+    # pnl_pct → unrealized_pnl_pct (기존 키 제거)
+    if "pnl_pct" in out:
+        out["unrealized_pnl_pct"] = out.pop("pnl_pct")
+    # pnl_amount → unrealized_pnl (기존 키 제거)
+    if "pnl_amount" in out:
+        out["unrealized_pnl"] = out.pop("pnl_amount")
+    # 누락 필드 기본값 보완
+    out.setdefault("unrealized_pnl_pct", 0.0)
+    out.setdefault("unrealized_pnl", 0.0)
+    out.setdefault("hold_days", 0)
+    out.setdefault("entry_time", "")
+    out.setdefault("strategy", "")
+    return out
 
 
 def set_dashboard_deps(system: InjectedSystem) -> None:
@@ -80,11 +121,13 @@ def _build_initializing_response() -> DashboardSummaryResponse:
     """시스템 미초기화 상태의 기본 응답을 생성한다."""
     clock = get_market_clock()
     time_info = clock.get_time_info()
+    kst = timezone(timedelta(hours=9))
     return DashboardSummaryResponse(
-        status="initializing",
+        system_status="initializing",
         session_type=time_info.session_type,
         is_trading_window=time_info.is_trading_window,
         current_kst=time_info.now_kst.isoformat(),
+        timestamp=datetime.now(kst).isoformat(),
     )
 
 
@@ -114,7 +157,7 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
         pos_monitor = system.features.get("position_monitor")
         if pos_monitor is not None:
             all_positions = pos_monitor.get_all_positions()
-            positions = [p.model_dump() for p in all_positions.values()]
+            positions = [_convert_position_dict(p.model_dump()) for p in all_positions.values()]
             active_positions = len(all_positions)
             daily_pnl = sum(
                 (p.current_price - p.avg_price) * p.quantity
@@ -154,7 +197,7 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
             # PositionMonitor가 비어있으면 브로커 잔고의 포지션 데이터를 사용한다
             if active_positions == 0 and balance.positions:
                 active_positions = len(balance.positions)
-                positions = [p.model_dump() for p in balance.positions]
+                positions = [_convert_position_dict(p.model_dump()) for p in balance.positions]
                 daily_pnl = sum(
                     (p.current_price - p.avg_price) * p.quantity
                     for p in balance.positions
@@ -176,11 +219,26 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
         if base > 0:
             today_pnl_pct = (daily_pnl / base) * 100
 
+    # 미실현 손익 (보유 포지션 합산)
+    unrealized_pnl: float = daily_pnl  # 현재 일일 PnL = 미실현 손익
+    unrealized_pnl_pct: float = today_pnl_pct
+
+    # 초기 자본 추정: 총 자산 - 미실현 손익
+    initial_capital: float = max(total_equity - unrealized_pnl, 0.0)
+
+    # 전체 수익 = 누적 실현 + 미실현 (현재는 미실현만)
+    total_pnl: float = unrealized_pnl
+    total_pnl_pct: float = (
+        (total_pnl / initial_capital * 100) if initial_capital > 0 else 0.0
+    )
+
+    kst = timezone(timedelta(hours=9))
     return DashboardSummaryResponse(
-        status=status,
+        system_status=status,
         session_type=time_info.session_type,
         is_trading_window=time_info.is_trading_window,
         current_kst=time_info.now_kst.isoformat(),
+        timestamp=datetime.now(kst).isoformat(),
         positions=positions,
         daily_pnl=daily_pnl,
         total_equity=total_equity,
@@ -194,6 +252,13 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
         account_number=account_number,
         positions_value=positions_value,
         buying_power=buying_power,
+        # Flutter DashboardSummary 추가 필드
+        unrealized_pnl=round(unrealized_pnl, 2),
+        unrealized_pnl_pct=round(unrealized_pnl_pct, 4),
+        total_pnl=round(total_pnl, 2),
+        total_pnl_pct=round(total_pnl_pct, 4),
+        initial_capital=round(initial_capital, 2),
+        currency="USD",
     )
 
 
@@ -242,8 +307,8 @@ async def get_positions(mode: str | None = None) -> PositionsResponse:
                             quantity=qty,
                             avg_price=avg,
                             current_price=current,
-                            pnl_pct=round(pnl_pct, 4),
-                            pnl_amount=round(pnl_amount, 2),
+                            unrealized_pnl_pct=round(pnl_pct, 4),
+                            unrealized_pnl=round(pnl_amount, 2),
                             current_value=round(current * qty, 2),
                             name=pos_data.get("name", ticker),
                             exchange=pos_data.get("exchange", ""),
@@ -292,8 +357,8 @@ async def _fetch_positions_from_broker() -> list[PositionItem]:
                     quantity=qty,
                     avg_price=avg,
                     current_price=current,
-                    pnl_pct=round(pnl_pct, 4),
-                    pnl_amount=round(pnl_amount, 2),
+                    unrealized_pnl_pct=round(pnl_pct, 4),
+                    unrealized_pnl=round(pnl_amount, 2),
                     current_value=round(current * qty, 2),
                     name=pos.ticker,
                     exchange="NASD",
@@ -402,16 +467,44 @@ async def get_accounts_summary() -> AccountsResponse:
 async def get_recent_trades(limit: int = 10) -> RecentTradesResponse:
     """최근 체결 거래 목록을 반환한다.
 
-    Redis 캐시 키: trades:recent (거래 체결 시마다 업데이트)
+    trades:today에서 당일 거래를 읽어 Dart Trade.fromJson 호환 키로 변환한다.
     """
     if _system is None:
         return RecentTradesResponse(trades=[], count=0)
     try:
         cache = _system.components.cache
-        cached = await cache.read_json("trades:recent")
-        trades: list = cached if isinstance(cached, list) else []
-        sliced = trades[:limit]
-        return RecentTradesResponse(trades=sliced, count=len(sliced))
+        raw = await cache.read_json("trades:today")
+        raw_list: list = raw if isinstance(raw, list) else []
+        # 최신순 정렬 후 limit 적용
+        sorted_list = sorted(
+            raw_list,
+            key=lambda t: str(t.get("timestamp", "")) if isinstance(t, dict) else "",
+            reverse=True,
+        )[:limit]
+        # Dart Trade.fromJson 호환 키로 변환하여 RecentTradeItem을 생성한다
+        trades: list[RecentTradeItem] = []
+        for idx, tr in enumerate(sorted_list):
+            if not isinstance(tr, dict):
+                continue
+            d: dict = dict(tr)
+            # side → action 키 변환
+            if "side" in d and "action" not in d:
+                d["action"] = d.pop("side")
+            d.setdefault("id", idx + 1)
+            # pnl_pct 계산
+            if "pnl_pct" not in d:
+                pnl = d.get("pnl")
+                price = d.get("price", 0)
+                qty = d.get("quantity", 0)
+                if pnl is not None and price > 0 and qty > 0:
+                    d["pnl_pct"] = (pnl / (price * qty)) * 100.0
+                else:
+                    d["pnl_pct"] = 0.0
+            d.setdefault("pnl", 0.0)
+            d.setdefault("reason", "")
+            d.setdefault("timestamp", "")
+            trades.append(RecentTradeItem(**d))
+        return RecentTradesResponse(trades=trades, count=len(trades))
     except Exception:
         _logger.exception("최근 거래 조회 실패")
         raise HTTPException(status_code=500, detail="거래 조회 실패") from None

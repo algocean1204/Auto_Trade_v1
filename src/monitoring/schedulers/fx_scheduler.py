@@ -1,10 +1,10 @@
-"""FxScheduler -- 10분 주기로 USD/KRW 환율을 갱신하고 Redis에 캐싱한다.
+"""FxScheduler -- 10분 주기로 USD/KRW 환율을 갱신하고 인메모리 캐시에 저장한다.
 
 3단계 폴백 체인으로 환율을 조회한다:
   1차: KIS API (FxManager.get_rate())
   2차: 네이버 금융 크롤링
   3차: 구글 Finance 크롤링
-결과를 fx:current (현재 환율)와 fx:history (롤링 이력)에 저장한다.
+결과를 캐시 키 fx:current (현재 환율)와 fx:history (롤링 이력)에 저장한다.
 최대 720개 이력을 유지한다 (10분 간격 x 5일).
 """
 from __future__ import annotations

@@ -60,7 +60,11 @@ def _count_streaks(
     max_streak = 0
 
     for trade in trades:
-        pnl = trade.get("pnl", 0.0)
+        # 매수 거래는 pnl이 None이므로 연패 계산에서 제외한다.
+        # 매수(buy)가 끼어들어 연패 카운터를 리셋하는 버그를 방지한다.
+        if trade.get("side") == "buy":
+            continue
+        pnl = trade.get("pnl") or 0.0
         if pnl < 0:
             current_streak += 1
             max_streak = max(max_streak, current_streak)

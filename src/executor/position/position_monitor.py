@@ -48,8 +48,19 @@ class PositionMonitor:
                 "포지션 동기화 완료: %d개 종목", len(self._positions),
             )
         except BrokerError as exc:
-            # API 오류 시 기존 캐시를 덮어쓰지 않는다
-            logger.error("포지션 동기화 실패 (기존 캐시 유지): %s", exc.message)
+            # API 오류 시 기존 캐시를 덮어쓰지 않는다 — 경과 시간에 따라 로그 레벨 분기한다
+            if self._last_sync is not None:
+                age = (datetime.now(tz=timezone.utc) - self._last_sync).total_seconds()
+                if age > 300:  # 5분
+                    logger.error(
+                        "포지션 캐시 %.0f초 경과 (5분 초과) — 데이터 신뢰도 낮음", age,
+                    )
+                else:
+                    logger.warning(
+                        "포지션 동기화 실패 (캐시 %.0f초): %s", age, exc.message,
+                    )
+            else:
+                logger.error("포지션 동기화 최초 실패: %s", exc.message)
         return dict(self._positions)
 
     async def get_position(self, ticker: str) -> PositionData | None:
@@ -83,6 +94,32 @@ class PositionMonitor:
     def has_position(self, ticker: str) -> bool:
         """해당 종목의 포지션을 보유 중인지 확인한다."""
         return ticker in self._positions
+
+    async def verify_and_sync(self) -> dict[str, int]:
+        """브로커 실잔고와 캐시를 비교하여 불일치를 감지하고 동기화한다.
+
+        불일치 발견 시 로그를 남기고 캐시를 갱신한다.
+        Returns:
+            불일치 종목별 차이 (캐시 수량 - 실제 수량). 빈 dict이면 일치.
+        """
+        old_positions = dict(self._positions)
+        await self.sync_positions()
+        mismatches: dict[str, int] = {}
+        all_tickers = set(old_positions.keys()) | set(self._positions.keys())
+        for ticker in all_tickers:
+            old_qty = old_positions.get(ticker)
+            new_qty = self._positions.get(ticker)
+            cached = old_qty.quantity if old_qty else 0
+            actual = new_qty.quantity if new_qty else 0
+            if cached != actual:
+                mismatches[ticker] = cached - actual
+                logger.warning(
+                    "포지션 불일치: %s 캐시=%d주, 실제=%d주 (차이=%+d)",
+                    ticker, cached, actual, cached - actual,
+                )
+        if not mismatches:
+            logger.debug("포지션 검증 완료: 불일치 없음")
+        return mismatches
 
     def clear_cache(self) -> None:
         """포지션 캐시를 초기화한다. 테스트/EOD용이다."""

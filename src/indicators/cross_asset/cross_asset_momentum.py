@@ -31,7 +31,7 @@ _ETF_OBI_NEUTRAL: float = 0.1
 
 
 async def _read_obi(cache: CacheClient, ticker: str) -> float | None:
-    """Redis에서 종목의 OBI 값을 조회한다."""
+    """캐시에서 종목의 OBI 값을 조회한다."""
     raw = await cache.read(f"{_OBI_KEY_PREFIX}{ticker}")
     if raw is None:
         return None
@@ -42,7 +42,7 @@ async def _read_obi(cache: CacheClient, ticker: str) -> float | None:
 
 
 async def _read_momentum(cache: CacheClient, ticker: str) -> float | None:
-    """Redis에서 종목의 모멘텀 점수를 조회한다."""
+    """캐시에서 종목의 모멘텀 점수를 조회한다."""
     raw = await cache.read(f"{_MOMENTUM_KEY_PREFIX}{ticker}")
     if raw is None:
         return None
@@ -96,7 +96,7 @@ class CrossAssetMomentum:
         )
 
     async def _fetch_leader_scores(self, leaders: list[str]) -> dict[str, float]:
-        """리더 종목들의 모멘텀 점수를 Redis에서 조회한다."""
+        """리더 종목들의 모멘텀 점수를 캐시에서 조회한다."""
         scores: dict[str, float] = {}
         for leader in leaders:
             score = await _read_momentum(self._cache, leader)
@@ -105,9 +105,9 @@ class CrossAssetMomentum:
 
     def _calc_alignment(self, leader_scores: dict[str, float]) -> float:
         """리더 점수들의 방향 정렬도를 계산한다. 모두 같은 방향이면 1.0이다."""
-        if not leader_scores:
-            return 0.0
         values = list(leader_scores.values())
+        if not values:
+            return 0.0
         positive = sum(1 for v in values if v > 0)
         return (positive / len(values)) * 2.0 - 1.0
 
@@ -115,9 +115,12 @@ class CrossAssetMomentum:
         self, leader_scores: dict[str, float], etf_obi: float | None,
     ) -> float:
         """리더와 ETF 간 괴리도를 계산한다."""
-        if not leader_scores or etf_obi is None:
+        if etf_obi is None:
             return 0.0
-        avg_leader = sum(leader_scores.values()) / len(leader_scores)
+        values = list(leader_scores.values())
+        if not values:
+            return 0.0
+        avg_leader = sum(values) / len(values)
         return avg_leader - etf_obi
 
     def _check_bullish_divergence(

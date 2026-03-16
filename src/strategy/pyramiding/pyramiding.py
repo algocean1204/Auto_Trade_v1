@@ -27,6 +27,8 @@ def _get_threshold(level: int, params: StrategyParams) -> float:
         2: params.pyramid_level2_pct,
         3: params.pyramid_level3_pct,
     }
+    if level not in thresholds:
+        logger.error("유효하지 않은 피라미딩 레벨: %d (유효: 1-3) — 999.0 반환", level)
     return thresholds.get(level, 999.0)
 
 

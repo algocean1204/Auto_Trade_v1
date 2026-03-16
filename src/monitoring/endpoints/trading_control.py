@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -39,6 +41,38 @@ def set_trading_control_deps(system: InjectedSystem) -> None:
     global _system
     _system = system
     _logger.info("TradingControlEndpoints 의존성 주입 완료")
+
+
+async def _record_alert(
+    system: InjectedSystem,
+    alert_type: str,
+    title: str,
+    message: str,
+    severity: str = "info",
+) -> None:
+    """알림을 캐시 alerts:list에 기록한다.
+
+    매매 제어 이벤트(시작/종료)를 알림으로 기록한다.
+    모든 예외를 흡수하여 API 응답에 영향을 주지 않는다.
+    """
+    try:
+        cache = system.components.cache
+        alert_entry: dict = {
+            "id": str(uuid.uuid4()),
+            "type": alert_type,
+            "title": title,
+            "message": message,
+            "severity": severity,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": None,
+        }
+        existing: list[dict] = await cache.read_json("alerts:list") or []
+        existing.append(alert_entry)
+        if len(existing) > 100:
+            existing = existing[-100:]
+        await cache.write_json("alerts:list", existing, ttl=86400)
+    except Exception as exc:
+        _logger.debug("알림 기록 실패 (무시): %s", exc)
 
 
 def _build_status_response() -> TradingStatusResponse:
@@ -99,6 +133,11 @@ async def start_trading(
 
     _launch_trading_task(_system)
     _logger.info("자동매매 시작 요청 처리 완료")
+    await _record_alert(
+        _system, "system", "매매 시작",
+        "자동매매가 시작되었습니다.",
+        severity="info",
+    )
     return TradingActionResponse(status="started")
 
 
@@ -116,6 +155,11 @@ async def stop_trading(
 
     await _stop_trading_task(_system, run_eod)
     _logger.info("자동매매 중지 완료 (run_eod=%s)", run_eod)
+    await _record_alert(
+        _system, "system", "매매 종료",
+        f"자동매매가 종료되었습니다. EOD 실행: {'예' if run_eod else '아니오'}",
+        severity="info",
+    )
     return TradingActionResponse(status="stopped")
 
 
@@ -128,14 +172,22 @@ def _launch_trading_task(system: InjectedSystem) -> None:
     _shutdown_event = asyncio.Event()
     system.running = True
 
+    # 토큰 사용량 추적 세션 초기화
+    try:
+        from src.common.token_tracker import reset_session
+        reset_session()
+    except Exception:
+        _logger.debug("토큰 추적 세션 초기화 실패", exc_info=True)
+
     async def _lifecycle() -> None:
-        """preparation -> trading_loop + continuous_analysis -> EOD -> finally running=False."""
+        """preparation -> trading_loop + continuous_analysis + sentinel_loop -> EOD -> finally running=False."""
         cancelled = False
         loop_finished_normally = False
         try:
             from src.orchestration.loops.continuous_analysis import (
                 run_continuous_analysis,
             )
+            from src.orchestration.loops.sentinel_loop import run_sentinel_loop
             from src.orchestration.loops.trading_loop import run_trading_loop
             from src.orchestration.phases.preparation import run_preparation
 
@@ -143,15 +195,19 @@ def _launch_trading_task(system: InjectedSystem) -> None:
             if not prep.ready:
                 _logger.warning("매매 준비 실패 -- 시작 중단")
                 return
-            # 매매 루프와 연속 분석을 동시에 실행한다
+            # 매매 루프 + 연속 분석 + 센티넬 루프를 동시에 실행한다
             analysis_task = asyncio.create_task(
                 run_continuous_analysis(system, _shutdown_event),  # type: ignore[arg-type]
+            )
+            sentinel_task = asyncio.create_task(
+                run_sentinel_loop(system, _shutdown_event),  # type: ignore[arg-type]
             )
             try:
                 await run_trading_loop(system, _shutdown_event)  # type: ignore[arg-type]
                 loop_finished_normally = True
                 _logger.info("매매 루프 정상 반환 완료")
             finally:
+                # analysis_task 정리
                 _logger.info("analysis_task 정리 시작 (done=%s)", analysis_task.done())
                 if not analysis_task.done():
                     analysis_task.cancel()
@@ -161,6 +217,15 @@ def _launch_trading_task(system: InjectedSystem) -> None:
                 except (asyncio.CancelledError, Exception) as exc:
                     _logger.debug("analysis_task 정리 완료: %s", type(exc).__name__)
                 _logger.info("analysis_task 정리 끝")
+                # sentinel_task 정리
+                _logger.info("sentinel_task 정리 시작 (done=%s)", sentinel_task.done())
+                if not sentinel_task.done():
+                    sentinel_task.cancel()
+                try:
+                    await sentinel_task
+                except (asyncio.CancelledError, Exception) as exc:
+                    _logger.debug("sentinel_task 정리 완료: %s", type(exc).__name__)
+                _logger.info("sentinel_task 정리 끝")
         except asyncio.CancelledError:
             cancelled = True
             _logger.info("매매 태스크 취소됨")

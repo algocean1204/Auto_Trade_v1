@@ -89,11 +89,11 @@ def _inject_f2_analysis(system: InjectedSystem) -> None:
         from src.analysis.feedback.eod_feedback_report import EODFeedbackReport
         _register_feature(system, "eod_feedback", EODFeedbackReport(c.ai))
 
-        # 반복 테마 감지 -- Redis에 카테고리+방향 빈도를 누적한다
+        # 반복 테마 감지 -- 캐시에 카테고리+방향 빈도를 누적한다
         from src.analysis.classifier.news_theme_tracker import NewsThemeTracker
         _register_feature(system, "news_theme_tracker", NewsThemeTracker(c.cache))
 
-        # 진행 상황 추적 -- 장기 지속 이슈 타임라인을 Redis에 관리한다
+        # 진행 상황 추적 -- 장기 지속 이슈 타임라인을 캐시에 관리한다
         from src.analysis.classifier.situation_tracker import OngoingSituationTracker
         _register_feature(system, "situation_tracker", OngoingSituationTracker(c.cache, c.ai))
 
@@ -202,7 +202,8 @@ def _inject_f4_strategy(system: InjectedSystem) -> None:
         from src.strategy.params.strategy_params import StrategyParamsManager
 
         _register_feature(system, "entry_strategy", EntryStrategy())
-        _register_feature(system, "exit_strategy", ExitStrategy())
+        c = system.components
+        _register_feature(system, "exit_strategy", ExitStrategy(cache=c.cache))
         _register_feature(system, "strategy_params", StrategyParamsManager())
 
         from src.strategy.params.profit_target import ProfitTarget
@@ -288,7 +289,7 @@ def _inject_f5_executor(system: InjectedSystem) -> None:
         from src.executor.position.position_monitor import PositionMonitor
 
         c = system.components
-        order_mgr = OrderManager(c.broker)
+        order_mgr = OrderManager(c.broker, cache=c.cache)
         pos_monitor = PositionMonitor(c.broker)
 
         _register_feature(system, "order_manager", order_mgr)
@@ -396,10 +397,18 @@ def _inject_f8_tax(system: InjectedSystem) -> None:
         logger.warning("F8 FxManager 초기화 실패 (건너뜀): %s", exc)
 
     # C2 수정: SlippageTracker -- slippage.py 엔드포인트가 "slippage_tracker" 키를 조회한다
+    # OrderManager에도 주입하여 체결 시 슬리피지를 자동 측정한다
     try:
         from src.tax.slippage_tracker import SlippageTracker
 
-        _register_feature(system, "slippage_tracker", SlippageTracker())
+        tracker = SlippageTracker()
+        _register_feature(system, "slippage_tracker", tracker)
+        # F5에서 생성된 OrderManager에 SlippageTracker를 후속 주입한다
+        om = system.features.get("order_manager")
+        if om is not None:
+            from src.executor.order.order_manager import OrderManager
+            if isinstance(om, OrderManager):
+                om.set_slippage_tracker(tracker)
     except ImportError as exc:
         logger.warning("F8 SlippageTracker 임포트 실패 (건너뜀): %s", exc)
     except Exception as exc:
@@ -445,9 +454,16 @@ def inject_dependencies(components: SystemComponents) -> InjectedSystem:
     except Exception as exc:
         logger.warning("UniversePersister 초기화 실패 (건너뜀): %s", exc)
 
-    feature_count = len(system.features)
-    logger.info(
-        "의존성 주입 완료 (Common 10개 + Feature %d개)",
-        feature_count,
-    )
+    # DI 결과 요약 — 로드 성공/실패 feature 목록을 기록한다
+    loaded = [k for k, v in system.features.items() if v is not None]
+    failed = [k for k, v in system.features.items() if v is None]
+    logger.info("DI 완료: %d개 로드, %d개 실패", len(loaded), len(failed))
+    if failed:
+        logger.warning("DI 미로드 feature: %s", ", ".join(failed))
+    # 필수 feature 누락 시 error 레벨로 경고한다
+    critical = {"position_monitor", "order_manager", "entry_strategy", "exit_strategy"}
+    missing_critical = critical - set(loaded)
+    if missing_critical:
+        logger.error("필수 feature 로드 실패: %s", ", ".join(missing_critical))
+
     return system

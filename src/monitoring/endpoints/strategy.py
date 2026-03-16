@@ -8,7 +8,7 @@ Flutter 대시보드에서 /api/strategy/params 경로로 호출한다.
   - GET  /api/strategy/ticker-params        : 전체 오버라이드 조회
   - GET  /api/strategy/ticker-params/{ticker}: 특정 티커 오버라이드 조회
   - PUT  /api/strategy/ticker-params/{ticker}: 티커 오버라이드 설정 (인증 필수)
-  - DELETE /api/strategy/ticker-params/{ticker}: 티커 오버라이드 삭제 (인증 필수)
+  - DELETE /api/strategy/ticker-params/{ticker}: 티커 오버라이드 삭제 (인증 필수, ?param_name= 으로 개별 삭제 가능)
   - POST /api/strategy/ticker-params/ai-optimize: AI 최적화 트리거 (인증 필수)
 
 오버라이드는 strategy_params.json 의 ticker_params 키 아래에 저장된다.
@@ -345,10 +345,12 @@ async def set_ticker_param(
 async def delete_ticker_params(
     ticker: str,
     _key: str = Depends(verify_api_key),
+    param_name: str | None = None,
 ) -> TickerParamsDeleteResponse:
-    """특정 티커의 모든 파라미터 오버라이드를 삭제한다. 인증 필수.
+    """특정 티커의 파라미터 오버라이드를 삭제한다. 인증 필수.
 
-    해당 티커 섹션 전체를 ticker_params 에서 제거한다.
+    param_name이 지정되면 해당 파라미터만 삭제하고,
+    None이면 티커 섹션 전체를 ticker_params 에서 제거한다.
     오버라이드가 없는 티커를 삭제 시도하면 404를 반환한다.
     """
     if _system is None:
@@ -363,9 +365,23 @@ async def delete_ticker_params(
                 detail=f"삭제할 티커 오버라이드 없음: {normalized}",
             )
 
-        # 삭제 전 파라미터 이름 목록을 기록한다
-        cleared_keys = list(ticker_params[normalized].keys())
-        del ticker_params[normalized]
+        if param_name is not None:
+            # 특정 파라미터만 삭제한다
+            if param_name not in ticker_params[normalized]:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"삭제할 파라미터 없음: {normalized}.{param_name}",
+                )
+            del ticker_params[normalized][param_name]
+            cleared_keys = [param_name]
+            # 해당 티커에 남은 오버라이드가 없으면 섹션 자체를 제거한다
+            if not ticker_params[normalized]:
+                del ticker_params[normalized]
+        else:
+            # 티커 섹션 전체를 삭제한다
+            cleared_keys = list(ticker_params[normalized].keys())
+            del ticker_params[normalized]
+
         _save_ticker_params(ticker_params)
 
         _logger.info("티커 파라미터 오버라이드 삭제: %s (%d개)", normalized, len(cleared_keys))

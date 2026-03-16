@@ -9,7 +9,7 @@ class StockAnalysisProvider with ChangeNotifier {
   StockAnalysisData? _data;
   bool _isLoading = false;
   String? _error;
-  String _selectedTicker = 'NVDA';
+  String _selectedTicker = '';
 
   /// 마지막으로 데이터를 성공적으로 불러온 시각이다.
   DateTime? _lastUpdated;
@@ -43,6 +43,7 @@ class StockAnalysisProvider with ChangeNotifier {
   // ── Actions ──
 
   /// 서버에서 분석 가능 종목 목록을 로드한다.
+  /// 최초 로드 시 첫 번째 티커를 기본 선택한다.
   Future<void> loadTickers() async {
     if (_tickersLoaded) return;
     try {
@@ -52,10 +53,15 @@ class StockAnalysisProvider with ChangeNotifier {
       _tickers = List.from(_fallbackTickers);
     }
     _tickersLoaded = true;
+    // 티커가 아직 선택되지 않았으면 첫 번째 티커를 기본값으로 설정한다
+    if (_selectedTicker.isEmpty && _tickers.isNotEmpty) {
+      _selectedTicker = _tickers.first;
+    }
     notifyListeners();
   }
 
   /// 티커를 선택하고 분석 데이터를 로드한다.
+  /// AI 분석 실패 시 기술 지표 기반 분석(ai=false)으로 자동 재시도한다.
   Future<void> loadAnalysis(String ticker) async {
     if (_isLoading) return;
     _selectedTicker = ticker;
@@ -66,10 +72,16 @@ class StockAnalysisProvider with ChangeNotifier {
     try {
       _data = await _api.getStockAnalysis(ticker);
       _error = null;
-      // 데이터 로드 성공 시 현재 시각으로 타임스탬프를 갱신한다.
       _lastUpdated = DateTime.now();
     } catch (e) {
-      _error = e.toString();
+      // AI 분석 실패 시 기술 지표 기반으로 재시도한다
+      try {
+        _data = await _api.getStockAnalysis(ticker, ai: false);
+        _error = null;
+        _lastUpdated = DateTime.now();
+      } catch (e2) {
+        _error = e2.toString();
+      }
     } finally {
       _isLoading = false;
       notifyListeners();

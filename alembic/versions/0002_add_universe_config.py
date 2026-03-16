@@ -1,3 +1,6 @@
+# [DEPRECATED] PostgreSQL 전용 마이그레이션 -- SQLite 환경에서는 사용하지 않는다.
+# 0004_sqlite_initial.py를 단독 initial migration으로 사용한다.
+# 이 파일은 PostgreSQL 백업/참고용으로만 보관한다.
 """유니버스 설정 테이블을 추가한다.
 
 universe_config 테이블은 ETF 유니버스 티커 설정의 source of truth이다.

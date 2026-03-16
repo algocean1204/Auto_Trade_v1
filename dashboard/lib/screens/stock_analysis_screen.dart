@@ -359,24 +359,33 @@ class _StockAnalysisScreenState extends State<StockAnalysisScreen> {
                         Row(
                           children: [
                             Text(
-                              '\$${data.currentPrice.toStringAsFixed(2)}',
-                              style: AppTypography.numberLarge,
+                              // 가격이 0이면 데이터 미수신 상태이다
+                              data.currentPrice > 0
+                                  ? '\$${data.currentPrice.toStringAsFixed(2)}'
+                                  : t('no_price_data'),
+                              style: data.currentPrice > 0
+                                  ? AppTypography.numberLarge
+                                  : AppTypography.numberLarge.copyWith(
+                                      color: context.tc.textTertiary,
+                                    ),
                             ),
-                            AppSpacing.hGapMd,
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: _priceChangeColor(context, data.priceChangePct).withValues(alpha: 0.15),
-                                borderRadius: AppSpacing.borderRadiusSm,
-                              ),
-                              child: Text(
-                                data.priceChangeLabel,
-                                style: AppTypography.labelMedium.copyWith(
-                                  color: _priceChangeColor(context, data.priceChangePct),
+                            if (data.currentPrice > 0) ...[
+                              AppSpacing.hGapMd,
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: _priceChangeColor(context, data.priceChangePct).withValues(alpha: 0.15),
+                                  borderRadius: AppSpacing.borderRadiusSm,
+                                ),
+                                child: Text(
+                                  data.priceChangeLabel,
+                                  style: AppTypography.labelMedium.copyWith(
+                                    color: _priceChangeColor(context, data.priceChangePct),
+                                  ),
                                 ),
                               ),
-                            ),
+                            ],
                           ],
                         ),
                       ],

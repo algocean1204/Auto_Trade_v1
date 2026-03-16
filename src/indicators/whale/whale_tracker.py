@@ -67,11 +67,11 @@ class WhaleTracker:
             ticker: 종목 코드
 
         Returns:
-            WhaleSignal 또는 None (Redis 데이터 미가용 시)
+            WhaleSignal 또는 None (캐시 데이터 미가용 시)
         """
         trades = await self._load_trades(ticker)
         if not trades:
-            logger.debug("고래 추적 스킵: %s Redis 체결 데이터 없음", ticker)
+            logger.debug("고래 추적 스킵: %s 캐시 체결 데이터 없음", ticker)
             return None
         block_score, block_count, block_dir = _score_blocks(trades, _BLOCK_THRESHOLD_USD)
         ice_score, ice_count, ice_dir = _score_icebergs(trades, _ICEBERG_MIN_TRADES)
@@ -94,7 +94,7 @@ class WhaleTracker:
         )
 
     async def _load_trades(self, ticker: str) -> list[dict]:
-        """Redis에서 최근 체결 데이터를 조회한다."""
+        """캐시에서 최근 체결 데이터를 조회한다."""
         key = _CACHE_KEY.format(ticker=ticker)
         data = await self._cache.read_json(key)
         if data is None:

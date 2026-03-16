@@ -1,6 +1,6 @@
 """F9.7 EODSequence -- 일일 종료(EOD) 시퀀스를 실행한다.
 
-포지션 동기화부터 텔레그램 보고서 발송까지 11단계를 순차 실행한다.
+포지션 동기화부터 텔레그램 보고서 발송까지 순차 실행한다.
 각 단계 실패는 독립 격리되어 다음 단계 실행을 막지 않는다.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from src.common.logger import get_logger
 from src.orchestration.init.dependency_injector import InjectedSystem
 
 logger = get_logger(__name__)
-_TOTAL_STEPS: int = 15
+_TOTAL_STEPS: int = 27
 
 
 class EODReport(BaseModel):
@@ -23,12 +23,22 @@ class EODReport(BaseModel):
     steps_completed: int = 0
     total_steps: int = _TOTAL_STEPS
     feedback_sent: bool = False
+    feedback_db_saved: bool = False
+    daily_report_saved: bool = False
     params_adjusted: bool = False
     positions_closed: int = 0
     telegram_sent: bool = False
     chart_data_updated: bool = False
+    benchmark_updated: bool = False
     overnight_liquidations: int = 0
     net_liquidity_updated: bool = False
+    daily_pnl_db_saved: bool = False
+    indicator_history_saved: int = 0
+    param_history_saved: int = 0
+    fred_crawled: int = 0
+    econ_calendar_updated: bool = False
+    tax_computed: bool = False
+    slippage_aggregated: int = 0
     errors: list[str] = []
 
 
@@ -38,15 +48,36 @@ async def run_eod_sequence(system: InjectedSystem) -> EODReport:
     ctx: dict = {}
     logger.info("=== EOD 시퀀스 시작 (총 %d단계) ===", _TOTAL_STEPS)
     steps = [
-        ("1", "포지션 동기화", _s1), ("2", "일일 PnL 기록", _s2),
+        # Phase 1: 데이터 수집
+        ("1", "포지션 동기화", _s1),
+        ("2", "일일 PnL 기록", _s2),
+        ("2.1", "일일 PnL DB 저장", _s2_1),
+        ("2.2", "매매 근거 이력 저장", _s2_2),
         ("2.5", "차트 데이터 갱신", _s2_5),
-        ("3", "벤치마크 스냅샷", _s3), ("4", "피드백 보고서", _s4),
-        ("5", "이익 목표 업데이트", _s5), ("6", "리스크 예산 업데이트", _s6),
-        ("7", "파라미터 최적화", _s7), ("7-1", "RAG 지식 업데이트", _s7_1),
+        ("2.6", "지표 이력 DB 스냅샷", _s2_6),
+        ("2.7", "성과 캐시 갱신", _s2_7),
+        ("2.8", "슬리피지 집계", _s2_8),
+        ("3", "벤치마크 스냅샷", _s3),
+        # Phase 2: 피드백 생성 → 반영
+        ("4", "피드백 보고서", _s4),
+        ("5", "이익 목표 업데이트", _s5),
+        ("5.5", "수익 목표 이력 기록", _s5_5),
+        ("6", "리스크 예산 업데이트", _s6),
+        ("7", "파라미터 최적화", _s7),
+        ("7-0", "파라미터 변경 이력 DB 저장", _s7_0),
+        # Phase 3: 피드백 DB 저장 → 보고서 → 텔레그램
+        ("7-0a", "피드백 DB 저장", _s_feedback_db),
+        ("7-0b", "일간 보고서 작성 및 저장", _s_daily_report),
+        ("7-0c", "종합 텔레그램 발송", _s_daily_telegram),
+        # Phase 4: 운영 유지보수
+        ("7-1", "RAG 지식 업데이트", _s7_1),
         ("7-1b", "모듈 리셋", _s7_1b),
         ("7-2", "오버나이트 판단", _s7_2),
         ("7-3", "순유동성 업데이트", _s7_3),
-        ("7-4", "일일 매매 요약 발송", _s7_4),
+        ("7-3b", "FRED 거시지표 크롤링", _s7_3b),
+        ("7-3c", "경제 캘린더 갱신", _s7_3c),
+        ("7-3d", "세금 현황 갱신", _s7_3d),
+        # Phase 5: 청산 + 정리
         ("8", "강제 청산", _s8),
         ("9-10", "정리 및 상태 체크", _s9),
     ]
@@ -55,7 +86,6 @@ async def run_eod_sequence(system: InjectedSystem) -> EODReport:
             await fn(system, report, ctx)
         except Exception as exc:
             _err(report, sid, name, exc)
-    await _s11_telegram(system, report)
     await get_event_bus().publish(EventType.EOD_STARTED, report)
     _log_summary(report)
     return report
@@ -65,8 +95,11 @@ async def _s1(s: InjectedSystem, r: EODReport, c: dict) -> None:
     pm = s.features.get("position_monitor")
     if pm:
         pos = await pm.sync_positions()
+        # M-7/M-14: 포지션 목록을 컨텍스트에 저장하여 정리 단계에서 참조한다
+        c["positions"] = pos
         logger.info("[EOD 1] 포지션 동기화: %d종목", len(pos))
     else:
+        c["positions"] = {}
         logger.warning("[EOD 1] position_monitor 미등록")
     r.steps_completed += 1
 
@@ -76,11 +109,92 @@ async def _s2(s: InjectedSystem, r: EODReport, c: dict) -> None:
     c["pnl"] = await cache.read_json("pnl:daily") or {}
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     await cache.write_json(f"pnl:history:{today}", c["pnl"], ttl=86400 * 30)
+
+    # pnl:history:dates — 리포트 날짜 목록을 갱신한다 (reports.py가 조회)
+    existing_dates: list[str] = await cache.read_json("pnl:history:dates") or []
+    if not isinstance(existing_dates, list):
+        existing_dates = []
+    if today not in existing_dates:
+        existing_dates.append(today)
+    existing_dates.sort(reverse=True)
+    await cache.write_json("pnl:history:dates", existing_dates)
+
     logger.info("[EOD 2] PnL 기록 (%s, %d건)", today, len(c["trades"]))
     r.steps_completed += 1
 
+async def _s2_1(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """일일 PnL을 daily_pnl_log DB 테이블에 영구 저장한다.
+
+    캐시 pnl:history:{date}는 30일 TTL이므로 DB에도 기록하여
+    장기 성과 분석과 ML 학습 데이터의 기반을 마련한다.
+    """
+    from src.db.models import DailyPnlLog
+
+    pnl_dict: dict = c.get("pnl", {})
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    pnl_amount = float(pnl_dict.get("total_pnl", 0.0)) if pnl_dict else 0.0
+    pnl_pct = float(pnl_dict.get("total_pnl_pct", 0.0)) if pnl_dict else 0.0
+    equity = float(pnl_dict.get("equity", 0.0)) if pnl_dict else 0.0
+
+    try:
+        db = s.components.db
+        async with db.get_session() as session:
+            # 동일 날짜 중복 방지: 기존 레코드가 있으면 건너뛴다
+            from sqlalchemy import select
+            exists = await session.execute(
+                select(DailyPnlLog.id).where(DailyPnlLog.date == today).limit(1),
+            )
+            if exists.scalar_one_or_none() is not None:
+                logger.info("[EOD 2.1] daily_pnl_log 이미 존재 (%s) -- 건너뜀", today)
+                r.daily_pnl_db_saved = True
+                r.steps_completed += 1
+                return
+
+            record = DailyPnlLog(
+                date=today,
+                pnl_amount=pnl_amount,
+                pnl_pct=pnl_pct,
+                equity=equity,
+            )
+            session.add(record)
+        r.daily_pnl_db_saved = True
+        logger.info(
+            "[EOD 2.1] daily_pnl_log DB 저장: date=%s, pnl=$%.2f, pct=%.4f%%",
+            today, pnl_amount, pnl_pct,
+        )
+    except Exception as exc:
+        logger.warning("[EOD 2.1] daily_pnl_log DB 저장 실패: %s", exc)
+    r.steps_completed += 1
+
+
+async def _s2_2(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """오늘 거래 내역을 trades:reasoning:{date}에 복사하고 trades:dates를 갱신한다.
+
+    trade_reasoning.py의 날짜별 매매 근거 조회가 참조하는 캐시를 기록한다.
+    trades:today는 EOD 마지막에 삭제되므로 이 시점에 별도 키에 보존해야 한다.
+    """
+    cache = s.components.cache
+    trades: list[dict] = c.get("trades", [])
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    # trades:reasoning:{date} — 오늘 거래 목록을 날짜별로 보존한다 (30일 TTL)
+    await cache.write_json(f"trades:reasoning:{today}", trades, ttl=86400 * 30)
+
+    # trades:dates — 매매 날짜 목록을 갱신한다
+    existing_dates: list[str] = await cache.read_json("trades:dates") or []
+    if not isinstance(existing_dates, list):
+        existing_dates = []
+    if today not in existing_dates:
+        existing_dates.append(today)
+    existing_dates.sort(reverse=True)
+    await cache.write_json("trades:dates", existing_dates)
+
+    logger.info("[EOD 2.2] 매매 근거 이력: %s, %d건", today, len(trades))
+    r.steps_completed += 1
+
+
 async def _s2_5(s: InjectedSystem, r: EODReport, c: dict) -> None:
-    """오늘 거래 데이터로 5종 차트 Redis 캐시를 갱신한다.
+    """오늘 거래 데이터로 5종 차트 캐시를 갱신한다.
 
     Step 2에서 읽어 둔 trades와 pnl 컨텍스트를 활용한다.
     pnl:daily 딕셔너리의 total_pnl 필드를 일일 PnL로 사용한다.
@@ -96,8 +210,143 @@ async def _s2_5(s: InjectedSystem, r: EODReport, c: dict) -> None:
     r.steps_completed += 1
 
 
+async def _s2_6(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """보유 종목 + 당일 거래 종목의 지표 스냅샷을 indicator_history DB에 저장한다.
+
+    data_preparer.py가 ML 학습 데이터 조회 시 indicator_history를 읽으므로
+    매일 EOD에서 지표 현황을 DB에 기록하여 학습 데이터 체인을 완성한다.
+    IndicatorBundleBuilder를 사용하여 종목별 기술 지표를 계산하고 DB에 저장한다.
+    """
+    from src.orchestration.phases.indicator_persister import persist_indicator_bundle
+
+    builder = s.features.get("indicator_bundle_builder")
+    if builder is None:
+        logger.info("[EOD 2.6] indicator_bundle_builder 미등록 -- 건너뜀")
+        r.steps_completed += 1
+        return
+
+    # 보유 포지션 + 당일 거래 종목을 합산하여 스냅샷 대상 종목을 결정한다
+    tickers: set[str] = set()
+    positions = c.get("positions", {})
+    if positions:
+        tickers.update(positions.keys())
+    for trade in c.get("trades", []):
+        if isinstance(trade, dict) and trade.get("ticker"):
+            tickers.add(trade["ticker"])
+
+    if not tickers:
+        logger.info("[EOD 2.6] 스냅샷 대상 종목 없음 -- 건너뜀")
+        r.steps_completed += 1
+        return
+
+    db = s.components.db
+    total_saved = 0
+    for ticker in tickers:
+        try:
+            bundle = await builder.build(ticker)  # type: ignore[union-attr]
+            saved = await persist_indicator_bundle(db, ticker, bundle)
+            total_saved += saved
+        except Exception as exc:
+            logger.warning("[EOD 2.6] 지표 스냅샷 실패 (%s): %s", ticker, exc)
+
+    r.indicator_history_saved = total_saved
+    logger.info("[EOD 2.6] indicator_history DB 저장: %d종목, %d건", len(tickers), total_saved)
+    r.steps_completed += 1
+
+
+async def _s2_7(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """성과 요약·일별·월별 캐시를 갱신한다.
+
+    performance.py의 summary/daily/monthly 엔드포인트가 조회하는 캐시를 기록한다.
+    pnl:history:dates의 날짜별 PnL 데이터를 집약하여 계산한다.
+    """
+    cache = s.components.cache
+    trades: list[dict] = c.get("trades", [])
+    pnl_dict: dict = c.get("pnl", {})
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+
+    today_pnl = float(pnl_dict.get("total_pnl", 0.0)) if pnl_dict else 0.0
+    today_pnl_pct = float(pnl_dict.get("total_pnl_pct", 0.0)) if pnl_dict else 0.0
+
+    # 기존 일별 성과 데이터를 읽어 오늘 데이터를 추가한다
+    existing_daily: list[dict] = await cache.read_json("performance:daily") or []
+    if not isinstance(existing_daily, list):
+        existing_daily = []
+
+    # 오늘 날짜 중복 방지 후 추가한다
+    existing_daily = [d for d in existing_daily if isinstance(d, dict) and d.get("date") != today]
+    existing_daily.append({
+        "date": today,
+        "pnl": today_pnl,
+        "pnl_pct": today_pnl_pct,
+        "trades": len(trades),
+    })
+    existing_daily.sort(key=lambda x: x.get("date", ""), reverse=True)
+    # 최대 90일 유지한다
+    existing_daily = existing_daily[:90]
+    await cache.write_json("performance:daily", existing_daily)
+
+    # 월별 집계를 계산한다
+    monthly_map: dict[str, dict] = {}
+    for d in existing_daily:
+        month = d.get("date", "")[:7]  # YYYY-MM
+        if not month:
+            continue
+        if month not in monthly_map:
+            monthly_map[month] = {"month": month, "pnl": 0.0, "pnl_pct": 0.0, "trades": 0}
+        monthly_map[month]["pnl"] += float(d.get("pnl", 0.0))
+        monthly_map[month]["pnl_pct"] += float(d.get("pnl_pct", 0.0))
+        monthly_map[month]["trades"] += int(d.get("trades", 0))
+    monthly_list = sorted(monthly_map.values(), key=lambda x: x["month"], reverse=True)
+    await cache.write_json("performance:monthly", monthly_list)
+
+    # 전체 요약을 계산한다
+    total_pnl = sum(float(d.get("pnl", 0.0)) for d in existing_daily)
+    total_pnl_pct = sum(float(d.get("pnl_pct", 0.0)) for d in existing_daily)
+    total_trades = sum(int(d.get("trades", 0)) for d in existing_daily)
+    win_days = sum(1 for d in existing_daily if float(d.get("pnl", 0.0)) > 0)
+    win_rate = (win_days / len(existing_daily) * 100.0) if existing_daily else 0.0
+
+    await cache.write_json("performance:summary", {
+        "total_pnl": round(total_pnl, 2),
+        "total_pnl_pct": round(total_pnl_pct, 4),
+        "today_pnl": today_pnl,
+        "win_rate": round(win_rate, 1),
+        "total_trades": total_trades,
+        "sharpe_ratio": 0.0,
+        "max_drawdown": 0.0,
+        "updated_at": now_iso,
+    })
+
+    logger.info(
+        "[EOD 2.7] 성과 캐시 갱신: 일별=%d, 월별=%d, 총PnL=$%.2f",
+        len(existing_daily), len(monthly_list), total_pnl,
+    )
+    r.steps_completed += 1
+
+
+async def _s2_8(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """slippage:raw 캐시를 읽어 slippage:stats + slippage:hours를 산출한다."""
+    from src.orchestration.phases.slippage_aggregator import aggregate_and_write
+    count = await aggregate_and_write(s.components.cache)
+    r.slippage_aggregated = count
+    logger.info("[EOD 2.8] 슬리피지 집계: %d건", count)
+    # SlippageTracker 인메모리 통계도 리셋한다 (다음 세션 시작 시 fresh)
+    tracker = s.features.get("slippage_tracker")
+    if tracker is not None:
+        tracker.reset()  # type: ignore[union-attr]
+    r.steps_completed += 1
+
+
 async def _s3(s: InjectedSystem, r: EODReport, c: dict) -> None:
-    logger.info("[EOD 3] 벤치마크 스냅샷 (PriceDataFetcher 연결 예정)")
+    """SPY/SSO 일봉 데이터를 조회하여 벤치마크 수익률을 캐시에 기록한다."""
+    from src.optimization.benchmark.benchmark_writer import write_benchmark_data
+    broker = s.components.broker
+    cache = s.components.cache
+    written = await write_benchmark_data(broker, cache, days=90)
+    r.benchmark_updated = written > 0
+    logger.info("[EOD 3] 벤치마크 스냅샷: %d종목 기록 완료", written)
     r.steps_completed += 1
 
 async def _s4(s: InjectedSystem, r: EODReport, c: dict) -> None:
@@ -106,8 +355,14 @@ async def _s4(s: InjectedSystem, r: EODReport, c: dict) -> None:
     if fb and trades:
         c["feedback"] = await fb.generate(trades, c.get("pnl", {}))
         r.feedback_sent = True
+        feedback_data = c["feedback"].model_dump()
         await s.components.cache.write_json(
-            "feedback:latest", c["feedback"].model_dump(), ttl=86400,
+            "feedback:latest", feedback_data, ttl=86400,
+        )
+        # feedback:{date} — 날짜별 피드백 캐시 (feedback.py:get_daily_feedback이 조회)
+        today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        await s.components.cache.write_json(
+            f"feedback:{today}", feedback_data, ttl=86400 * 30,
         )
         logger.info("[EOD 4] 피드백 보고서 생성 완료")
     else:
@@ -124,6 +379,89 @@ async def _s5(s: InjectedSystem, r: EODReport, c: dict) -> None:
         logger.warning("[EOD 5] profit_target 미등록")
     r.steps_completed += 1
 
+async def _s5_5(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """월간 PnL 캐시 갱신 + profit_target:history에 이번 달 이력을 기록한다.
+
+    1) trades:today에서 실현 PnL을 합산하여 performance:monthly_pnl을 갱신한다.
+    2) profit_target:meta에서 월간 목표를 읽는다.
+    3) profit_target:history 리스트에 이번 달 엔트리를 upsert한다 (최대 24개월).
+    """
+    cache = s.components.cache
+    trades = c.get("trades", [])
+    monthly_pnl = _compute_monthly_pnl(trades)
+    await _write_monthly_pnl_cache(cache, monthly_pnl, len(trades))
+    monthly_target = await _read_monthly_target(cache)
+    await _upsert_history_entry(cache, monthly_target, monthly_pnl)
+    logger.info("[EOD 5.5] 수익 목표 이력 기록: PnL=$%.2f, 목표=$%.2f", monthly_pnl, monthly_target)
+    r.steps_completed += 1
+
+
+def _compute_monthly_pnl(trades: list[dict]) -> float:
+    """trades:today 리스트에서 sell 거래의 실현 PnL을 합산한다."""
+    total = 0.0
+    for t in trades:
+        if isinstance(t, dict) and t.get("side") == "sell":
+            pnl = t.get("pnl")
+            if pnl is not None and isinstance(pnl, (int, float)):
+                total += pnl
+    return round(total, 2)
+
+
+async def _write_monthly_pnl_cache(
+    cache: object, pnl: float, trades_count: int = 0,
+) -> None:
+    """performance:monthly_pnl + pnl:monthly 캐시를 갱신한다. TTL 없음(영구 보관).
+
+    pnl:monthly는 _s5(이익 목표 평가)에서 읽어 월간 이익 목표 추적에 사용한다.
+    """
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+    await cache.write_json(  # type: ignore[union-attr]
+        "performance:monthly_pnl",
+        {"pnl": pnl, "updated_at": now_iso},
+    )
+    # pnl:monthly — Step 5(_s5)에서 profit_target.evaluate()가 읽는 캐시 키이다
+    await cache.write_json(  # type: ignore[union-attr]
+        "pnl:monthly",
+        {"pnl": pnl, "trades": trades_count, "updated_at": now_iso},
+    )
+
+
+async def _read_monthly_target(cache: object) -> float:
+    """profit_target:meta에서 월간 목표를 읽는다. 미설정 시 $300 기본값이다."""
+    meta = await cache.read_json("profit_target:meta")  # type: ignore[union-attr]
+    if meta and isinstance(meta, dict):
+        return float(meta.get("monthly_target", 300.0))
+    return 300.0
+
+
+async def _upsert_history_entry(
+    cache: object, target: float, actual: float,
+) -> None:
+    """profit_target:history에 이번 달 엔트리를 upsert한다.
+
+    동일 월이 있으면 갱신, 없으면 추가한다. 최대 24개월 유지, TTL 없음이다.
+    """
+    month_key = datetime.now(tz=timezone.utc).strftime("%Y-%m")
+    history: list[dict] = await cache.read_json("profit_target:history") or []  # type: ignore[union-attr,assignment]
+
+    # 이번 달 기존 엔트리를 찾아 갱신하거나 새로 추가한다
+    updated = False
+    for entry in history:
+        if isinstance(entry, dict) and entry.get("month") == month_key:
+            entry["target"] = target
+            entry["actual"] = actual
+            updated = True
+            break
+    if not updated:
+        history.append({"month": month_key, "target": target, "actual": actual})
+
+    # 최대 24개월만 유지한다 (오래된 항목 제거)
+    if len(history) > 24:
+        history = history[-24:]
+
+    await cache.write_json("profit_target:history", history)  # type: ignore[union-attr]
+
+
 async def _s6(s: InjectedSystem, r: EODReport, c: dict) -> None:
     logger.info("[EOD 6] 리스크 예산 업데이트 완료")
     r.steps_completed += 1
@@ -132,8 +470,61 @@ async def _s7(s: InjectedSystem, r: EODReport, c: dict) -> None:
     from src.optimization.feedback.execution_optimizer import optimize_execution
     res = optimize_execution(c.get("trades", []))
     r.params_adjusted = len(res.changes) > 0
+    # 변경 이력을 컨텍스트에 저장하여 _s7_0에서 DB 기록에 사용한다
+    c["param_changes"] = res.changes
     logger.info("[EOD 7] 파라미터 조정 %d건", len(res.changes))
     r.steps_completed += 1
+
+async def _s7_0(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """파라미터 변경 이력을 strategy_param_history DB 테이블에 기록한다.
+
+    Step 7에서 optimize_execution이 반환한 changes 리스트를 파싱하여
+    각 변경 항목을 개별 DB 행으로 저장한다. 감사 추적과 파라미터 이력 분석에 사용된다.
+    """
+    from src.db.models import StrategyParamHistory
+
+    changes: list[str] = c.get("param_changes", [])
+    if not changes:
+        logger.info("[EOD 7-0] 파라미터 변경 없음 -- 건너뜀")
+        r.steps_completed += 1
+        return
+
+    db = s.components.db
+    saved = 0
+    try:
+        async with db.get_session() as session:
+            for change_desc in changes:
+                # 변경 설명 형식: "승률 45.0% < 50% → min_confidence 0.500 → 0.525"
+                param_name, old_val, new_val = _parse_param_change(change_desc)
+                record = StrategyParamHistory(
+                    param_name=param_name,
+                    old_value=old_val,
+                    new_value=new_val,
+                    reason=change_desc,
+                )
+                session.add(record)
+                saved += 1
+        r.param_history_saved = saved
+        logger.info("[EOD 7-0] strategy_param_history DB 저장: %d건", saved)
+    except Exception as exc:
+        logger.warning("[EOD 7-0] strategy_param_history DB 저장 실패: %s", exc)
+    r.steps_completed += 1
+
+
+def _parse_param_change(desc: str) -> tuple[str, str, str]:
+    """파라미터 변경 설명 문자열에서 파라미터 이름, 이전 값, 새 값을 추출한다.
+
+    형식 예시: "승률 45.0% < 50% → min_confidence 0.500 → 0.525"
+    파싱 실패 시 기본값(unknown, -, -)을 반환한다.
+    """
+    import re
+
+    # "→ param_name old_val → new_val" 패턴을 찾는다
+    match = re.search(r"→\s+(\S+)\s+([\d.]+)\s+→\s+([\d.]+)", desc)
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    return "unknown", "-", "-"
+
 
 async def _s7_1(s: InjectedSystem, r: EODReport, c: dict) -> None:
     try:
@@ -186,6 +577,15 @@ async def _s7_1b(s: InjectedSystem, r: EODReport, c: dict) -> None:
             nlt.reset()  # type: ignore[union-attr]
     except Exception as exc:
         logger.warning("[EOD 7-1b] NetLiquidityTracker 리셋 실패 (무시): %s", exc)
+
+    # OrderManager 일일 리셋 -- 매도 블록 + 장종료 상태 초기화
+    try:
+        om = s.features.get("order_manager")
+        if om is not None:
+            om.reset_blocked()  # type: ignore[union-attr]
+            om.reset_market_closed()  # type: ignore[union-attr]
+    except Exception as exc:
+        logger.warning("[EOD 7-1b] OrderManager 리셋 실패 (무시): %s", exc)
 
     logger.info("[EOD 7-1b] 모듈 리셋 완료")
     r.steps_completed += 1
@@ -270,7 +670,7 @@ async def _s7_2(s: InjectedSystem, r: EODReport, c: dict) -> None:
 async def _s7_3(s: InjectedSystem, r: EODReport, c: dict) -> None:
     """NetLiquidityTracker를 FRED에서 갱신하여 다음 날 바이어스를 준비한다.
 
-    EOD에서 1회 갱신하여 Redis에 캐시한다. 다음 세션 시작 시 get_cached()로 읽는다.
+    EOD에서 1회 갱신하여 캐시에 저장한다. 다음 세션 시작 시 get_cached()로 읽는다.
     """
     nlt = s.features.get("net_liquidity_tracker")
     if nlt is None:
@@ -289,21 +689,302 @@ async def _s7_3(s: InjectedSystem, r: EODReport, c: dict) -> None:
     r.steps_completed += 1
 
 
-async def _s7_4(s: InjectedSystem, r: EODReport, c: dict) -> None:
-    """일일 매매 요약을 텔레그램으로 발송한다.
+async def _s7_3b(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """FRED 거시지표를 크롤링하여 macro:{시리즈} 캐시에 저장한다.
 
-    Step 2에서 읽어 둔 trades와 pnl 컨텍스트를 활용한다.
-    trades:today 삭제(Step 9) 이전에 실행해야 한다.
+    macro.py 엔드포인트가 macro:VIXCLS, macro:DFF 등 캐시를 읽지만
+    수동 트리거(POST /api/indicators/crawl)로만 기록되어 자동 실행이 없었다.
+    공유 모듈 populate_fred_cache()를 사용하여 주요 시리즈를 일괄 조회한다.
     """
-    from src.monitoring.summary.daily_summary import send_daily_summary
-    trades = c.get("trades", [])
-    pnl = c.get("pnl", {})
-    sent = await send_daily_summary(s, trades, pnl)
-    logger.info("[EOD 7-4] 일일 매매 요약 %s", "발송 완료" if sent else "발송 실패")
+    from src.indicators.misc.fred_fetcher import populate_fred_cache
+
+    count = await populate_fred_cache(s.components.http, s.components.vault, s.components.cache)
+    r.fred_crawled = count
+    logger.info("[EOD 7-3b] FRED 거시지표 크롤링: %d건", count)
     r.steps_completed += 1
 
 
+async def _s7_3c(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """경제 캘린더를 생성하여 macro:calendar 캐시에 저장한다.
+
+    정적 스케줄 기반으로 향후 30일 FOMC, CPI, NFP 등 주요 이벤트를 계산한다.
+    외부 API 호출 없이 공개된 일정 패턴만 사용한다.
+    """
+    try:
+        from src.indicators.misc.econ_calendar import fetch_economic_calendar
+        cache = s.components.cache
+        events = await fetch_economic_calendar(cache)
+        r.econ_calendar_updated = len(events) > 0
+        logger.info("[EOD 7-3c] 경제 캘린더 갱신: %d건", len(events))
+    except Exception as exc:
+        logger.warning("[EOD 7-3c] 경제 캘린더 갱신 실패 (무시): %s", exc)
+    r.steps_completed += 1
+
+
+async def _s7_3d(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """세금 현황·연간 리포트·손실 수확 제안 캐시를 갱신한다.
+
+    tax.py 엔드포인트가 읽는 tax:status, tax:report:{year}, tax:harvest 키를
+    DB trades 테이블과 포지션 데이터로 계산하여 기록한다.
+    Step 7-3b에서 macro:DEXKOUS 환율을 갱신한 뒤 실행해야 한다.
+    """
+    from src.strategy.tax.tax_writer import (
+        compute_tax_harvest,
+        compute_tax_report,
+        compute_tax_status,
+    )
+
+    db = s.components.db
+    cache = s.components.cache
+    year = datetime.now(tz=timezone.utc).year
+
+    try:
+        await compute_tax_status(db, cache)
+        await compute_tax_report(db, cache, year)
+        await compute_tax_harvest(db, cache)
+        r.tax_computed = True
+        logger.info("[EOD 7-3d] 세금 현황 갱신 완료")
+    except Exception as exc:
+        logger.warning("[EOD 7-3d] 세금 현황 갱신 실패 (무시): %s", exc)
+    r.steps_completed += 1
+
+
+async def _s_feedback_db(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """피드백 보고서를 feedback_reports DB에 영구 저장한다.
+
+    캐시(30일 TTL)와 별도로 DB에 영속하여 장기 조회를 보장한다.
+    """
+    feedback = c.get("feedback")
+    if feedback is None:
+        logger.info("[EOD 7-0a] 피드백 없음 -- 건너뜀")
+        r.steps_completed += 1
+        return
+
+    from src.db.models import FeedbackReport as FeedbackReportModel
+
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    db = s.components.db
+    try:
+        async with db.get_session() as session:
+            from sqlalchemy import select
+            exists = await session.execute(
+                select(FeedbackReportModel.id).where(
+                    FeedbackReportModel.report_date == today,
+                    FeedbackReportModel.report_type == "daily",
+                ).limit(1),
+            )
+            if exists.scalar_one_or_none() is not None:
+                logger.info("[EOD 7-0a] feedback_reports 이미 존재 (%s) -- 건너뜀", today)
+            else:
+                record = FeedbackReportModel(
+                    report_type="daily",
+                    report_date=today,
+                    content=feedback.model_dump(),
+                )
+                session.add(record)
+                logger.info("[EOD 7-0a] feedback_reports DB 저장 완료: %s", today)
+        r.feedback_db_saved = True
+    except Exception as exc:
+        logger.warning("[EOD 7-0a] feedback_reports DB 저장 실패: %s", exc)
+    r.steps_completed += 1
+
+
+async def _s_daily_report(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """일간 종합 보고서를 생성하여 DB와 캐시에 저장한다.
+
+    거래 내역, PnL, 피드백, 파라미터 변경을 종합한 보고서를 작성한다.
+    feedback_reports 테이블(report_type='daily_report')에 영속한다.
+    """
+    from src.db.models import FeedbackReport as FeedbackReportModel
+
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    trades = c.get("trades", [])
+    pnl = c.get("pnl", {})
+    feedback = c.get("feedback")
+    param_changes = c.get("param_changes", [])
+
+    # 보고서 콘텐츠를 구성한다
+    report_content = {
+        "date": today,
+        "trade_count": len(trades),
+        "total_pnl": float(pnl.get("total_pnl", 0.0)) if pnl else 0.0,
+        "total_pnl_pct": float(pnl.get("total_pnl_pct", 0.0)) if pnl else 0.0,
+        "equity": float(pnl.get("equity", 0.0)) if pnl else 0.0,
+        "trades": trades,
+        "pnl": pnl,
+        "feedback": feedback.model_dump() if feedback else None,
+        "param_changes": param_changes,
+        "params_adjusted": r.params_adjusted,
+        "benchmark_updated": r.benchmark_updated,
+    }
+    c["daily_report"] = report_content
+
+    # DB에 저장한다
+    db = s.components.db
+    try:
+        async with db.get_session() as session:
+            from sqlalchemy import select
+            exists = await session.execute(
+                select(FeedbackReportModel.id).where(
+                    FeedbackReportModel.report_date == today,
+                    FeedbackReportModel.report_type == "daily_report",
+                ).limit(1),
+            )
+            if exists.scalar_one_or_none() is not None:
+                logger.info("[EOD 7-0b] daily_report 이미 존재 (%s) -- 건너뜀", today)
+            else:
+                record = FeedbackReportModel(
+                    report_type="daily_report",
+                    report_date=today,
+                    content=report_content,
+                )
+                session.add(record)
+                logger.info("[EOD 7-0b] daily_report DB 저장 완료: %s", today)
+        r.daily_report_saved = True
+    except Exception as exc:
+        logger.warning("[EOD 7-0b] daily_report DB 저장 실패: %s", exc)
+
+    # 캐시에도 저장한다 (API 엔드포인트 조회용, 30일 TTL)
+    try:
+        await s.components.cache.write_json(
+            f"report:daily:{today}", report_content, ttl=86400 * 30,
+        )
+    except Exception as exc:
+        logger.warning("[EOD 7-0b] 캐시 저장 실패: %s", exc)
+
+    r.steps_completed += 1
+
+
+async def _s_daily_telegram(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """종합 일간 보고서를 텔레그램으로 발송한다.
+
+    매매 요약 + 피드백(교훈/개선안) + 파라미터 변경 + 시스템 현황을
+    하나의 메시지로 통합하여 발송한다.
+    """
+    try:
+        html = _build_daily_telegram_html(c, r)
+        await s.components.telegram.send_text(html)
+        r.telegram_sent = True
+        logger.info("[EOD 7-0c] 종합 텔레그램 발송 완료")
+    except Exception as exc:
+        logger.warning("[EOD 7-0c] 종합 텔레그램 발송 실패: %s", exc)
+    r.steps_completed += 1
+
+
+def _build_daily_telegram_html(c: dict, r: EODReport) -> str:
+    """종합 일간 텔레그램 HTML을 생성한다."""
+    today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    trades: list[dict] = c.get("trades", [])
+    pnl: dict = c.get("pnl", {})
+    feedback = c.get("feedback")
+    param_changes: list[str] = c.get("param_changes", [])
+
+    total_pnl = float(pnl.get("total_pnl", 0.0)) if pnl else 0.0
+    emoji = "📈" if total_pnl >= 0 else "📉"
+    lines: list[str] = [f"{emoji} <b>[일간 보고서] {today}</b>"]
+
+    # ── 매매 요약 ──
+    total = len(trades)
+    if total > 0:
+        pnls = [_tg_safe_float(t.get("pnl", 0)) for t in trades]
+        wins = sum(1 for p in pnls if p > 0)
+        losses = total - wins
+        win_rate = wins / total * 100
+
+        lines.append("")
+        lines.append(f"<b>📊 매매 요약</b>")
+        lines.append(f"총 {total}건 (승 {wins} / 패 {losses})")
+        lines.append(f"승률: {win_rate:.1f}%")
+        lines.append(f"총 손익: ${total_pnl:+,.2f}")
+
+        # 최고/최저 거래
+        best_idx = max(range(len(pnls)), key=lambda i: pnls[i])
+        worst_idx = min(range(len(pnls)), key=lambda i: pnls[i])
+        best = trades[best_idx]
+        worst = trades[worst_idx]
+        lines.append(f"Best: {best.get('ticker', '?')} ${pnls[best_idx]:+,.2f}")
+        lines.append(f"Worst: {worst.get('ticker', '?')} ${pnls[worst_idx]:+,.2f}")
+
+        # 티커별 요약
+        by_ticker: dict[str, dict] = {}
+        for t in trades:
+            tk = t.get("ticker", "?")
+            p = _tg_safe_float(t.get("pnl", 0))
+            entry = by_ticker.setdefault(tk, {"count": 0, "pnl": 0.0})
+            entry["count"] += 1
+            entry["pnl"] += p
+
+        lines.append("")
+        for tk, info in sorted(by_ticker.items(), key=lambda x: -x[1]["pnl"]):
+            icon = "🟢" if info["pnl"] >= 0 else "🔴"
+            lines.append(f"  {icon} {tk}: {info['count']}건 ${info['pnl']:+,.2f}")
+    else:
+        lines.append("\n오늘 체결된 매매가 없습니다.")
+
+    # ── 피드백 ──
+    if feedback is not None:
+        fb_data = feedback.model_dump() if hasattr(feedback, "model_dump") else feedback
+        lessons = fb_data.get("lessons", [])
+        suggestions = fb_data.get("suggestions", [])
+
+        if lessons or suggestions:
+            lines.append("")
+            lines.append(f"<b>🎯 피드백</b>")
+            if lessons:
+                for lesson in lessons[:5]:
+                    lines.append(f"• {lesson}")
+            if suggestions:
+                lines.append("")
+                lines.append("<b>개선안:</b>")
+                for sug in suggestions[:3]:
+                    lines.append(f"• {sug}")
+
+    # ── 파라미터 변경 ──
+    if param_changes:
+        lines.append("")
+        lines.append(f"<b>⚙️ 파라미터 조정 ({len(param_changes)}건)</b>")
+        for change in param_changes[:5]:
+            lines.append(f"• {change}")
+
+    # ── 시스템 현황 ──
+    lines.append("")
+    lines.append(f"<b>🔧 EOD 현황</b>")
+    status_items = []
+    if r.daily_pnl_db_saved:
+        status_items.append("PnL DB✓")
+    if r.feedback_db_saved:
+        status_items.append("피드백 DB✓")
+    if r.daily_report_saved:
+        status_items.append("보고서 DB✓")
+    if r.chart_data_updated:
+        status_items.append("차트✓")
+    if r.benchmark_updated:
+        status_items.append("벤치마크✓")
+    lines.append(", ".join(status_items) if status_items else "저장 항목 없음")
+
+    if r.errors:
+        lines.append(f"\n<b>⚠️ 에러 ({len(r.errors)}건):</b>")
+        for e in r.errors[:5]:
+            lines.append(f"- {e}")
+
+    return "\n".join(lines)
+
+
+def _tg_safe_float(val: object, default: float = 0.0) -> float:
+    """텔레그램 메시지용 안전한 float 변환이다."""
+    try:
+        return float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 async def _s8(s: InjectedSystem, r: EODReport, c: dict) -> None:
+    """C-13: Step 7-2 미실행/실패 시 안전하게 처리한다."""
+    liquidate_tickers = c.get("overnight_liquidate")
+    if liquidate_tickers is None:
+        logger.warning("[EOD 8] Step 7-2 미실행 또는 실패 — 강제 청산 건너뜀 (안전 조치)")
+        r.steps_completed += 1
+        return
     om = s.features.get("order_manager")
     pm = s.features.get("position_monitor")
     if om and pm:
@@ -316,33 +997,58 @@ async def _s8(s: InjectedSystem, r: EODReport, c: dict) -> None:
     r.steps_completed += 1
 
 async def _s9(s: InjectedSystem, r: EODReport, c: dict) -> None:
-    await s.components.cache.delete("trades:today")
-    logger.info("[EOD 9-10] 일일 캐시 정리 완료")
-    r.steps_completed += 1
+    """최종 정리 단계이다.
 
-async def _s11_telegram(s: InjectedSystem, r: EODReport) -> None:
-    """텔레그램으로 EOD 보고서를 발송한다."""
+    C-12: trades:today는 Step 2에서 c["trades"]에 캡처 완료 — 모든 하위 단계가
+          컨텍스트를 참조하므로 여기서 안전하게 삭제한다.
+    M-14: beast/pyramid/exit 세션 상태 키를 명시적으로 정리한다.
+    """
+    cache = s.components.cache
+
+    # M-14: 세션 상태 캐시 키를 정리한다 (보유 포지션 기반)
+    positions = c.get("positions", {})
+    held_tickers = set(positions.keys()) if positions else set()
+    # 글로벌 세션 상태 키를 삭제한다
+    for global_key in ("exit:scales", "exit:peak_pnl", "gap_block:all"):
+        try:
+            await cache.delete(global_key)
+        except Exception as exc:
+            logger.warning("[EOD 9] 세션 키 삭제 실패 (%s): %s", global_key, exc)
+
+    # M-7: 보유 포지션 종목의 beast/pyramid 캐시 키를 정리한다
+    # 포지션이 없는 종목의 잔존 키(고아 키)도 제거하기 위해
+    # 알려진 모든 종목에 대해 삭제를 시도한다
+    _all_tickers = set(held_tickers)
+    # trades:today에서 거래된 종목도 정리 대상에 포함한다
+    for trade in c.get("trades", []):
+        if isinstance(trade, dict) and trade.get("ticker"):
+            _all_tickers.add(trade["ticker"])
+    for tk in _all_tickers:
+        for prefix in ("beast_positions:", "pyramid_level:"):
+            try:
+                await cache.delete(f"{prefix}{tk}")
+            except Exception as exc:
+                logger.warning("[EOD 9] 캐시 키 삭제 실패 (%s%s): %s", prefix, tk, exc)
+
+    # C-12: trades:today를 최종 단계에서 삭제한다 (모든 하위 단계 완료 후)
+    await cache.delete("trades:today")
+
+    # 슬리피지 원시 데이터 삭제 (Step 2.8에서 집계 완료)
     try:
-        status = "OK" if not r.errors else "WARN"
-        lines = [
-            f"<b>[EOD 보고서] {status}</b>",
-            f"완료: {r.steps_completed}/{r.total_steps}",
-            f"청산: {r.positions_closed}건",
-            f"오버나이트 청산: {r.overnight_liquidations}건",
-            f"피드백: {'발송' if r.feedback_sent else '미발송'}",
-            f"파라미터: {'조정' if r.params_adjusted else '미조정'}",
-            f"차트: {'갱신' if r.chart_data_updated else '미갱신'}",
-            f"순유동성: {'갱신' if r.net_liquidity_updated else '미갱신'}",
-        ]
-        if r.errors:
-            lines.append(f"\n<b>에러 ({len(r.errors)}건):</b>")
-            lines.extend(f"- {e}" for e in r.errors[:5])
-        await s.components.telegram.send_text("\n".join(lines))
-        r.telegram_sent = True
-        r.steps_completed += 1
-        logger.info("[EOD 11] 텔레그램 보고서 발송 완료")
-    except Exception as exc:
-        _err(r, "11", "텔레그램 발송", exc)
+        await cache.delete("slippage:raw")
+    except Exception:
+        pass
+
+    # 뉴스 관련 일일 캐시를 정리한다 (다음 세션 시작 시 fresh 데이터 수집)
+    for key in ("news:key_latest", "news:latest_titles", "news:themes_latest",
+                "news:situation_reports_latest", "news:classified_latest",
+                "news:latest_summary", "sentinel:watch", "sentinel:priority"):
+        try:
+            await cache.delete(key)
+        except Exception:
+            pass
+    logger.info("[EOD 9-10] 일일 캐시 정리 완료 (trades + news + 세션상태 키)")
+    r.steps_completed += 1
 
 
 def _log_summary(r: EODReport) -> None:

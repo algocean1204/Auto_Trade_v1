@@ -3,7 +3,7 @@
 수동 크롤링 시작과 진행 상태 조회를 제공한다.
 크롤링 태스크는 즉시 반환하고 백그라운드에서 비동기 실행한다.
 
-Redis 키 구조:
+캐시 키 구조:
   - crawl:task:{task_id} : 크롤링 태스크 진행 상태 dict
 """
 from __future__ import annotations
@@ -91,17 +91,17 @@ async def _run_crawl_task(task_id: str) -> None:
     """백그라운드 크롤링 태스크 본체이다.
 
     crawl_scheduler에서 스케줄을 생성하고 crawl_engine.run(schedule)을 호출한다.
-    진행 상태는 Redis crawl:task:{task_id} 키에 실시간 기록한다.
+    진행 상태는 캐시 crawl:task:{task_id} 키에 실시간 기록한다.
     _crawl_lock으로 동시 실행을 방지한다.
     """
     cache = _system.components.cache  # type: ignore[union-attr]
-    redis_key = f"crawl:task:{task_id}"
+    cache_key = f"crawl:task:{task_id}"
     status: dict = _default_status(task_id)
     status["status"] = "running"
 
     async with _crawl_lock:
         try:
-            await cache.write_json(redis_key, status)
+            await cache.write_json(cache_key, status)
 
             # crawl_engine 피처 획득 (없으면 스킵)
             crawl_engine = _system.features.get("crawl_engine")  # type: ignore[union-attr]
@@ -109,7 +109,7 @@ async def _run_crawl_task(task_id: str) -> None:
                 status["status"] = "failed"
                 status["errors"].append("크롤 엔진이 등록되지 않았다")
                 status["completed_at"] = _now_iso()
-                await cache.write_json(redis_key, status)
+                await cache.write_json(cache_key, status)
                 return
 
             # crawl_scheduler 피처에서 스케줄을 생성한다
@@ -118,7 +118,7 @@ async def _run_crawl_task(task_id: str) -> None:
                 status["status"] = "failed"
                 status["errors"].append("크롤 스케줄러가 등록되지 않았다")
                 status["completed_at"] = _now_iso()
-                await cache.write_json(redis_key, status)
+                await cache.write_json(cache_key, status)
                 return
 
             schedule = crawl_scheduler.build_schedule()
@@ -145,8 +145,8 @@ async def _run_crawl_task(task_id: str) -> None:
             status["completed_at"] = _now_iso()
 
         finally:
-            # 결과를 Redis에 최종 기록한다. 1시간 후 자동 만료.
-            await cache.write_json(redis_key, status)
+            # 결과를 캐시에 최종 기록한다. 1시간 후 자동 만료.
+            await cache.write_json(cache_key, status)
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ async def start_manual_crawl(
         task_id = str(uuid.uuid4())
         started_at = _now_iso()
 
-        # 초기 상태를 Redis에 미리 저장한다
+        # 초기 상태를 캐시에 미리 저장한다
         cache = _system.components.cache  # type: ignore[union-attr]
         await cache.write_json(f"crawl:task:{task_id}", _default_status(task_id))
 
@@ -191,7 +191,7 @@ async def start_manual_crawl(
 async def get_crawl_status(task_id: str) -> CrawlStatusResponse:
     """크롤링 태스크의 진행 상태를 반환한다.
 
-    Redis crawl:task:{task_id} 키에서 상태를 읽는다.
+    캐시 crawl:task:{task_id} 키에서 상태를 읽는다.
     존재하지 않는 task_id이면 404를 반환한다.
     """
     _require_system()

@@ -28,7 +28,7 @@ _MULTIPLIERS: dict[str, float] = {
     "NEUTRAL": 1.0,
 }
 
-# -- Redis 캐시 키 --
+# -- 캐시 키 --
 _CACHE_KEY: str = "macro:net_liquidity"
 _CACHE_TTL: int = 3600  # 1시간
 
@@ -48,7 +48,7 @@ class NetLiquidityTracker:
         """초기화한다.
 
         Args:
-            cache: Redis 캐시 클라이언트.
+            cache: 캐시 클라이언트.
             fred_api_key: FRED API 키.
         """
         self._cache = cache
@@ -69,7 +69,7 @@ class NetLiquidityTracker:
         bias, multiplier = _determine_bias(nl_bn, self._prev_nl)
         self._prev_nl = nl_bn
 
-        await self._cache_result(nl_bn, bias, multiplier)
+        await self._cache_result(nl_bn, bias, multiplier, walcl, tga, rrpo)
 
         _logger.info(
             "NetLiquidity: $%.1fB (%s, %.1fx)",
@@ -120,18 +120,39 @@ class NetLiquidityTracker:
                 f"FRED {series_id}: 관측값 없음",
             )
         value_str = observations[0].get("value", "0")
+        # FRED API는 누락 데이터를 "."으로 표시한다 — float() 변환 전 검증
+        if value_str in (".", "", "N/A"):
+            raise ValueError(
+                f"FRED {series_id}: 값 누락 ('{value_str}')",
+            )
         return float(value_str)
 
     async def _cache_result(
-        self, nl_bn: float, bias: str, multiplier: float,
+        self,
+        nl_bn: float,
+        bias: str,
+        multiplier: float,
+        walcl: float = 0.0,
+        tga: float = 0.0,
+        rrpo: float = 0.0,
     ) -> None:
-        """결과를 Redis에 캐시한다."""
+        """결과를 캐시에 저장한다.
+
+        Reader(macro.py)가 기대하는 필드:
+          net_liquidity, walcl, tga, rrp, bias, message
+        + 기존 필드(net_liquidity_bn, multiplier)도 하위 호환을 위해 유지한다.
+        """
         await self._cache.write_json(
             _CACHE_KEY,
             {
                 "net_liquidity_bn": round(nl_bn, 2),
+                "net_liquidity": round(nl_bn, 2),
+                "walcl": round(walcl / 1000, 2),
+                "tga": round(tga / 1000, 2),
+                "rrp": round(rrpo / 1000, 2),
                 "bias": bias,
                 "multiplier": multiplier,
+                "message": f"Net Liquidity ${nl_bn:.1f}B ({bias})",
             },
             ttl=_CACHE_TTL,
         )

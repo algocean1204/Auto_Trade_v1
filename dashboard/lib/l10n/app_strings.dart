@@ -435,6 +435,7 @@ class AppStrings {
     'price_chart': '가격 차트',
     'analyzing': '분석 중...',
     'no_analysis_data': '분석 데이터 없음',
+    'no_price_data': '가격 미수신',
 
     // Stock Analysis Screen (추가 키)
     'no_chart_data': '차트 데이터 없음',
@@ -510,6 +511,10 @@ class AppStrings {
     'inverse_etf': '인버스',
     'sector_etf': '섹터 ETF',
     'no_leveraged': '개별 레버리지 ETF 없음',
+    'pair_auto_added': '페어 자동 추가: {pair}',
+    'adding_ticker': '추가 중...',
+    'etf_pairs': 'ETF 페어',
+    'unpaired_tickers': '단독 종목',
 
     // 투자 모드 (신규)
     'virtual_trading': '모의투자',
@@ -1082,6 +1087,7 @@ class AppStrings {
     'price_chart': 'Price Chart',
     'analyzing': 'Analyzing...',
     'no_analysis_data': 'No analysis data',
+    'no_price_data': 'Price N/A',
 
     // Stock Analysis Screen (additional keys)
     'no_chart_data': 'No chart data',
@@ -1157,6 +1163,10 @@ class AppStrings {
     'inverse_etf': 'Inverse',
     'sector_etf': 'Sector ETF',
     'no_leveraged': 'No individual leveraged ETF',
+    'pair_auto_added': 'Pair auto-added: {pair}',
+    'adding_ticker': 'Adding...',
+    'etf_pairs': 'ETF Pairs',
+    'unpaired_tickers': 'Unpaired',
 
     // Trading Mode (new)
     'virtual_trading': 'Virtual',

@@ -17,6 +17,7 @@ from src.common.broker_gateway import (
 from src.common.http_client import AsyncHttpClient
 from src.common.logger import get_logger
 from src.executor.broker.kis_api import (
+    cancel_order as kis_cancel_order,
     fetch_balance,
     fetch_buy_power,
     fetch_daily_candles,
@@ -79,6 +80,10 @@ class BrokerClientImpl(BrokerClient):
                 price=price_data.price, exchange=order.exchange,
             )
         return await submit_order(self.virtual_auth, effective_order, self._http)
+
+    async def cancel_order(self, order_id: str, exchange: str = "NAS") -> bool:
+        """virtual_auth로 미체결 주문을 취소한다."""
+        return await kis_cancel_order(self.virtual_auth, order_id, exchange, self._http)
 
     async def get_exchange_rate(self) -> float:
         """virtual_auth의 체결기준잔고에서 USD/KRW 환율을 추출한다.

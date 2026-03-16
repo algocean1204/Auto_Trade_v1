@@ -1,6 +1,8 @@
 """F3 지표 -- 레버리지 디케이 (변동성 드래그) 정량화이다."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from src.common.broker_gateway import OHLCV
@@ -47,7 +49,11 @@ def _calc_decay_pct(ideal: float, actual: float) -> float:
     """이상 수익률 대비 실제 수익률의 디케이 비율(%)을 계산한다.
 
     양수 = 디케이 발생 (실제 < 이상), 음수 = 오히려 초과 수익이다.
+    NaN/inf 입력 시 0.0을 반환하여 포지션 사이징으로 전파를 방지한다.
     """
+    if math.isnan(ideal) or math.isnan(actual) or math.isinf(ideal) or math.isinf(actual):
+        logger.warning("디케이 계산 NaN/inf 감지: ideal=%s, actual=%s", ideal, actual)
+        return 0.0
     if abs(ideal) < 0.0001:
         return 0.0
     return (ideal - actual) / abs(ideal) * 100.0

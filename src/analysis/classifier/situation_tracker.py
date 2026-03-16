@@ -1,7 +1,7 @@
 """F2 AI 분석 -- 장기 지속 이슈의 경과를 추적하고 상황 보고서를 생성한다.
 
 핵심뉴스(impact >= 0.7)를 Claude로 분석하여 전쟁/무역분쟁/금리사이클 등
-진행 중인 상황을 감지하고, Redis에 타임라인을 관리한다.
+진행 중인 상황을 감지하고, 캐시에 타임라인을 관리한다.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from src.common.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
 
-# Redis 키 패턴이다
+# 캐시 키 패턴이다
 _META_KEY = "situation:{id}:meta"
 _TIMELINE_KEY = "situation:{id}:timeline"
 _ACTIVE_IDS_KEY = "situation:active_ids"
@@ -165,7 +165,7 @@ def format_situation_telegram(report: SituationReport) -> str:
 class OngoingSituationTracker:
     """장기 지속 이슈의 경과를 추적하고 상황 보고서를 생성한다.
 
-    CacheClient(Redis)에 타임라인을 누적하고,
+    CacheClient에 타임라인을 누적하고,
     AiClient(Claude)로 상황 감지 및 평가를 수행한다.
     """
 
@@ -275,7 +275,7 @@ class OngoingSituationTracker:
             meta.last_updated = now
             meta.article_count += len(new_entries)
 
-        # Redis 저장 (타임라인/메타는 항상 업데이트한다)
+        # 캐시 저장 (타임라인/메타는 항상 업데이트한다)
         await self._save_meta(sid, meta)
         await self._save_timeline(sid, timeline)
 
@@ -337,14 +337,28 @@ class OngoingSituationTracker:
             logger.warning("[Step 2.8] Claude 평가 생성 실패: %s", exc)
             return "평가 생성 실패"
 
-    # -- Redis 조작 메서드 --
+    # -- 캐시 조작 메서드 --
 
     async def _load_active_ids(self) -> list[str]:
-        """활성 상황 ID 목록을 로드한다."""
+        """활성 상황 ID 목록을 로드하고, 메타데이터가 없는 고아 ID를 정리한다."""
         try:
             data = await self._cache.read_json(_ACTIVE_IDS_KEY)
-            if isinstance(data, list):
-                return data
+            if not isinstance(data, list):
+                return []
+            # 고아 ID 정리: 메타데이터가 없으면 제거한다
+            valid_ids: list[str] = []
+            for sid in data:
+                if not isinstance(sid, str):
+                    continue
+                meta = await self._load_meta(sid)
+                if meta is not None:
+                    valid_ids.append(sid)
+                else:
+                    logger.info("고아 active_id 제거: %s (메타데이터 없음)", sid)
+            # 정리된 목록이 원본과 다르면 저장한다
+            if len(valid_ids) != len(data):
+                await self._cache.write_json(_ACTIVE_IDS_KEY, valid_ids, ttl=_TTL)
+            return valid_ids
         except Exception as exc:
             logger.warning("활성 ID 로드 실패: %s", exc)
         return []
@@ -385,7 +399,7 @@ class OngoingSituationTracker:
             return False
 
     async def _mark_telegram_sent(self, sid: str) -> None:
-        """텔레그램 전송 시각을 Redis에 기록한다."""
+        """텔레그램 전송 시각을 캐시에 기록한다."""
         try:
             key = _LAST_TELEGRAM_KEY.format(id=sid)
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -394,7 +408,7 @@ class OngoingSituationTracker:
             logger.exception("텔레그램 전송 시각 기록 실패: %s", sid)
 
     async def _load_meta(self, sid: str) -> OngoingSituation | None:
-        """Redis에서 상황 메타데이터를 로드한다."""
+        """캐시에서 상황 메타데이터를 로드한다."""
         try:
             key = _META_KEY.format(id=sid)
             data = await self._cache.read_json(key)
@@ -405,7 +419,7 @@ class OngoingSituationTracker:
         return None
 
     async def _save_meta(self, sid: str, meta: OngoingSituation) -> None:
-        """Redis에 상황 메타데이터를 저장한다."""
+        """캐시에 상황 메타데이터를 저장한다."""
         try:
             key = _META_KEY.format(id=sid)
             await self._cache.write_json(key, meta.model_dump(), ttl=_TTL)
@@ -413,7 +427,7 @@ class OngoingSituationTracker:
             logger.exception("상황 메타 저장 실패: %s", sid)
 
     async def _load_timeline(self, sid: str) -> list[SituationTimelineEntry]:
-        """Redis에서 타임라인을 로드한다."""
+        """캐시에서 타임라인을 로드한다."""
         try:
             key = _TIMELINE_KEY.format(id=sid)
             data = await self._cache.read_json(key)
@@ -426,7 +440,7 @@ class OngoingSituationTracker:
     async def _save_timeline(
         self, sid: str, timeline: list[SituationTimelineEntry],
     ) -> None:
-        """Redis에 타임라인을 저장한다."""
+        """캐시에 타임라인을 저장한다."""
         try:
             key = _TIMELINE_KEY.format(id=sid)
             data = [e.model_dump() for e in timeline]

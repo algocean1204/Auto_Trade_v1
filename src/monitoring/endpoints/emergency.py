@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,10 +27,27 @@ _system: InjectedSystem | None = None
 _emergency_active: bool = False
 _emergency_reason: str = ""
 
+# VPIN 플래시 크래시 쿨다운 지속 시간 (emergency_protocol.py의 _VPIN_COOLDOWN_MINUTES와 동일)
+_VPIN_COOLDOWN_DELTA: timedelta = timedelta(minutes=30)
+
 
 class EmergencyStatusResponse(BaseModel):
-    """긴급 정지 상태 응답 모델이다."""
+    """긴급 정지 상태 응답 모델이다.
 
+    Flutter EmergencyStatus.fromJson()이 기대하는 필드:
+      - circuit_breaker_active: 서킷 브레이커 발동 여부
+      - runaway_loss_shutdown: 일일 손실 한도 초과 셧다운 여부
+      - flash_crash_cooldowns: 플래시 크래시 쿨다운 중인 종목 맵 {ticker: ISO시각}
+
+    하위 호환성을 위해 기존 필드(emergency_active, reason, system_running)도 유지한다.
+    """
+
+    # Flutter 프론트엔드가 기대하는 필드
+    circuit_breaker_active: bool
+    runaway_loss_shutdown: bool
+    flash_crash_cooldowns: dict[str, str]
+
+    # 하위 호환성 필드
     emergency_active: bool
     reason: str
     system_running: bool
@@ -52,8 +70,46 @@ def set_emergency_deps(system: InjectedSystem) -> None:
 
 @emergency_router.get("/status", response_model=EmergencyStatusResponse)
 async def get_emergency_status() -> EmergencyStatusResponse:
-    """긴급 정지 상태를 반환한다."""
+    """긴급 정지 상태를 반환한다.
+
+    EmergencyProtocol의 발동 이력을 분석하여 서킷 브레이커,
+    runaway loss, 플래시 크래시 쿨다운 상태를 판별한다.
+    """
+    circuit_breaker = False
+    runaway_loss = False
+    flash_cooldowns: dict[str, str] = {}
+
+    # EmergencyProtocol에서 실제 발동 이력을 조회한다
+    if _system is not None:
+        protocol = _system.features.get("emergency_protocol")
+        if protocol is not None:
+            for action in protocol.get_history():
+                reason_lower = action.reason.lower()
+                if "circuit_breaker" in reason_lower:
+                    circuit_breaker = True
+                if "daily_loss" in reason_lower or "consecutive_stops" in reason_lower:
+                    runaway_loss = True
+                # vpin_extreme 발동 시 플래시 크래시 쿨다운으로 간주한다
+                if "vpin_extreme" in reason_lower:
+                    # 쿨다운 만료 시각을 ISO 형식으로 기록한다
+                    cooldown_until = action.triggered_at + _VPIN_COOLDOWN_DELTA
+                    now = datetime.now(tz=timezone.utc)
+                    if cooldown_until > now:
+                        flash_cooldowns["VPIN"] = cooldown_until.isoformat()
+
+    # 모듈 레벨 긴급 정지도 서킷 브레이커로 반영한다
+    if _emergency_active:
+        circuit_breaker = True
+        reason_lower = _emergency_reason.lower()
+        if "loss" in reason_lower or "drawdown" in reason_lower:
+            runaway_loss = True
+
     return EmergencyStatusResponse(
+        # Flutter 프론트엔드 필드
+        circuit_breaker_active=circuit_breaker,
+        runaway_loss_shutdown=runaway_loss,
+        flash_crash_cooldowns=flash_cooldowns,
+        # 하위 호환성 필드
         emergency_active=_emergency_active,
         reason=_emergency_reason,
         system_running=_system.running if _system else False,

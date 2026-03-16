@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 /// Python 트레이딩 서버 프로세스를 관리하는 서비스이다.
 ///
 /// Flutter 데스크탑 앱에서 버튼 클릭 시 백엔드 서버를 자동으로 시작/종료한다.
-/// Docker(PostgreSQL+Redis) 상태도 함께 확인하여 필요 시 기동한다.
+/// SQLite+인메모리 캐시 기반이므로 별도 인프라가 필요하지 않다.
 ///
 /// 사용 흐름:
 ///   1. ensureRunning() → 서버가 꺼져 있으면 자동 시작, 이미 실행 중이면 즉시 반환
@@ -28,6 +28,9 @@ class ServerLauncher {
   /// 서버 stdout/stderr 출력을 저장한다 (디버깅용, 최근 100줄).
   final List<String> _serverLogs = [];
 
+  /// 현재 서버가 실행 중인 포트이다. 감지 전에는 null이다.
+  int? _activePort;
+
   // ── 상수 ──
 
   /// 헬스 체크 최대 대기 시간(초)이다.
@@ -36,14 +39,17 @@ class ServerLauncher {
   /// 헬스 체크 간격(밀리초)이다.
   static const _healthCheckIntervalMs = 1000;
 
-  /// Docker 시작 후 대기 시간(초)이다.
-  static const _dockerWaitSec = 4;
-
   /// 서버 로그 최대 보관 줄 수이다.
   static const _maxLogLines = 100;
 
   /// 서버 SIGTERM 후 최대 대기(초)이다.
   static const _stopTimeoutSec = 20;
+
+  /// 허용 포트 범위이다.
+  static const _allowedPorts = [9500, 9501, 9502, 9503, 9504, 9505];
+
+  /// 서버가 기록하는 포트 파일 경로이다.
+  static const _portFileName = 'data/server_port.txt';
 
   // ── Public getters ──
 
@@ -55,6 +61,15 @@ class ServerLauncher {
 
   /// 서버 프로세스의 최근 로그이다.
   List<String> get serverLogs => List.unmodifiable(_serverLogs);
+
+  /// 현재 서버가 실행 중인 포트이다. 감지 전에는 null이다.
+  int? get activePort => _activePort;
+
+  /// 현재 서버의 base URL이다. 포트가 감지되지 않으면 허용 범위의 첫 번째 포트(9500)를 사용한다.
+  String get baseUrl => 'http://localhost:${_activePort ?? 9500}';
+
+  /// 현재 서버의 WebSocket base URL이다.
+  String get wsBaseUrl => 'ws://localhost:${_activePort ?? 9500}';
 
   // ── Public methods ──
 
@@ -105,16 +120,7 @@ class ServerLauncher {
       );
     }
 
-    // 4) Docker(PostgreSQL + Redis)를 확인/시작한다.
-    onLog?.call('Docker 서비스 확인 중...');
-    final dockerOk = await _ensureDocker(_projectRoot!);
-    if (!dockerOk) {
-      onLog?.call('Docker 시작 실패 — DB 없이 서버를 시작합니다.');
-    } else {
-      onLog?.call('Docker 서비스 준비 완료.');
-    }
-
-    // 5) Python 서버 프로세스를 시작한다.
+    // 4) Python 서버 프로세스를 시작한다. (Docker 단계는 별도 관리)
     onLog?.call('Python 서버 시작 중...');
     try {
       // CLAUDECODE 환경변수를 제거하여 중첩 세션을 방지한다.
@@ -154,7 +160,7 @@ class ServerLauncher {
       );
     }
 
-    // 6) 헬스 체크를 반복하여 서버 준비 완료를 확인한다.
+    // 5) 헬스 체크를 반복하여 서버 준비 완료를 확인한다.
     onLog?.call('서버 헬스 체크 대기 중 (최대 $_healthCheckTimeoutSec초)...');
     final healthy = await _waitForHealth(onLog: onLog);
     if (healthy) {
@@ -199,13 +205,26 @@ class ServerLauncher {
 
   // ── Private helpers ──
 
-  /// /api/system/health 엔드포인트로 단일 헬스 체크를 수행한다.
-  Future<bool> _healthCheck() async {
+  /// 포트 파일에서 서버 포트를 읽는다. 파일이 없거나 유효하지 않으면 null이다.
+  int? _readPortFile() {
+    if (_projectRoot == null) return null;
+    try {
+      final file = File('$_projectRoot/$_portFileName');
+      if (!file.existsSync()) return null;
+      final content = file.readAsStringSync().trim();
+      return int.tryParse(content);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 특정 포트에 대해 헬스 체크를 수행한다.
+  Future<bool> _healthCheckPort(int port) async {
     try {
       final client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 2);
       final request = await client
-          .getUrl(Uri.parse('http://localhost:9501/api/system/health'));
+          .getUrl(Uri.parse('http://localhost:$port/api/system/health'));
       final response = await request.close().timeout(
             const Duration(seconds: 3),
           );
@@ -214,6 +233,32 @@ class ServerLauncher {
     } catch (_) {
       return false;
     }
+  }
+
+  /// 서버 헬스 체크를 수행한다. 포트 파일 → 캐시 포트 → 범위 스캔 순으로 시도한다.
+  Future<bool> _healthCheck() async {
+    // 1) 포트 파일에서 읽는다
+    final filePort = _readPortFile();
+    if (filePort != null && await _healthCheckPort(filePort)) {
+      _activePort = filePort;
+      return true;
+    }
+
+    // 2) 이전에 감지된 포트를 시도한다
+    if (_activePort != null && await _healthCheckPort(_activePort!)) {
+      return true;
+    }
+
+    // 3) 허용 범위 전체를 스캔한다
+    for (final port in _allowedPorts) {
+      if (await _healthCheckPort(port)) {
+        _activePort = port;
+        return true;
+      }
+    }
+
+    _activePort = null;
+    return false;
   }
 
   /// 서버가 준비될 때까지 헬스 체크를 반복한다.
@@ -233,50 +278,6 @@ class ServerLauncher {
       if (_serverProcess == null) return false;
     }
     return false;
-  }
-
-  /// Docker Compose 서비스(PostgreSQL + Redis)가 실행 중인지 확인하고,
-  /// 실행 중이 아니면 시작한다.
-  Future<bool> _ensureDocker(String projectRoot) async {
-    try {
-      // Docker 사용 가능 여부를 확인한다.
-      final infoResult = await Process.run('docker', ['info'],
-          workingDirectory: projectRoot);
-      if (infoResult.exitCode != 0) return false;
-
-      // 현재 실행 중인 서비스를 확인한다.
-      final psResult = await Process.run(
-        'docker',
-        ['compose', 'ps', '--services', '--filter', 'status=running'],
-        workingDirectory: projectRoot,
-      );
-
-      final running = psResult.stdout.toString();
-      if (running.contains('postgres') && running.contains('redis')) {
-        return true;
-      }
-
-      // Docker Compose를 시작한다.
-      debugPrint('ServerLauncher: Docker Compose 시작 중...');
-      final upResult = await Process.run(
-        'docker',
-        ['compose', 'up', '-d'],
-        workingDirectory: projectRoot,
-      );
-
-      if (upResult.exitCode != 0) {
-        debugPrint(
-            'ServerLauncher: docker compose up 실패: ${upResult.stderr}');
-        return false;
-      }
-
-      // DB 초기화 대기
-      await Future.delayed(const Duration(seconds: _dockerWaitSec));
-      return true;
-    } catch (e) {
-      debugPrint('ServerLauncher: Docker 확인 실패: $e');
-      return false;
-    }
   }
 
   /// 프로젝트 루트 경로를 탐색한다.

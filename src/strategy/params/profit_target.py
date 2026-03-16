@@ -1,6 +1,7 @@
 """F4 수익 목표 추적 -- 월간 $300 최소 수익 목표를 추적한다."""
 from __future__ import annotations
 
+import calendar
 from datetime import datetime, timezone
 
 from src.common.logger import get_logger
@@ -18,7 +19,7 @@ _TRADING_DAYS_PER_MONTH = 22
 def _get_days_remaining() -> int:
     """이번 달 남은 거래일 수를 추정한다."""
     now = datetime.now(tz=timezone.utc)
-    days_in_month = 30  # 간이 추정
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
     days_passed = now.day
     remaining = max(1, days_in_month - days_passed)
     # 거래일 비율 적용 (약 70%)
@@ -42,7 +43,8 @@ def _check_on_track(current_pnl: float, target: float) -> bool:
     now = datetime.now(tz=timezone.utc)
     day_of_month = now.day
     # 경과 비율 대비 수익 비율로 판단한다
-    expected_ratio = day_of_month / 30.0
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    expected_ratio = day_of_month / days_in_month
     actual_ratio = current_pnl / target if target > 0 else 0.0
     return actual_ratio >= expected_ratio * 0.8  # 80% 이상이면 정상 궤도
 
@@ -78,3 +80,24 @@ class ProfitTarget:
             current_pnl, self._target, on_track, daily_target, days_remaining,
         )
         return status
+
+    def check_daily_target_reached(self, daily_pnl: float) -> bool:
+        """오늘 일일 수익 목표 달성 여부를 확인한다 (advisory).
+
+        일일 목표를 초과하면 info 로그를 기록한다.
+        매매를 차단하지 않고 정보 제공 목적이다.
+
+        Args:
+            daily_pnl: 오늘의 일일 손익($).
+
+        Returns:
+            True이면 일일 목표 달성 상태이다.
+        """
+        daily_target = self._target / _TRADING_DAYS_PER_MONTH
+        reached = daily_pnl >= daily_target
+        if reached:
+            logger.info(
+                "[수익목표] 일일 목표 달성: $%.2f >= $%.2f (월 목표 $%.0f/%d일)",
+                daily_pnl, daily_target, self._target, _TRADING_DAYS_PER_MONTH,
+            )
+        return reached

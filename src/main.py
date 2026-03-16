@@ -16,6 +16,7 @@ if _src_dir in _sys.path:
     _sys.path.remove(_src_dir)
 
 import asyncio
+from pathlib import Path
 
 try:
     import uvloop
@@ -43,9 +44,15 @@ async def main() -> None:
     """메인 함수 -- 시스템 초기화 -> API 서버 시작 -> 종료 대기."""
     logger.info("Stock Trading AI System V2 시작")
 
+    # 0. SQLite 데이터 디렉토리를 확보한다 (없으면 생성한다)
+    Path("data").mkdir(exist_ok=True)
+
     # 1. 시스템 초기화 (system.running은 매매 상태 전용, 여기서 설정 안 함)
     components = await initialize_system()
     system = inject_dependencies(components)
+
+    # 1.2. SQLite 테이블 생성 (이미 존재하는 테이블은 건너뛴다)
+    await system.components.db.create_tables()
 
     # 1.5. DB에서 유니버스를 로드한다 (비어있으면 하드코딩 데이터로 시드)
     try:
@@ -58,7 +65,15 @@ async def main() -> None:
     except Exception as exc:
         logger.warning("유니버스 DB 로드 실패 (하드코딩 폴백): %s", exc)
 
+    # M-16: 유니버스가 비어있으면 매매 불가하므로 에러를 발생시킨다
+    universe = system.components.registry.get_universe()
+    if not universe:
+        logger.error("유니버스가 비어있음 — 매매 불가")
+        raise RuntimeError("빈 유니버스: 티커 데이터 로드 실패")
+    logger.info("유니버스 로드 완료: %d개 티커", len(universe))
+
     # 2. 시그널 핸들러 등록 (SIGTERM/SIGINT → shutdown_event.set())
+    #    서버 시작 전에 등록하여 시작 중 시그널 미처리 구간을 제거한다
     shutdown_event = asyncio.Event()
     setup_signal_handlers(system, shutdown_event)
 

@@ -54,8 +54,8 @@ class _StopButton extends StatelessWidget {
         onPressed: provider.isLoading
             ? null
             : () => _handleEmergencyStop(context),
-        icon: const Icon(Icons.stop_circle_rounded, size: 16),
-        label: const Text('STOP'),
+        icon: const Icon(Icons.emergency_rounded, size: 16),
+        label: const Text('SOS'),
       ),
     );
   }

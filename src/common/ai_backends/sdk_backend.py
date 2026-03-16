@@ -84,24 +84,37 @@ class SdkBackend:
                 raise AiError(message="Claude CLI 실행 실패", detail=err_msg)
 
             raw = stdout.decode("utf-8", errors="replace").strip()
-            content = self._parse_output(raw)
+            content, usage = self._parse_output_with_usage(raw)
             _logger.debug(
                 "SdkBackend 응답 수신 (model=%s, len=%d)",
                 resolved,
                 len(content),
             )
+            # 토큰 사용량 기록
+            from src.common.token_tracker import record_usage
+            record_usage(
+                model=resolved, source="sdk",
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+            )
             return AiBackendResponse(content=content, model=resolved, source="sdk")
 
         except asyncio.TimeoutError:
             _logger.error("Claude CLI 타임아웃 (%ds 초과)", self._timeout)
+            from src.common.token_tracker import record_error
+            record_error(model=resolved, source="sdk")
             raise AiError(
                 message="Claude CLI 타임아웃",
                 detail=f"{self._timeout}초 초과",
             ) from None
         except AiError:
+            from src.common.token_tracker import record_error
+            record_error(model=resolved, source="sdk")
             raise
         except Exception as exc:
             _logger.exception("Claude CLI 호출 중 예상치 못한 오류 발생")
+            from src.common.token_tracker import record_error
+            record_error(model=resolved, source="sdk")
             raise AiError(message="Claude CLI 호출 실패", detail=str(exc)) from exc
 
     def _parse_output(self, raw: str) -> str:
@@ -110,15 +123,32 @@ class SdkBackend:
         JSON 파싱에 실패하면 원본 텍스트를 그대로 반환한다.
         result 필드 → content 필드 순으로 우선 탐색한다.
         """
+        content, _ = self._parse_output_with_usage(raw)
+        return content
+
+    def _parse_output_with_usage(self, raw: str) -> tuple[str, dict[str, int]]:
+        """CLI JSON 출력을 파싱하여 텍스트와 토큰 사용량을 반환한다.
+
+        반환: (content, {"input_tokens": N, "output_tokens": M})
+        JSON 파싱 실패 시 원본 텍스트와 빈 사용량을 반환한다.
+        """
+        usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         try:
             data = json.loads(raw)
             if isinstance(data, dict):
-                # result 필드가 있으면 우선 사용하고, 없으면 content 필드를 사용한다
-                return data.get("result", data.get("content", str(data)))
-            return str(data)
+                # 토큰 사용량 추출 (Claude CLI JSON 형식)
+                if "usage" in data and isinstance(data["usage"], dict):
+                    usage["input_tokens"] = data["usage"].get("input_tokens", 0)
+                    usage["output_tokens"] = data["usage"].get("output_tokens", 0)
+                # 대안: 최상위에 직접 존재할 수 있다
+                elif "input_tokens" in data:
+                    usage["input_tokens"] = data.get("input_tokens", 0)
+                    usage["output_tokens"] = data.get("output_tokens", 0)
+                content = data.get("result", data.get("content", str(data)))
+                return content, usage
+            return str(data), usage
         except json.JSONDecodeError:
-            # JSON이 아닌 경우 원본 텍스트를 그대로 반환한다
-            return raw
+            return raw, usage
 
     async def close(self) -> None:
         """SDK 백엔드는 정리할 영속 리소스가 없다."""

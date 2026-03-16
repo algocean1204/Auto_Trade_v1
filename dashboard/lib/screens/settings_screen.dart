@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
-import '../providers/crawl_progress_provider.dart';
 import '../providers/trade_provider.dart';
+import '../providers/trading_control_provider.dart';
 import '../providers/indicator_provider.dart';
 import '../providers/locale_provider.dart';
 import '../models/dashboard_models.dart';
@@ -17,7 +17,6 @@ import '../widgets/glass_card.dart';
 import '../widgets/section_header.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/ticker_add_dialog.dart';
-import '../widgets/crawl_progress_widget.dart';
 import '../widgets/weight_slider.dart';
 import '../widgets/confirmation_dialog.dart';
 import '../animations/animation_utils.dart';
@@ -120,13 +119,29 @@ class _StrategyTab extends StatefulWidget {
 class _StrategyTabState extends State<_StrategyTab> {
   final Map<String, TextEditingController> _controllers = {};
 
-  // (paramKey, titleKey, descKey)
-  static const _paramDefs = [
-    ('min_confidence', 'min_confidence_title', 'min_confidence_desc'),
-    ('take_profit_pct', 'take_profit_title', 'take_profit_desc'),
-    ('stop_loss_pct', 'stop_loss_title', 'stop_loss_desc'),
-    ('trailing_stop_pct', 'trailing_stop_title', 'trailing_stop_desc'),
-    ('max_position_pct', 'max_position_title', 'max_position_desc'),
+  /// V2 수치 파라미터 정의 (key, 한국어 이름, 설명, 기본값)이다.
+  static const _paramDefs = <(String, String, String, String)>[
+    ('beast_min_confidence', '최소 신뢰도', '매매 신호 최소 신뢰도 임계값 (0-1)', '0.7'),
+    ('default_position_size_pct', '기본 포지션 %', '기본 포지션 배분 비율', '10.0'),
+    ('max_position_pct', '최대 포지션 %', '단일 포지션 최대 비율', '23.75'),
+    ('beast_min_obi', '최소 OBI', 'Order Book Imbalance 최소 임계값', '0.2'),
+    ('obi_threshold', 'OBI 게이트 임계값', 'OBI 게이트 통과 기준', '0.1'),
+    ('ml_threshold', 'ML 임계값', 'ML 모델 예측 신뢰도 임계값', '0.3'),
+    ('friction_hurdle', '거래비용 허들', '거래비용 대비 최소 기대수익 비율', '0.7'),
+    ('beast_max_daily', '일일 최대 거래', '하루 최대 거래 횟수', '10'),
+    ('beast_cooldown_seconds', '쿨다운 (초)', '연속 거래 간 최소 대기 시간', '180'),
+    ('pyramid_level1_pct', '피라미딩 1단계 %', '1차 추가 매수 진입 수익률', '1.5'),
+    ('pyramid_level2_pct', '피라미딩 2단계 %', '2차 추가 매수 진입 수익률', '3.0'),
+    ('pyramid_level3_pct', '피라미딩 3단계 %', '3차 추가 매수 진입 수익률', '5.0'),
+  ];
+
+  /// 토글 스위치 파라미터 정의이다.
+  static const _toggleDefs = <(String, String, String)>[
+    ('beast_mode_enabled', 'Beast Mode', '고빈도 단타 전략 활성화'),
+    ('pyramiding_enabled', 'Pyramiding', '수익 구간 추가 매수 활성화'),
+    ('stat_arb_enabled', 'Stat Arb', '통계적 차익거래 전략 활성화'),
+    ('news_fading_enabled', 'News Fading', '뉴스 기반 역추세 전략 활성화'),
+    ('wick_catcher_enabled', 'Wick Catcher', '급락 꼬리 잡기 전략 활성화'),
   ];
 
   @override
@@ -182,6 +197,10 @@ class _StrategyTabState extends State<_StrategyTab> {
               final isWide = constraints.maxWidth >= 800;
               return Column(
                 children: [
+                  // 전략 모듈 토글 스위치
+                  _buildTogglesCard(params.params, provider),
+                  AppSpacing.vGapLg,
+                  // 수치 파라미터
                   if (isWide)
                     _buildWideGrid(provider, params, t)
                   else
@@ -198,6 +217,49 @@ class _StrategyTabState extends State<_StrategyTab> {
     );
   }
 
+  Widget _buildTogglesCard(Map<String, dynamic> params, TradeProvider provider) {
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('전략 모듈', style: AppTypography.headlineMedium),
+          AppSpacing.vGapSm,
+          Text('활성화할 전략 모듈을 선택한다', style: AppTypography.bodySmall),
+          AppSpacing.vGapLg,
+          ..._toggleDefs.map((def) {
+            final (key, label, description) = def;
+            final enabled = params[key] == true;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(label, style: AppTypography.labelLarge),
+                        Text(description, style: AppTypography.bodySmall),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: enabled,
+                    onChanged: (value) {
+                      final updated = Map<String, dynamic>.from(params);
+                      updated[key] = value;
+                      provider.updateStrategyParams(updated);
+                    },
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   Widget _buildWideGrid(TradeProvider provider, dynamic params,
       String Function(String) t) {
     return GridView.builder(
@@ -211,10 +273,9 @@ class _StrategyTabState extends State<_StrategyTab> {
       ),
       itemCount: _paramDefs.length,
       itemBuilder: (context, i) {
-        final (key, titleKey, descKey) = _paramDefs[i];
-        final defaultValue = params.params[key]?.toString() ?? '';
-        return _buildParamCard(
-            key, t(titleKey), t(descKey), defaultValue, provider, t);
+        final (key, label, desc, defaultVal) = _paramDefs[i];
+        final value = params.params[key]?.toString() ?? defaultVal;
+        return _buildParamCard(key, label, desc, value, provider, t);
       },
     );
   }
@@ -223,12 +284,11 @@ class _StrategyTabState extends State<_StrategyTab> {
       String Function(String) t) {
     return Column(
       children: _paramDefs.map((def) {
-        final (key, titleKey, descKey) = def;
-        final defaultValue = params.params[key]?.toString() ?? '';
+        final (key, label, desc, defaultVal) = def;
+        final value = params.params[key]?.toString() ?? defaultVal;
         return Padding(
           padding: const EdgeInsets.only(bottom: 16),
-          child: _buildParamCard(
-              key, t(titleKey), t(descKey), defaultValue, provider, t),
+          child: _buildParamCard(key, label, desc, value, provider, t),
         );
       }).toList(),
     );
@@ -344,29 +404,35 @@ class _StrategyTabState extends State<_StrategyTab> {
           Text(t('params_by_condition'),
               style: AppTypography.bodySmall),
           AppSpacing.vGapLg,
-          ...params.regimes.entries.map<Widget>((entry) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    _regimeLabel(entry.key as String),
-                    style: AppTypography.bodyMedium,
-                  ),
-                  Flexible(
-                    child: Text(
-                      _formatRegimeValue(entry.value),
-                      style: AppTypography.numberSmall.copyWith(
-                        color: context.tc.primary,
-                      ),
-                      textAlign: TextAlign.end,
+          if (params.regimes.isEmpty)
+            Text(
+              '레짐 설정이 없다',
+              style: AppTypography.bodySmall,
+            )
+          else
+            ...params.regimes.entries.map<Widget>((entry) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _regimeLabel(entry.key as String),
+                      style: AppTypography.bodyMedium,
                     ),
-                  ),
-                ],
-              ),
-            );
-          }),
+                    Flexible(
+                      child: Text(
+                        _formatRegimeValue(entry.value),
+                        style: AppTypography.numberSmall.copyWith(
+                          color: context.tc.primary,
+                        ),
+                        textAlign: TextAlign.end,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -652,6 +718,19 @@ class _IndicatorsTabState extends State<_IndicatorsTab> {
 
 // ── 유니버스 탭 ──
 
+/// 페어 그룹: bull+bear 티커를 하나의 그룹으로 묶는다.
+class _PairGroup {
+  UniverseTicker? bull;
+  UniverseTicker? bear;
+
+  String get sector => bull?.sector ?? bear?.sector ?? '';
+
+  String get displayKey {
+    if (bull != null && bear != null) return '${bull!.ticker}/${bear!.ticker}';
+    return bull?.ticker ?? bear?.ticker ?? '';
+  }
+}
+
 class _UniverseTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -683,24 +762,54 @@ class _UniverseTab extends StatelessWidget {
           );
         }
 
+        final pairs = _buildPairGroups(provider.universe);
+        final enabledCount =
+            provider.universe.where((t) => t.enabled).length;
+
         return ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            _buildUniverseSection(
-              context,
-              t('bull_2x_etf'),
-              provider.bullTickers,
-              provider,
-              t,
+            // 헤더: 페어 ETF + 활성 카운트
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(t('etf_pairs'), style: AppTypography.headlineMedium),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: context.tc.primary.withValues(alpha: 0.12),
+                    borderRadius: AppSpacing.borderRadiusSm,
+                  ),
+                  child: Text(
+                    '$enabledCount/${provider.universe.length}',
+                    style: AppTypography.numberSmall
+                        .copyWith(color: context.tc.primary),
+                  ),
+                ),
+              ],
             ),
-            AppSpacing.vGapXxl,
-            _buildUniverseSection(
-              context,
-              t('bear_2x_etf'),
-              provider.bearTickers,
-              provider,
-              t,
-            ),
+            AppSpacing.vGapMd,
+            if (pairs.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: context.tc.surface,
+                  borderRadius: AppSpacing.borderRadiusLg,
+                  border: Border.all(
+                      color: context.tc.surfaceBorder.withValues(alpha: 0.3)),
+                ),
+                child: Center(
+                  child:
+                      Text(t('no_tickers'), style: AppTypography.bodyMedium),
+                ),
+              )
+            else
+              ...pairs.map((pair) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _buildPairCard(context, pair, provider, t),
+                  )),
             AppSpacing.vGapXl,
             ElevatedButton.icon(
               onPressed: () => _showAddDialog(context, provider, t),
@@ -717,109 +826,133 @@ class _UniverseTab extends StatelessWidget {
     );
   }
 
-  Widget _buildUniverseSection(BuildContext context, String title,
-      List<UniverseTicker> tickers, TradeProvider provider,
-      String Function(String) t) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(title, style: AppTypography.headlineMedium),
+  /// universe 목록에서 bull/bear 페어 그룹을 빌드한다.
+  List<_PairGroup> _buildPairGroups(List<UniverseTicker> universe) {
+    final Map<String, _PairGroup> groups = {};
+    for (final t in universe) {
+      final key = _pairKey(t);
+      groups.putIfAbsent(key, () => _PairGroup());
+      if (t.direction == 'bull') {
+        groups[key]!.bull = t;
+      } else {
+        groups[key]!.bear = t;
+      }
+    }
+    final result = groups.values.toList();
+    result.sort((a, b) {
+      final s = a.sector.compareTo(b.sector);
+      if (s != 0) return s;
+      return a.displayKey.compareTo(b.displayKey);
+    });
+    return result;
+  }
+
+  /// 페어 그룹핑 키를 생성한다. 동일 페어는 같은 키를 갖는다.
+  String _pairKey(UniverseTicker t) {
+    if (t.pairTicker != null && t.pairTicker!.isNotEmpty) {
+      final a = t.ticker;
+      final b = t.pairTicker!;
+      return a.compareTo(b) < 0 ? a : b;
+    }
+    return t.ticker;
+  }
+
+  /// 페어 카드를 빌드한다. bull과 bear를 한 카드 안에 표시한다.
+  Widget _buildPairCard(BuildContext context, _PairGroup pair,
+      TradeProvider provider, String Function(String) t) {
+    final tc = context.tc;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: tc.surface,
+        borderRadius: AppSpacing.borderRadiusLg,
+        border:
+            Border.all(color: tc.surfaceBorder.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 섹터 배지
+          if (pair.sector.isNotEmpty)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              margin: const EdgeInsets.only(bottom: 8),
               decoration: BoxDecoration(
-                color: context.tc.primary.withValues(alpha: 0.12),
+                color: tc.primary.withValues(alpha: 0.08),
                 borderRadius: AppSpacing.borderRadiusSm,
               ),
               child: Text(
-                '${tickers.where((t) => t.enabled).length}/${tickers.length}',
-                style: AppTypography.numberSmall.copyWith(
-                    color: context.tc.primary),
+                pair.sector.toUpperCase(),
+                style: AppTypography.bodySmall
+                    .copyWith(fontSize: 10, color: tc.primary),
               ),
             ),
-          ],
-        ),
-        AppSpacing.vGapMd,
-        if (tickers.isEmpty)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: context.tc.surface,
-              borderRadius: AppSpacing.borderRadiusLg,
-              border: Border.all(
-                  color: context.tc.surfaceBorder.withValues(alpha: 0.3)),
-            ),
-            child: Center(
-              child: Text(t('no_tickers'),
-                  style: AppTypography.bodyMedium),
-            ),
-          )
-        else
-          ...tickers.asMap().entries.map((e) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _buildTickerRow(context, e.value, provider, t),
-              )),
-      ],
+          // Bull 행
+          if (pair.bull != null)
+            _buildTickerRow(context, pair.bull!, provider, t, isBull: true),
+          if (pair.bull != null && pair.bear != null) AppSpacing.vGapSm,
+          // Bear 행
+          if (pair.bear != null)
+            _buildTickerRow(context, pair.bear!, provider, t, isBull: false),
+        ],
+      ),
     );
   }
 
   Widget _buildTickerRow(BuildContext context, UniverseTicker ticker,
-      TradeProvider provider, String Function(String) t) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: context.tc.surface,
-        borderRadius: AppSpacing.borderRadiusLg,
-        border: Border.all(
-            color: context.tc.surfaceBorder.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        children: [
-          Checkbox(
-            value: ticker.enabled,
-            onChanged: (value) {
-              provider.toggleTicker(ticker.ticker, value ?? false);
-            },
-            fillColor: WidgetStateProperty.resolveWith((states) =>
-                states.contains(WidgetState.selected)
-                    ? context.tc.primary
-                    : null),
-            side: BorderSide(color: context.tc.surfaceBorder),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(4)),
+      TradeProvider provider, String Function(String) t,
+      {required bool isBull}) {
+    final tc = context.tc;
+    final dirColor = isBull ? tc.profit : tc.loss;
+    final dirIcon = isBull ? '▲' : '▼';
+    return Row(
+      children: [
+        Checkbox(
+          value: ticker.enabled,
+          onChanged: (value) {
+            provider.toggleTicker(ticker.ticker, value ?? false);
+          },
+          fillColor: WidgetStateProperty.resolveWith((states) =>
+              states.contains(WidgetState.selected) ? tc.primary : null),
+          side: BorderSide(color: tc.surfaceBorder),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4)),
+          visualDensity: VisualDensity.compact,
+        ),
+        AppSpacing.hGapXs,
+        // 방향 배지
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+          decoration: BoxDecoration(
+            color: dirColor.withValues(alpha: 0.10),
+            borderRadius: AppSpacing.borderRadiusSm,
           ),
-          AppSpacing.hGapMd,
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(ticker.ticker, style: AppTypography.labelLarge),
-                Text(ticker.name,
-                    style: AppTypography.bodySmall,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                if (ticker.avgDailyVolume != null)
-                  Text(
-                    'Vol: ${NumberFormat('#,###').format(ticker.avgDailyVolume)}',
-                    style: AppTypography.bodySmall
-                        .copyWith(fontSize: 11),
-                  ),
-              ],
+          child: Text(
+            '$dirIcon ${ticker.ticker}',
+            style: AppTypography.labelMedium.copyWith(
+              color: dirColor,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
             ),
           ),
-          IconButton(
-            icon: Icon(Icons.delete_rounded,
-                size: 18, color: context.tc.textTertiary),
-            onPressed: () => _handleDelete(context, ticker, provider, t),
-            padding: EdgeInsets.zero,
-            constraints:
-                const BoxConstraints(minWidth: 32, minHeight: 32),
+        ),
+        AppSpacing.hGapSm,
+        Expanded(
+          child: Text(
+            ticker.name,
+            style: AppTypography.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
-        ],
-      ),
+        ),
+        IconButton(
+          icon: Icon(Icons.delete_rounded, size: 16, color: tc.textTertiary),
+          onPressed: () => _handleDelete(context, ticker, provider, t),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+      ],
     );
   }
 
@@ -840,210 +973,390 @@ class _UniverseTab extends StatelessWidget {
     }
   }
 
+  /// 간소화된 종목 추가 다이얼로그이다. 티커 코드만 입력하면 페어도 자동 추가된다.
   Future<void> _showAddDialog(BuildContext context, TradeProvider provider,
       String Function(String) t) async {
-    final direction = await showDialog<String>(
+    final controller = TextEditingController();
+    var isLoading = false;
+    String? errorMsg;
+
+    final added = await showDialog<bool>(
       context: context,
-      builder: (context) => SimpleDialog(
-        backgroundColor: context.tc.surfaceElevated,
-        title: Text(t('select_type')),
-        children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, 'bull'),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Text(t('bull_2x_etf')),
-            ),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, 'bear'),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Text(t('bear_2x_etf')),
-            ),
-          ),
-        ],
-      ),
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            final tc = ctx.tc;
+            return AlertDialog(
+              backgroundColor: tc.surfaceElevated,
+              shape: RoundedRectangleBorder(
+                borderRadius: AppSpacing.borderRadiusLg,
+                side: BorderSide(
+                  color: tc.surfaceBorder.withValues(alpha: 0.4),
+                  width: 1,
+                ),
+              ),
+              title: Row(
+                children: [
+                  Icon(Icons.add_circle_outline_rounded,
+                      color: tc.primary, size: 22),
+                  AppSpacing.hGapSm,
+                  Text(t('add_ticker'), style: AppTypography.headlineMedium),
+                ],
+              ),
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      t('enter_ticker_code'),
+                      style: AppTypography.labelMedium
+                          .copyWith(color: tc.textSecondary),
+                    ),
+                    AppSpacing.vGapSm,
+                    TextField(
+                      controller: controller,
+                      autofocus: true,
+                      textCapitalization: TextCapitalization.characters,
+                      enabled: !isLoading,
+                      style: AppTypography.displaySmall.copyWith(
+                        color: tc.textPrimary,
+                        letterSpacing: 2,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'SOXL',
+                        hintStyle: AppTypography.displaySmall.copyWith(
+                          color: tc.textDisabled,
+                          letterSpacing: 2,
+                        ),
+                        filled: true,
+                        fillColor: tc.surface,
+                        border: OutlineInputBorder(
+                          borderRadius: AppSpacing.borderRadiusMd,
+                          borderSide: BorderSide(
+                              color: tc.surfaceBorder.withValues(alpha: 0.3)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: AppSpacing.borderRadiusMd,
+                          borderSide: BorderSide(
+                              color: tc.surfaceBorder.withValues(alpha: 0.3)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: AppSpacing.borderRadiusMd,
+                          borderSide: BorderSide(
+                              color: tc.primary.withValues(alpha: 0.6),
+                              width: 1.5),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                      ),
+                      onSubmitted: (_) {
+                        if (!isLoading) {
+                          _submitAdd(ctx, controller, provider, t,
+                              setState, (v) => isLoading = v, (v) => errorMsg = v);
+                        }
+                      },
+                    ),
+                    if (isLoading) ...[
+                      AppSpacing.vGapMd,
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: tc.primary),
+                          ),
+                          AppSpacing.hGapSm,
+                          Text(
+                            t('adding_ticker'),
+                            style: AppTypography.bodySmall
+                                .copyWith(color: tc.primary),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (errorMsg != null) ...[
+                      AppSpacing.vGapMd,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: tc.loss.withValues(alpha: 0.08),
+                          borderRadius: AppSpacing.borderRadiusMd,
+                          border: Border.all(
+                              color: tc.loss.withValues(alpha: 0.25)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.error_outline_rounded,
+                                size: 16, color: tc.loss),
+                            AppSpacing.hGapSm,
+                            Expanded(
+                              child: Text(
+                                errorMsg!,
+                                style: AppTypography.bodySmall
+                                    .copyWith(color: tc.loss),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      isLoading ? null : () => Navigator.pop(dialogContext),
+                  child: Text(
+                    t('cancel'),
+                    style: AppTypography.labelLarge
+                        .copyWith(color: tc.textSecondary),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: isLoading
+                      ? null
+                      : () => _submitAdd(ctx, controller, provider, t,
+                          setState, (v) => isLoading = v, (v) => errorMsg = v),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: tc.primary,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor:
+                        tc.primary.withValues(alpha: 0.4),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: AppSpacing.borderRadiusSm),
+                  ),
+                  child: isLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text(t('add_ticker'),
+                          style: AppTypography.labelLarge
+                              .copyWith(color: Colors.white)),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
 
-    if (direction == null || !context.mounted) return;
+    if (added == true && context.mounted) {
+      provider.loadUniverse();
+    }
+  }
 
-    final ticker = await showDialog<UniverseTicker>(
-      context: context,
-      builder: (_) => TickerAddDialogLegacy(direction: direction),
-    );
+  Future<void> _submitAdd(
+    BuildContext context,
+    TextEditingController controller,
+    TradeProvider provider,
+    String Function(String) t,
+    void Function(void Function()) setState,
+    void Function(bool) setLoading,
+    void Function(String?) setError,
+  ) async {
+    final ticker = controller.text.trim().toUpperCase();
+    if (ticker.isEmpty) return;
 
-    if (ticker != null && context.mounted) {
-      try {
-        await provider.addTicker(ticker);
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${ticker.ticker} ${t('added')}'),
-              backgroundColor: context.tc.profit,
-            ),
-          );
-        }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${t('save_failed')}: $e'),
-              backgroundColor: context.tc.loss,
-            ),
-          );
-        }
+    setState(() {
+      setLoading(true);
+      setError(null);
+    });
+
+    try {
+      final result = await provider.autoAddTicker(ticker);
+      final pairAdded = result['pair_ticker'] as String?;
+      if (context.mounted) {
+        Navigator.pop(context, true);
+        final msg = pairAdded != null
+            ? '$ticker ${t('added')} (${t('pair_auto_added').replaceAll('{pair}', pairAdded)})'
+            : '$ticker ${t('added')}';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: context.tc.profit),
+        );
       }
+    } catch (e) {
+      setState(() {
+        setLoading(false);
+        setError(e.toString().replaceFirst('Exception: ', ''));
+      });
     }
   }
 }
 
 // ── 크롤링 탭 ──
+//
+// AppBar NEWS 버튼과 동일한 파이프라인(collect-and-send)을 사용한다.
 
 class _CrawlTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.watch<LocaleProvider>().t;
-    final provider = context.watch<CrawlProgressProvider>();
 
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        StaggeredFadeSlide(
-          index: 0,
-          child: _buildInfoCard(context, provider, t),
-        ),
-        AppSpacing.vGapLg,
-        StaggeredFadeSlide(
-          index: 1,
-          child: _buildCrawlButton(context, provider, t),
-        ),
-        if (provider.error != null) ...[
-          AppSpacing.vGapMd,
-          _buildErrorBanner(context, provider, t),
-        ],
-        if (provider.isCrawling || provider.crawlerStatuses.isNotEmpty) ...[
-          AppSpacing.vGapXxl,
-          const StaggeredFadeSlide(
-            index: 2,
-            child: CrawlProgressWidget(),
-          ),
-        ],
-        AppSpacing.vGapXxl,
-      ],
-    );
-  }
+    return Consumer<TradingControlProvider>(
+      builder: (context, ctrl, _) {
+        final tc = context.tc;
+        final isBusy = ctrl.isBusyNews;
+        final isConnected = ctrl.isConnected;
 
-  Widget _buildInfoCard(BuildContext context, CrawlProgressProvider provider,
-      String Function(String) t) {
-    final tc = context.tc;
-    return GlassCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionHeader(title: t('last_crawl')),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(t('time'), style: AppTypography.bodySmall),
-                  AppSpacing.vGapXs,
-                  Text(
-                    provider.lastCrawlTime != null
-                        ? DateFormat('yyyy-MM-dd HH:mm')
-                            .format(provider.lastCrawlTime ?? DateTime.now())
-                        : 'N/A',
-                    style: AppTypography.numberSmall
-                        .copyWith(color: tc.primary),
-                  ),
-                ],
+        return ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            // 설명 카드
+            StaggeredFadeSlide(
+              index: 0,
+              child: GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SectionHeader(title: t('last_crawl')),
+                    AppSpacing.vGapSm,
+                    Text(
+                      '30개 뉴스 소스 크롤링 → AI 분류 → 텔레그램 전송',
+                      style: AppTypography.bodySmall,
+                    ),
+                    AppSpacing.vGapMd,
+                    // 서버 연결 상태
+                    Row(
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isConnected ? tc.profit : tc.loss,
+                          ),
+                        ),
+                        AppSpacing.hGapSm,
+                        Text(
+                          isConnected ? '서버 연결됨' : '서버 미연결',
+                          style: AppTypography.bodySmall.copyWith(
+                            color: isConnected ? tc.profit : tc.loss,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(t('articles'), style: AppTypography.bodySmall),
-                  AppSpacing.vGapXs,
-                  Text(
-                    NumberFormat('#,###')
-                        .format(provider.lastArticleCount),
-                    style: AppTypography.numberSmall
-                        .copyWith(color: tc.primary),
+            ),
+            AppSpacing.vGapLg,
+
+            // 실행 버튼
+            StaggeredFadeSlide(
+              index: 1,
+              child: SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton.icon(
+                  onPressed: isBusy
+                      ? null
+                      : () => _handleCollect(context, ctrl),
+                  icon: isBusy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : const Icon(Icons.newspaper_rounded, size: 18),
+                  label: Text(
+                    isBusy
+                        ? '뉴스 수집 중...'
+                        : t('start_manual_crawl'),
                   ),
-                ],
+                ),
+              ),
+            ),
+
+            // 에러 메시지
+            if (ctrl.error != null) ...[
+              AppSpacing.vGapMd,
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: tc.loss.withValues(alpha: 0.1),
+                  borderRadius: AppSpacing.borderRadiusMd,
+                  border: Border.all(color: tc.loss.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline_rounded,
+                        color: tc.loss, size: 16),
+                    AppSpacing.hGapSm,
+                    Expanded(
+                      child: Text(
+                        ctrl.error ?? '',
+                        style:
+                            AppTypography.bodySmall.copyWith(color: tc.loss),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
-          ),
-        ],
-      ),
-    );
-  }
 
-  Widget _buildCrawlButton(BuildContext context, CrawlProgressProvider provider,
-      String Function(String) t) {
-    return SizedBox(
-      width: double.infinity,
-      height: 52,
-      child: ElevatedButton.icon(
-        onPressed: provider.isCrawling
-            ? null
-            : () => _startCrawling(context, provider, t),
-        icon: provider.isCrawling
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            // 결과 메시지
+            if (ctrl.newsResult != null) ...[
+              AppSpacing.vGapMd,
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: tc.profit.withValues(alpha: 0.1),
+                  borderRadius: AppSpacing.borderRadiusMd,
+                  border: Border.all(color: tc.profit.withValues(alpha: 0.3)),
                 ),
-              )
-            : const Icon(Icons.download_rounded, size: 18),
-        label: Text(
-          provider.isCrawling
-              ? t('crawling')
-              : t('start_manual_crawl'),
-        ),
-      ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle_rounded,
+                        color: tc.profit, size: 16),
+                    AppSpacing.hGapSm,
+                    Expanded(
+                      child: Text(
+                        ctrl.newsResult!,
+                        style:
+                            AppTypography.bodySmall.copyWith(color: tc.profit),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            AppSpacing.vGapXxl,
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildErrorBanner(BuildContext context, CrawlProgressProvider provider,
-      String Function(String) t) {
-    final tc = context.tc;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: tc.loss.withValues(alpha: 0.1),
-        borderRadius: AppSpacing.borderRadiusMd,
-        border: Border.all(color: tc.loss.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.error_outline_rounded, color: tc.loss, size: 16),
-          AppSpacing.hGapSm,
-          Expanded(
-            child: Text(
-              provider.error ?? '',
-              style: AppTypography.bodySmall.copyWith(color: tc.loss),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _startCrawling(BuildContext context,
-      CrawlProgressProvider provider, String Function(String) t) async {
-    await provider.startCrawl();
-
+  Future<void> _handleCollect(
+      BuildContext context, TradingControlProvider ctrl) async {
+    await ctrl.collectAndSendNews();
     if (!context.mounted) return;
 
-    if (provider.error != null) {
+    final tc = context.tc;
+    if (ctrl.error != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${t('save_failed')}: ${provider.error}'),
-          backgroundColor: context.tc.loss,
+          content: Text('뉴스 수집 실패: ${ctrl.error}'),
+          backgroundColor: tc.loss,
+        ),
+      );
+    } else if (ctrl.newsResult != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('뉴스 수집 완료'),
+          backgroundColor: tc.profit,
         ),
       );
     }
@@ -1051,6 +1364,9 @@ class _CrawlTab extends StatelessWidget {
 }
 
 // ── 서버 관리 탭 ──
+//
+// TradingControlProvider.isConnected를 기본 서버 상태로 사용한다.
+// 서버는 AppBar SERVER 버튼(subprocess) 또는 LaunchAgent로 시작될 수 있다.
 
 class _ServerTab extends StatefulWidget {
   const _ServerTab();
@@ -1061,7 +1377,7 @@ class _ServerTab extends StatefulWidget {
 
 class _ServerTabState extends State<_ServerTab> {
   final _launcher = ServerLauncher.instance;
-  LaunchAgentStatus? _status;
+  LaunchAgentStatus? _agentStatus;
   bool _isBusy = false;
   String? _message;
   Timer? _refreshTimer;
@@ -1069,10 +1385,10 @@ class _ServerTabState extends State<_ServerTab> {
   @override
   void initState() {
     super.initState();
-    _refreshStatus();
+    _refreshAgentStatus();
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 5),
-      (_) => _refreshStatus(),
+      (_) => _refreshAgentStatus(),
     );
   }
 
@@ -1082,9 +1398,9 @@ class _ServerTabState extends State<_ServerTab> {
     super.dispose();
   }
 
-  Future<void> _refreshStatus() async {
+  Future<void> _refreshAgentStatus() async {
     final status = await _launcher.getLaunchAgentStatus();
-    if (mounted) setState(() => _status = status);
+    if (mounted) setState(() => _agentStatus = status);
   }
 
   Future<void> _runAction(
@@ -1095,7 +1411,7 @@ class _ServerTabState extends State<_ServerTab> {
       _message = null;
     });
     final result = await action();
-    await _refreshStatus();
+    await _refreshAgentStatus();
     if (mounted) {
       setState(() {
         _isBusy = false;
@@ -1108,191 +1424,204 @@ class _ServerTabState extends State<_ServerTab> {
   Widget build(BuildContext context) {
     final t = context.watch<LocaleProvider>().t;
     final tc = context.tc;
-    final status = _status;
 
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        // 서버 상태 카드
-        StaggeredFadeSlide(
-          index: 0,
-          child: GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SectionHeader(title: t('server_status')),
-                AppSpacing.vGapMd,
-                _buildStatusRow(
-                  tc,
-                  t('server_agent_status'),
-                  status == null
-                      ? t('server_checking')
-                      : status.loaded
-                          ? t('server_loaded')
-                          : t('server_unloaded'),
-                  status?.loaded == true ? tc.profit : tc.loss,
-                ),
-                AppSpacing.vGapSm,
-                _buildStatusRow(
-                  tc,
-                  t('server_process'),
-                  status == null
-                      ? '-'
-                      : status.isRunning
-                          ? 'PID ${status.pid}'
-                          : t('server_not_running'),
-                  status?.isRunning == true ? tc.profit : tc.textTertiary,
-                ),
-                if (status?.lastExitCode != null) ...[
-                  AppSpacing.vGapSm,
-                  _buildStatusRow(
-                    tc,
-                    t('server_last_exit'),
-                    '${status!.lastExitCode}',
-                    status.lastExitCode == 0
-                        ? tc.textTertiary
-                        : tc.loss,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-        AppSpacing.vGapLg,
+    return Consumer<TradingControlProvider>(
+      builder: (context, ctrl, _) {
+        final isConnected = ctrl.isConnected;
+        final agentStatus = _agentStatus;
 
-        // 제어 버튼들
-        StaggeredFadeSlide(
-          index: 1,
-          child: GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SectionHeader(title: t('server_control')),
-                AppSpacing.vGapMd,
-                Row(
+        return ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            // 서버 상태 카드
+            StaggeredFadeSlide(
+              index: 0,
+              child: GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: _buildActionButton(
-                        icon: Icons.play_arrow_rounded,
-                        label: t('server_start'),
-                        color: tc.profit,
-                        onPressed: _isBusy || status?.isRunning == true
-                            ? null
-                            : () => _runAction(
-                                _launcher.startViaLaunchAgent),
-                      ),
+                    SectionHeader(title: t('server_status')),
+                    AppSpacing.vGapMd,
+                    // 실제 서버 연결 상태 (헬스체크 기반)
+                    _buildStatusRow(
+                      tc,
+                      '서버 연결',
+                      isConnected ? '연결됨 (포트 ${_launcher.activePort ?? "?"})'
+                          : '미연결',
+                      isConnected ? tc.profit : tc.loss,
                     ),
-                    AppSpacing.hGapMd,
-                    Expanded(
-                      child: _buildActionButton(
-                        icon: Icons.stop_rounded,
-                        label: t('server_stop'),
-                        color: tc.loss,
-                        onPressed: _isBusy || status?.loaded != true
-                            ? null
-                            : () => _runAction(
-                                _launcher.stopViaLaunchAgent),
-                      ),
+                    AppSpacing.vGapSm,
+                    // 매매 상태
+                    _buildStatusRow(
+                      tc,
+                      '매매 상태',
+                      ctrl.isRunning ? '자동매매 실행 중' : '대기',
+                      ctrl.isRunning ? tc.profit : tc.textTertiary,
                     ),
-                    AppSpacing.hGapMd,
-                    Expanded(
-                      child: _buildActionButton(
-                        icon: Icons.refresh_rounded,
-                        label: t('server_restart'),
-                        color: tc.primary,
-                        onPressed: _isBusy
-                            ? null
-                            : () => _runAction(
-                                _launcher.restartViaLaunchAgent),
+                    AppSpacing.vGapSm,
+                    // LaunchAgent 상태
+                    _buildStatusRow(
+                      tc,
+                      t('server_agent_status'),
+                      agentStatus == null
+                          ? t('server_checking')
+                          : agentStatus.loaded
+                              ? t('server_loaded')
+                              : t('server_unloaded'),
+                      agentStatus?.loaded == true
+                          ? tc.textSecondary
+                          : tc.textTertiary,
+                    ),
+                    if (agentStatus?.isRunning == true) ...[
+                      AppSpacing.vGapSm,
+                      _buildStatusRow(
+                        tc,
+                        'LaunchAgent PID',
+                        '${agentStatus!.pid}',
+                        tc.textSecondary,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            AppSpacing.vGapLg,
+
+            // 제어 버튼들
+            StaggeredFadeSlide(
+              index: 1,
+              child: GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SectionHeader(title: t('server_control')),
+                    AppSpacing.vGapMd,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildActionButton(
+                            icon: Icons.play_arrow_rounded,
+                            label: t('server_start'),
+                            color: tc.profit,
+                            onPressed: _isBusy || isConnected
+                                ? null
+                                : () => _runAction(
+                                    _launcher.startViaLaunchAgent),
+                          ),
+                        ),
+                        AppSpacing.hGapMd,
+                        Expanded(
+                          child: _buildActionButton(
+                            icon: Icons.stop_rounded,
+                            label: t('server_stop'),
+                            color: tc.loss,
+                            onPressed: _isBusy || !isConnected
+                                ? null
+                                : () => _runAction(
+                                    _launcher.stopViaLaunchAgent),
+                          ),
+                        ),
+                        AppSpacing.hGapMd,
+                        Expanded(
+                          child: _buildActionButton(
+                            icon: Icons.refresh_rounded,
+                            label: t('server_restart'),
+                            color: tc.primary,
+                            onPressed: _isBusy
+                                ? null
+                                : () => _runAction(
+                                    _launcher.restartViaLaunchAgent),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (_isBusy) ...[
+                      AppSpacing.vGapMd,
+                      const LinearProgressIndicator(),
+                    ],
+                    if (_message != null) ...[
+                      AppSpacing.vGapMd,
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: tc.surface,
+                          borderRadius: AppSpacing.borderRadiusMd,
+                          border: Border.all(
+                            color: tc.surfaceBorder.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Text(
+                          _message!,
+                          style: AppTypography.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            AppSpacing.vGapLg,
+
+            // 서버 로그
+            StaggeredFadeSlide(
+              index: 2,
+              child: GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        SectionHeader(title: t('server_logs')),
+                        IconButton(
+                          icon: Icon(
+                            Icons.refresh_rounded,
+                            size: 18,
+                            color: tc.textTertiary,
+                          ),
+                          onPressed: () => setState(() {}),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                        ),
+                      ],
+                    ),
+                    AppSpacing.vGapSm,
+                    Container(
+                      width: double.infinity,
+                      height: 200,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: tc.background,
+                        borderRadius: AppSpacing.borderRadiusMd,
+                        border: Border.all(
+                          color: tc.surfaceBorder.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: SingleChildScrollView(
+                        reverse: true,
+                        child: Text(
+                          _launcher.serverLogs.isEmpty
+                              ? t('server_no_logs')
+                              : _launcher.serverLogs.join('\n'),
+                          style: AppTypography.bodySmall.copyWith(
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ),
-                if (_isBusy) ...[
-                  AppSpacing.vGapMd,
-                  const LinearProgressIndicator(),
-                ],
-                if (_message != null) ...[
-                  AppSpacing.vGapMd,
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: tc.surface,
-                      borderRadius: AppSpacing.borderRadiusMd,
-                      border: Border.all(
-                        color: tc.surfaceBorder.withValues(alpha: 0.3),
-                      ),
-                    ),
-                    child: Text(
-                      _message!,
-                      style: AppTypography.bodySmall,
-                    ),
-                  ),
-                ],
-              ],
+              ),
             ),
-          ),
-        ),
-        AppSpacing.vGapLg,
-
-        // 서버 로그
-        StaggeredFadeSlide(
-          index: 2,
-          child: GlassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    SectionHeader(title: t('server_logs')),
-                    IconButton(
-                      icon: Icon(
-                        Icons.refresh_rounded,
-                        size: 18,
-                        color: tc.textTertiary,
-                      ),
-                      onPressed: () => setState(() {}),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 32,
-                        minHeight: 32,
-                      ),
-                    ),
-                  ],
-                ),
-                AppSpacing.vGapSm,
-                Container(
-                  width: double.infinity,
-                  height: 200,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: tc.background,
-                    borderRadius: AppSpacing.borderRadiusMd,
-                    border: Border.all(
-                      color: tc.surfaceBorder.withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: SingleChildScrollView(
-                    reverse: true,
-                    child: Text(
-                      _launcher.serverLogs.isEmpty
-                          ? t('server_no_logs')
-                          : _launcher.serverLogs.join('\n'),
-                      style: AppTypography.bodySmall.copyWith(
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        AppSpacing.vGapXxl,
-      ],
+            AppSpacing.vGapXxl,
+          ],
+        );
+      },
     );
   }
 

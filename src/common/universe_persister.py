@@ -20,7 +20,7 @@ _TICKER_FIELDS: list[str] = [
 
 
 class UniversePersister:
-    """유니버스 티커 설정을 PostgreSQL에 영속화한다.
+    """유니버스 티커 설정을 DB에 영속화한다.
 
     DB = source of truth. 부팅 시 DB가 비어있으면 하드코딩 데이터로 시드한다.
     """

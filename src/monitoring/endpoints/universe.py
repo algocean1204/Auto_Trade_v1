@@ -4,12 +4,26 @@
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
+from src.monitoring.schemas.universe_schemas import (
+    AddTickerRequest,
+    AutoAddRequest,
+    MappingActionResponse,
+    MappingAddRequest,
+    MappingsResponse,
+    SectorItem,
+    SectorLeveragedItem,
+    SectorsResponse,
+    TickerActionResponse,
+    TickerMappingItem,
+    ToggleTickerRequest,
+    UniverseResponse,
+    UniverseTickerItem,
+)
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
@@ -20,107 +34,6 @@ _logger = get_logger(__name__)
 universe_router = APIRouter(prefix="/api/universe", tags=["universe"])
 
 _system: InjectedSystem | None = None
-
-
-class AddTickerRequest(BaseModel):
-    """티커 추가 요청 모델이다."""
-
-    ticker: str
-    name: str
-    exchange: str = "AMS"
-    sector: str = "broad_market"
-    leverage: float = 2.0
-    is_inverse: bool = False
-    pair_ticker: str | None = None
-
-
-class ToggleTickerRequest(BaseModel):
-    """티커 활성/비활성 토글 요청 모델이다."""
-
-    ticker: str
-    enabled: bool
-
-
-class UniverseResponse(BaseModel):
-    """유니버스 목록 응답 모델이다."""
-
-    universe: list[dict[str, Any]] = Field(default_factory=list)
-    total: int = 0
-    enabled: int = 0
-
-
-class TickerMappingItem(BaseModel):
-    """티커 매핑 항목 모델이다. 원본-레버리지 페어 매핑 정보를 나타낸다."""
-
-    underlying: str
-    bull_2x: str = ""
-    bear_2x: str = ""
-    sector: str = ""
-
-
-class MappingsResponse(BaseModel):
-    """티커 매핑 목록 응답 모델이다."""
-
-    mappings: list[TickerMappingItem] = Field(default_factory=list)
-    count: int = 0
-
-
-class MappingAddRequest(BaseModel):
-    """티커 매핑 추가 요청 모델이다."""
-
-    underlying: str
-    bull_2x: str = ""
-    bear_2x: str = ""
-    sector: str = ""
-
-
-class MappingActionResponse(BaseModel):
-    """매핑 추가/삭제 응답 모델이다."""
-
-    status: str
-    underlying: str
-
-
-class AutoAddRequest(BaseModel):
-    """유니버스 자동 추가 요청 모델이다."""
-
-    ticker: str
-
-
-class SectorLeveragedItem(BaseModel):
-    """섹터 레버리지 ETF 매핑 모델이다."""
-
-    bull: str | None = None
-    bear: str | None = None
-
-
-class SectorItem(BaseModel):
-    """섹터 항목 모델이다. Flutter SectorData.fromJson 호환.
-
-    키: sector_key, name_kr, name_en, tickers, sector_leveraged, enabled, total
-    """
-
-    sector_key: str = ""
-    name_kr: str = ""
-    name_en: str = ""
-    tickers: list[str] = Field(default_factory=list)
-    sector_leveraged: SectorLeveragedItem | None = None
-    enabled: int = 0
-    total: int = 0
-
-
-class SectorsResponse(BaseModel):
-    """섹터 목록 응답 모델이다."""
-
-    sectors: list[SectorItem] = Field(default_factory=list)
-
-
-class TickerActionResponse(BaseModel):
-    """티커 추가/삭제/토글 응답 모델이다."""
-
-    status: str
-    ticker: str
-    enabled: bool | None = None
 
 
 def set_universe_deps(system: InjectedSystem) -> None:
@@ -141,13 +54,15 @@ async def get_universe() -> UniverseResponse:
     try:
         registry = _system.components.registry
         all_tickers = registry.get_all()
-        items: list[dict[str, Any]] = []
+        items: list[UniverseTickerItem] = []
         for t in all_tickers:
-            d = t.model_dump()
             # Flutter가 기대하는 direction(bull/bear)과 underlying 필드를 추가한다
-            d["direction"] = "bear" if t.is_inverse else "bull"
-            d["underlying"] = t.pair_ticker or t.ticker
-            items.append(d)
+            item = UniverseTickerItem(
+                **t.model_dump(),
+                direction="bear" if t.is_inverse else "bull",
+                underlying=t.pair_ticker or t.ticker,
+            )
+            items.append(item)
         enabled_count = sum(1 for t in all_tickers if t.enabled)
         return UniverseResponse(universe=items, total=len(items), enabled=enabled_count)
     except HTTPException:
@@ -242,7 +157,7 @@ async def add_ticker(
     req: AddTickerRequest,
     _key: str = Depends(verify_api_key),
 ) -> TickerActionResponse:
-    """유니버스에 티커를 추가한다. 인증 필수."""
+    """유니버스에 티커를 추가한다. 페어 티커가 있으면 자동으로 함께 추가한다. 인증 필수."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
@@ -261,12 +176,19 @@ async def add_ticker(
             enabled=True,
         )
         registry._ticker_map[req.ticker] = meta
-        # DB에 영속화한다
         persister = _system.features.get("universe_persister")
         if persister is not None:
             await persister.save_ticker(meta.model_dump())
-        _logger.info("티커 추가 완료: %s", req.ticker)
-        return TickerActionResponse(status="added", ticker=req.ticker)
+
+        # 페어 티커가 있고 아직 등록되지 않았으면 자동 추가한다
+        added_pair: str | None = None
+        if req.pair_ticker and not registry.has_ticker(req.pair_ticker):
+            added_pair = await _try_add_pair(registry, req.pair_ticker, persister)
+
+        _logger.info("티커 추가 완료: %s (페어: %s)", req.ticker, added_pair)
+        return TickerActionResponse(
+            status="added", ticker=req.ticker, pair_ticker=added_pair,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -425,12 +347,36 @@ async def delete_mapping(
         raise HTTPException(status_code=500, detail="매핑 삭제 실패") from None
 
 
+async def _try_add_pair(
+    registry: object, pair_ticker: str, persister: object | None,
+) -> str | None:
+    """_ETF_RAW에서 페어 티커 메타데이터를 조회하여 자동 추가한다.
+
+    추가 성공 시 페어 티커 코드를, 실패 시 None을 반환한다.
+    """
+    from src.common.ticker_registry import TickerMeta, _ETF_RAW, _ETF_FIELDS
+
+    pair_raw = next((r for r in _ETF_RAW if r[0] == pair_ticker), None)
+    if pair_raw is None:
+        return None
+    pair_meta = TickerMeta(**dict(zip(_ETF_FIELDS, pair_raw)))
+    registry._ticker_map[pair_ticker] = pair_meta  # type: ignore[attr-defined]
+    if persister is not None:
+        await persister.save_ticker(pair_meta.model_dump())
+    _logger.info("페어 티커 자동 추가 완료: %s", pair_ticker)
+    return pair_ticker
+
+
 @universe_router.post("/auto-add", response_model=TickerActionResponse)
 async def auto_add_ticker(
     req: AutoAddRequest,
     _key: str = Depends(verify_api_key),
 ) -> TickerActionResponse:
-    """티커 정보를 자동으로 조회하여 유니버스에 추가한다. 인증 필수."""
+    """티커 정보를 자동으로 조회하여 유니버스에 추가한다.
+
+    _ETF_RAW에 메타데이터가 있으면 사용하고, 없으면 기본값으로 추가한다.
+    페어 티커가 있으면 함께 자동 추가한다. 인증 필수.
+    """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
@@ -440,25 +386,32 @@ async def auto_add_ticker(
                 status_code=409,
                 detail=f"이미 존재하는 티커이다: {req.ticker}",
             )
-        # 기본 메타 정보로 추가한다 (상세 정보는 이후 업데이트 가능)
-        from src.common.ticker_registry import TickerMeta
-        meta = TickerMeta(
-            ticker=req.ticker,
-            name=req.ticker,
-            exchange="AMS",
-            sector="broad_market",
-            leverage=2.0,
-            is_inverse=False,
-            pair_ticker=None,
-            enabled=True,
-        )
+        from src.common.ticker_registry import TickerMeta, _ETF_RAW, _ETF_FIELDS
+
+        # _ETF_RAW에서 메타데이터를 조회한다
+        raw = next((r for r in _ETF_RAW if r[0] == req.ticker), None)
+        if raw:
+            meta = TickerMeta(**dict(zip(_ETF_FIELDS, raw)))
+        else:
+            meta = TickerMeta(
+                ticker=req.ticker, name=req.ticker, exchange="AMS",
+                sector="broad_market", leverage=2.0, is_inverse=False,
+                pair_ticker=None, enabled=True,
+            )
         registry._ticker_map[req.ticker] = meta
-        # DB에 영속화한다
         persister = _system.features.get("universe_persister")
         if persister is not None:
             await persister.save_ticker(meta.model_dump())
-        _logger.info("티커 자동 추가 완료: %s", req.ticker)
-        return TickerActionResponse(status="added", ticker=req.ticker)
+
+        # 페어 티커가 있고 아직 등록되지 않았으면 자동 추가한다
+        added_pair: str | None = None
+        if meta.pair_ticker and not registry.has_ticker(meta.pair_ticker):
+            added_pair = await _try_add_pair(registry, meta.pair_ticker, persister)
+
+        _logger.info("티커 자동 추가 완료: %s (페어: %s)", req.ticker, added_pair)
+        return TickerActionResponse(
+            status="added", ticker=req.ticker, pair_ticker=added_pair,
+        )
     except HTTPException:
         raise
     except Exception:

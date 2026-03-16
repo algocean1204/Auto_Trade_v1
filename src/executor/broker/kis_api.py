@@ -5,6 +5,7 @@ BrokerClient 스텁 메서드의 실제 구현체이다.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from collections.abc import Awaitable, Callable
@@ -35,26 +36,40 @@ logger = get_logger(__name__)
 # KIS 토큰 만료 에러 코드이다
 _TOKEN_EXPIRED_CODE = "EGW00123"
 
+# 토큰 재발급 최대 재시도 횟수이다
+_MAX_TOKEN_RETRIES = 3
+
 
 async def _with_token_retry(
     auth: KisAuth,
     fn: Callable[[], Awaitable[dict]],
     context: str,
 ) -> dict:
-    """API 호출을 수행하고, 토큰 만료 시 재발급 후 1회 재시도한다."""
-    try:
-        return await fn()
-    except BrokerError as exc:
-        if _TOKEN_EXPIRED_CODE in (exc.detail or ""):
-            logger.info("토큰 만료 감지 — 자동 재발급 후 재시도 (%s)", context)
-            auth.invalidate_token()
+    """API 호출을 수행하고, 토큰 만료 시 지수 백오프로 최대 3회 재시도한다."""
+    for attempt in range(_MAX_TOKEN_RETRIES):
+        try:
             return await fn()
-        raise
+        except BrokerError as exc:
+            if _TOKEN_EXPIRED_CODE not in (exc.detail or ""):
+                raise
+            if attempt == _MAX_TOKEN_RETRIES - 1:
+                logger.error("토큰 재발급 %d회 실패: %s", _MAX_TOKEN_RETRIES, context)
+                raise
+            auth.invalidate_token()
+            wait = 0.5 * (2 ** attempt)
+            logger.warning(
+                "토큰 만료 → %.1f초 후 재시도 (%d/%d): %s",
+                wait, attempt + 1, _MAX_TOKEN_RETRIES, context,
+            )
+            await asyncio.sleep(wait)
+    # 이론상 도달 불가이지만 타입 안전을 위해 예외를 발생시킨다
+    raise BrokerError(message="토큰 재시도 루프 이탈", detail=context)
 
 # -- API 경로 상수 --
 _GET_PRICE = "/uapi/overseas-price/v1/quotations/price"
 _GET_DAILY = "/uapi/overseas-price/v1/quotations/dailyprice"
 _ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
+_CANCEL_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
 _GET_BALANCE = "/uapi/overseas-stock/v1/trading/inquire-balance"
 _GET_BUY_POWER = "/uapi/overseas-stock/v1/trading/inquire-psamount"
 _GET_PRESENT_BALANCE = "/uapi/overseas-stock/v1/trading/inquire-present-balance"
@@ -68,6 +83,7 @@ _TR_DAILY = "HHDFS76240000"
 _TR_ID_MAP: dict[str, dict[str, str]] = {
     "buy":       {"virtual": "VTTT1002U", "real": "TTTT1002U"},
     "sell":      {"virtual": "VTTT1001U", "real": "TTTT1001U"},
+    "cancel":    {"virtual": "VTTT1004U", "real": "TTTT1004U"},
     "balance":   {"virtual": "VTTS3012R", "real": "TTTS3012R"},
     "buy_power": {"virtual": "VTTS3007R", "real": "TTTS3007R"},
     "present_balance": {"virtual": "VTRP6504R", "real": "CTRP6504R"},
@@ -383,11 +399,45 @@ async def fetch_exchange_rate(
     result = await _fetch_present_balance(auth, http)
     rate = result.usd_rate
 
-    if not (900 < rate < 2000):
+    if not (950 < rate < 1500):
         raise BrokerError(
             message="KIS 환율 범위 이탈",
-            detail=f"rate={rate} (from inquire-present-balance frst_bltn_exrt)",
+            detail=f"rate={rate} (기대: 950-1500)",
         )
 
     logger.info("KIS 환율 조회: %.2f 원/달러 (체결기준잔고)", rate)
     return rate
+
+
+async def cancel_order(
+    auth: KisAuth, order_id: str, exchange: str,
+    http: AsyncHttpClient,
+) -> bool:
+    """KIS 미체결 주문 취소 API를 호출한다.
+
+    정정/취소 TR_ID: 가상 VTTT1004U, 실전 TTTT1004U.
+    성공 시 True를 반환한다.
+    """
+    tr_id = _get_tr_id(auth, "cancel")
+    cano, acnt_cd = account_parts(auth)
+    body = {
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt_cd,
+        "OVRS_EXCG_CD": exchange,
+        "ORGN_ODNO": order_id,
+        "RVSE_CNCL_DVSN_CD": "02",  # 02 = 취소
+        "ORD_QTY": "0",  # 전량 취소
+        "OVRS_ORD_UNPR": "0",
+        "ORD_SVR_DVSN_CD": "0",
+    }
+    url = build_url(auth, _CANCEL_ORDER_PATH)
+
+    async def _call() -> dict:
+        await get_kis_throttle().before_order()
+        headers = await auth.get_headers(tr_id)
+        resp = await http.post(url, json=body, headers=headers)
+        return check_response(resp, f"주문 취소 {order_id}")
+
+    data = await _with_token_retry(auth, _call, f"취소 {order_id}")
+    logger.info("주문 취소 완료: order_id=%s", order_id)
+    return True

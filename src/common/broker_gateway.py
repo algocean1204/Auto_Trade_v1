@@ -162,6 +162,10 @@ class BrokerClient:
     async def place_order(self, order: OrderRequest) -> OrderResult:
         raise NotImplementedError("F5에서 구현 예정")
 
+    async def cancel_order(self, order_id: str, exchange: str = "NAS") -> bool:
+        """미체결 주문을 취소한다. 성공 시 True를 반환한다."""
+        raise NotImplementedError("F5에서 구현 예정")
+
     async def get_exchange_rate(self) -> float:
         raise NotImplementedError("F5에서 구현 예정")
 

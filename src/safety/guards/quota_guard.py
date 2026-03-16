@@ -1,6 +1,6 @@
 """QuotaGuard (F6.19) -- KIS API 속도 제한을 관리한다.
 
-Redis 기반 슬라이딩 윈도우 카운터로 요청 수를 추적하여
+캐시 기반 슬라이딩 윈도우 카운터로 요청 수를 추적하여
 초과 시 요청을 차단한다.
 """
 
@@ -17,13 +17,13 @@ _logger = get_logger(__name__)
 # -- 상수 --
 _DEFAULT_WINDOW_SECONDS: int = 60
 _DEFAULT_MAX_REQUESTS: int = 20
-_REDIS_KEY_PREFIX: str = "quota:kis_api"
+_CACHE_KEY_PREFIX: str = "quota:kis_api"
 
 
 class QuotaGuard:
     """KIS API 쿼터 관리기이다.
 
-    Redis 키에 현재 윈도우 내 요청 수를 기록하고,
+    캐시 키에 현재 윈도우 내 요청 수를 기록하고,
     최대 허용 수 초과 시 차단 신호를 반환한다.
     """
 
@@ -36,7 +36,7 @@ class QuotaGuard:
         """초기화한다.
 
         Args:
-            cache: Redis 캐시 클라이언트.
+            cache: 캐시 클라이언트.
             window_seconds: 쿼터 윈도우(초). 기본 60.
             max_requests: 윈도우 내 최대 요청 수. 기본 20.
         """
@@ -81,10 +81,10 @@ class QuotaGuard:
         return int(raw) if raw else 0
 
     def _build_key(self) -> str:
-        """Redis 키를 생성한다. 윈도우 단위로 키가 변경된다."""
+        """캐시 키를 생성한다. 윈도우 단위로 키가 변경된다."""
         now = int(datetime.now(tz=timezone.utc).timestamp())
         window_id = now // self._window
-        return f"{_REDIS_KEY_PREFIX}:{window_id}"
+        return f"{_CACHE_KEY_PREFIX}:{window_id}"
 
     def _estimate_reset_time(self) -> datetime:
         """현재 윈도우 종료 시점을 추정한다."""

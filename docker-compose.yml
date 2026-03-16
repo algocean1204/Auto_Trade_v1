@@ -1,6 +1,13 @@
+# ┌──────────────────────────────────────────────────────┐
+# │ SQLite + InMemoryCache 전환으로 Docker 서비스 비활성화    │
+# │ 마이그레이션 시에만 PostgreSQL 컨테이너를 일시적으로 사용    │
+# │ docker compose up postgres -d                         │
+# └──────────────────────────────────────────────────────┘
+
 services:
   # ================================================================
-  # PostgreSQL 17 + pgvector (상시 실행)
+  # PostgreSQL 17 + pgvector (마이그레이션 전용 - migration 프로필에서만 실행)
+  # 실행 방법: docker compose --profile migration up postgres -d
   # ================================================================
   postgres:
     image: pgvector/pgvector:pg17
@@ -22,9 +29,12 @@ services:
     restart: always
     networks:
       - trading
+    profiles:
+      - migration
 
   # ================================================================
-  # Redis 7 (상시 실행)
+  # Redis 7 (마이그레이션 전용 - migration 프로필에서만 실행)
+  # 실행 방법: docker compose --profile migration up redis -d
   # ================================================================
   redis:
     image: redis:7-alpine
@@ -42,6 +52,8 @@ services:
     restart: always
     networks:
       - trading
+    profiles:
+      - migration
 
   # ================================================================
   # FastAPI Dashboard Server -- 호스트에서 직접 실행으로 이전
@@ -79,6 +91,7 @@ services:
   # ================================================================
   # Production 전용 서비스 (내부 네트워크, 포트 미노출)
   # docker compose --profile prod-internal up -d 로 실행
+  # SQLite 전환 후 마이그레이션 시에만 사용 (migration 프로필 포함)
   # ================================================================
   postgres-prod:
     image: pgvector/pgvector:pg17
@@ -102,6 +115,7 @@ services:
       - trading-internal
     profiles:
       - prod-internal
+      - migration
 
   redis-prod:
     image: redis:7-alpine
@@ -121,6 +135,7 @@ services:
       - trading-internal
     profiles:
       - prod-internal
+      - migration
 
 volumes:
   postgres_data:

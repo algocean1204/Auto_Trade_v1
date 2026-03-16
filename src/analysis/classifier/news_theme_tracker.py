@@ -1,4 +1,4 @@
-"""F2 AI 분석 -- 반복 테마를 감지하고 Redis에서 추적한다."""
+"""F2 AI 분석 -- 반복 테마를 감지하고 캐시에서 추적한다."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from src.common.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
 
-# Redis 키 접두사이다
+# 캐시 키 접두사이다
 _KEY_PREFIX: str = "theme:"
 
 # 테마 TTL이다 -- 7일간 유지한다
@@ -42,16 +42,16 @@ def _determine_trend(current: int, previous: int) -> str:
     return "stable"
 
 
-def _redis_key(theme: str) -> str:
-    """테마의 Redis 키를 생성한다."""
+def _cache_key(theme: str) -> str:
+    """테마의 캐시 키를 생성한다."""
     return f"{_KEY_PREFIX}{theme}"
 
 
 class NewsThemeTracker:
-    """반복 테마를 감지하고 Redis에서 빈도/추세를 추적한다.
+    """반복 테마를 감지하고 캐시에서 빈도/추세를 추적한다.
 
     카테고리+방향 조합(예: macro_bearish)을 테마 키로 사용한다.
-    7일간 Redis에 빈도를 누적하며, rising/stable/declining 추세를 판단한다.
+    7일간 캐시에 빈도를 누적하며, rising/stable/declining 추세를 판단한다.
     """
 
     def __init__(self, cache_client: CacheClient) -> None:
@@ -62,7 +62,7 @@ class NewsThemeTracker:
         self,
         news_list: list[ClassifiedNews],
     ) -> list[ThemeSummary]:
-        """뉴스에서 테마를 추출하고 Redis와 대조하여 추세를 반환한다."""
+        """뉴스에서 테마를 추출하고 캐시와 대조하여 추세를 반환한다."""
         current_themes = _extract_themes(news_list)
         summaries: list[ThemeSummary] = []
 
@@ -76,11 +76,11 @@ class NewsThemeTracker:
         return summaries
 
     async def _process_theme(self, theme: str, count: int) -> ThemeSummary:
-        """단일 테마의 추세를 Redis와 대조하여 계산한다."""
-        previous = await self._get_previous(theme)
-        trend = _determine_trend(count, previous)
-        new_total = previous + count
-        await self._save_count(theme, new_total)
+        """단일 테마의 추세를 캐시와 대조하여 계산한다."""
+        prev_total, prev_batch = await self._get_previous(theme)
+        trend = _determine_trend(count, prev_batch)
+        new_total = prev_total + count
+        await self._save_count(theme, new_total, count)
 
         return ThemeSummary(
             theme=theme,
@@ -88,21 +88,21 @@ class NewsThemeTracker:
             trend=trend,
         )
 
-    async def _get_previous(self, theme: str) -> int:
-        """Redis에서 이전 빈도를 조회한다."""
+    async def _get_previous(self, theme: str) -> tuple[int, int]:
+        """캐시에서 이전 누적 빈도와 직전 배치 빈도를 조회한다."""
         try:
-            raw = await self._cache.read(_redis_key(theme))
+            raw = await self._cache.read(_cache_key(theme))
             if raw is None:
-                return 0
+                return 0, 0
             data = json.loads(raw)
-            return int(data.get("count", 0))
+            return int(data.get("count", 0)), int(data.get("last_batch", 0))
         except (json.JSONDecodeError, ValueError):
-            return 0
+            return 0, 0
 
-    async def _save_count(self, theme: str, total: int) -> None:
-        """Redis에 테마 빈도를 저장한다."""
+    async def _save_count(self, theme: str, total: int, batch: int) -> None:
+        """캐시에 테마 누적 빈도와 현재 배치 빈도를 저장한다."""
         try:
-            data = json.dumps({"count": total})
-            await self._cache.write(_redis_key(theme), data, ttl=_THEME_TTL)
+            data = json.dumps({"count": total, "last_batch": batch})
+            await self._cache.write(_cache_key(theme), data, ttl=_THEME_TTL)
         except Exception:
             logger.exception("테마 빈도 저장 실패: %s", theme)

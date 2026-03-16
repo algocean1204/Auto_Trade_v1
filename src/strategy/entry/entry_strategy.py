@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import math
+
 from src.analysis.models import MarketRegime
 from src.common.logger import get_logger
 from src.indicators.models import IndicatorBundle
@@ -155,17 +157,19 @@ def _check_rag_gate(bundle: IndicatorBundle) -> bool:
             return True  # 지표 없으면 통과
 
         query = "실패 패턴: " + " ".join(query_parts)
-        results = km.search(query, n_results=1)
+        results = km.search(query, top_k=1)
 
-        # 결과가 있고 유사도가 임계값 이상이면 차단한다
-        if results and len(results) > 0:
-            # KnowledgeManager 검색 결과에서 거리/유사도를 확인한다
-            first = results[0]
+        # KnowledgeResult.documents / .scores로 유사도를 확인한다
+        if results and hasattr(results, "documents") and results.documents:
+            first = results.documents[0]
+            # scores에서 유사도를 꺼낸다 (ChromaDB distance→similarity 변환값)
+            similarity = results.scores[0] if results.scores else 0.0
             if isinstance(first, dict):
-                similarity = first.get("similarity", 0.0)
-                if similarity >= _RAG_FAILURE_SIMILARITY_THRESHOLD:
-                    logger.info("RAG 게이트 차단: 실패 패턴 유사도=%.3f", similarity)
-                    return False
+                # documents[].similarity가 있으면 그것을 우선 사용한다
+                similarity = first.get("similarity", similarity)
+            if similarity >= _RAG_FAILURE_SIMILARITY_THRESHOLD:
+                logger.info("RAG 게이트 차단: 실패 패턴 유사도=%.3f", similarity)
+                return False
         return True
     except Exception as exc:
         logger.debug("RAG 게이트 검색 실패 (통과 처리): %s", exc)
@@ -180,12 +184,19 @@ def _calculate_confidence(bundle: IndicatorBundle, missing_penalty: float) -> fl
     핵심 데이터가 없으면 기술적 지표 기반 기본 확신도(0.5)를 사용한다.
     """
     scores: list[float] = []
+    # NaN/inf 값을 필터링하여 확신도 NaN 전파를 방지한다
     if bundle.order_flow is not None:
-        scores.append(min(abs(bundle.order_flow.obi), 1.0))
+        val = abs(bundle.order_flow.obi)
+        if not (math.isnan(val) or math.isinf(val)):
+            scores.append(min(val, 1.0))
     if bundle.momentum is not None:
-        scores.append(min(bundle.momentum.alignment, 1.0))
+        val = bundle.momentum.alignment
+        if not (math.isnan(val) or math.isinf(val)):
+            scores.append(min(val, 1.0))
     if bundle.whale is not None:
-        scores.append(min(bundle.whale.total_score, 1.0))
+        val = bundle.whale.total_score
+        if not (math.isnan(val) or math.isinf(val)):
+            scores.append(min(val, 1.0))
 
     if not scores:
         # 핵심 데이터가 없어도 기술적 지표가 있으면 기본 확신도를 부여한다
@@ -198,6 +209,11 @@ def _calculate_confidence(bundle: IndicatorBundle, missing_penalty: float) -> fl
     else:
         base_confidence = sum(scores) / len(scores)
 
+    # 최종 NaN 방어 — 예상치 못한 경로로 NaN이 유입되면 0.0을 반환한다
+    if math.isnan(base_confidence):
+        logger.warning("진입 확신도 NaN 감지 → 0.0 반환")
+        return 0.0
+
     # 데이터 미가용 페널티를 차감한다
     adjusted = max(0.0, base_confidence - missing_penalty)
     return round(adjusted, 4)
@@ -208,23 +224,39 @@ def _calculate_position_size(
     params: StrategyParams,
     positions: list[Position],
     regime_multiplier: float,
+    ticker: str = "",
 ) -> float:
-    """확신도, 레짐, 기존 포지션에 따라 포지션 크기(%)를 계산한다.
+    """확신도, 레짐, 기존 포지션, 티커별 파라미터에 따라 포지션 크기(%)를 계산한다.
 
     반환값은 계좌 자산 대비 퍼센트이다 (예: 5.0 = 5%).
     실제 주식 수 변환은 trading_loop에서 수행한다.
+    티커별 커스텀 포지션 크기가 있으면 글로벌 기본값 대신 사용한다.
     """
+    # 티커별 커스텀 포지션 크기를 우선 사용한다
     base = params.default_position_size_pct
+    if ticker:
+        try:
+            from src.strategy.params.ticker_params import TickerParams
+            tp = TickerParams()
+            ticker_size = tp.get_position_size(ticker)
+            if ticker_size != params.default_position_size_pct:
+                base = ticker_size
+                logger.debug("티커별 포지션 크기 적용: %s = %.1f%%", ticker, base)
+        except Exception:
+            pass  # 티커 파라미터 로드 실패 시 글로벌 기본값을 사용한다
+    # 레짐 배수 비정상 값 방어: 0 이하이면 기본값 1.0을 사용한다
+    if regime_multiplier <= 0:
+        logger.warning("레짐 승수 비정상: %.2f → 기본값 1.0 사용", regime_multiplier)
+        regime_multiplier = 1.0
     # 확신도에 따라 70~100% 범위로 조정한다 (더 공격적)
     adjusted = base * (0.7 + 0.3 * confidence)
     # 레짐 배수를 적용한다 (mild_bear=0.5, crash=1.5 등)
     adjusted *= regime_multiplier
-    # 기존 포지션이 많으면 축소하되 최소 50% 유지한다
+    # 기존 포지션이 3개 초과 시 10%씩 선형 감소하여 절벽 효과를 방지한다
     position_count = len(positions)
-    if position_count >= 7:
-        adjusted *= 0.5
-    elif position_count >= 5:
-        adjusted *= 0.7
+    if position_count > 3:
+        position_multiplier = max(0.3, 1.0 - (position_count - 3) * 0.1)
+        adjusted *= position_multiplier
     return round(min(adjusted, params.max_position_pct), 2)
 
 
@@ -289,17 +321,23 @@ class EntryStrategy:
         all_passed = all(gates.values())
         confidence = _calculate_confidence(bundle, total_penalty) if all_passed else 0.0
 
-        # 확신도가 최소 임계값(0.15) 미만이면 차단한다
-        if all_passed and confidence < 0.15:
+        # 확신도가 최소 임계값(0.40) 미만이면 차단한다
+        if all_passed and confidence < 0.40:
             all_passed = False
             blocked_by = "low_confidence"
+            # confidence 값은 유지한다 (0.38 등) — 분석용으로 게이트 실패(0.0)와 구분한다
             logger.info(
                 "진입 차단(낮은 확신도): %s confidence=%.4f (페널티=%.2f)",
                 ticker, confidence, total_penalty,
             )
 
+        # 게이트 실패 시에만 confidence를 0.0으로 설정한다 (약한 신호와 구분)
+        if not all_passed and blocked_by != "low_confidence":
+            confidence = 0.0
+
         size = _calculate_position_size(
             confidence, params, positions, regime.params.position_multiplier,
+            ticker=ticker,
         ) if all_passed else 0.0
 
         decision = EntryDecision(

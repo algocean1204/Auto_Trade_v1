@@ -16,6 +16,12 @@ _logger = get_logger(__name__)
 _VAR_CONFIDENCE: float = 99.0
 _MIN_DATA_POINTS: int = 5
 
+# -- VaR 기반 포지션 조정 임계값 --
+# VaR이 포트폴리오의 이 비율을 초과하면 포지션 축소 배수를 적용한다
+_VAR_WARNING_THRESHOLD_PCT: float = 5.0
+# 임계값 초과 시 적용할 최소 포지션 축소 배수 (0.7 = 30% 축소)
+_VAR_REDUCTION_MULTIPLIER: float = 0.7
+
 
 def calculate_var(
     portfolio_value: float,
@@ -54,6 +60,45 @@ def calculate_var(
         var_99=round(var_usd, 2),
         expected_shortfall=round(es_usd, 2),
     )
+
+
+def get_var_position_multiplier(
+    portfolio_value: float,
+    daily_returns: list[float],
+) -> float:
+    """VaR 기반 포지션 사이즈 조정 배수를 반환한다.
+
+    포트폴리오 VaR이 총 가치의 5%를 초과하면 경고를 기록하고
+    축소 배수(0.7)를 반환한다. 정상 범위이면 1.0을 반환한다.
+    차단하지 않고 권고(advisory)로만 동작한다.
+
+    Args:
+        portfolio_value: 포트폴리오 총 가치(USD).
+        daily_returns: 일일 수익률(%) 리스트.
+
+    Returns:
+        포지션 축소 배수 (1.0 = 변동 없음, <1.0 = 축소 권고).
+    """
+    if portfolio_value <= 0:
+        return 1.0
+
+    result = calculate_var(portfolio_value, daily_returns)
+    if result.var_99 <= 0:
+        return 1.0
+
+    var_pct_of_portfolio = (result.var_99 / portfolio_value) * 100.0
+
+    if var_pct_of_portfolio > _VAR_WARNING_THRESHOLD_PCT:
+        _logger.warning(
+            "[VaR경고] 포트폴리오 VaR %.2f%% > 임계값 %.1f%% "
+            "(VaR=$%.2f, ES=$%.2f) -- 포지션 축소 배수 %.2f 적용",
+            var_pct_of_portfolio, _VAR_WARNING_THRESHOLD_PCT,
+            result.var_99, result.expected_shortfall,
+            _VAR_REDUCTION_MULTIPLIER,
+        )
+        return _VAR_REDUCTION_MULTIPLIER
+
+    return 1.0
 
 
 def _compute_percentile_var(

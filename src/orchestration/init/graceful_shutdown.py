@@ -88,7 +88,7 @@ async def _close_all_connections(system: InjectedSystem) -> tuple[int, list[str]
         ("Broker", c.broker.close()),
         ("AI", c.ai.close()),
         ("HTTP", c.http.close()),
-        ("Cache(Redis)", c.cache.aclose()),
+        ("Cache", c.cache.aclose()),
         ("DB", c.db.close()),
     ]
     for name, coro in steps:

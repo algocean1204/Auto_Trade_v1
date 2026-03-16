@@ -106,23 +106,25 @@ def _hmm_classify(candles: list[Candle5m]) -> MicroRegimeResult | None:
 def _assign_state_labels(means: object) -> list[str]:
     """HMM 상태별 평균 특성으로 레짐 레이블을 할당한다.
 
+    고변동성(vol > 0.005)을 최우선으로 판단한다 — 방향성과 무관하게 위험하다.
     수익률 절대값이 크고 변동성 낮으면 trending,
-    수익률 작고 변동성 높으면 volatile,
     수익률 작고 변동성 낮으면 quiet,
     나머지 mean_reverting.
     """
     labels: list[str] = []
-    for state_mean in means:
+    for idx, state_mean in enumerate(means):
         abs_ret = abs(float(state_mean[0]))
         vol = float(state_mean[1])
-        if abs_ret > 0.001 and vol < 0.005:
-            labels.append("trending")
-        elif abs_ret < 0.0005 and vol > 0.005:
-            labels.append("volatile")
+        if vol > 0.005:  # 고변동성 우선 판단
+            label = "volatile"
+        elif abs_ret > 0.001 and vol < 0.005:
+            label = "trending"
         elif abs_ret < 0.0003 and vol < 0.003:
-            labels.append("quiet")
+            label = "quiet"
         else:
-            labels.append("mean_reverting")
+            label = "mean_reverting"
+        labels.append(label)
+        logger.debug("HMM state %d: ret=%.5f vol=%.5f → %s", idx, abs_ret, vol, label)
     return labels
 
 

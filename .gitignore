@@ -32,6 +32,9 @@ secrets/
 # KIS API tokens (24h valid, auto-regenerated)
 data/kis_token.json
 data/kis_real_token.json
+data/trading.db
+data/token_usage.json
+data/server_port.txt
 
 # Personal data (user-specific)
 Talk/

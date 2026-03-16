@@ -1,3 +1,6 @@
+# [DEPRECATED] PostgreSQL 전용 마이그레이션 -- SQLite 환경에서는 사용하지 않는다.
+# 0004_sqlite_initial.py를 단독 initial migration으로 사용한다.
+# 이 파일은 PostgreSQL 백업/참고용으로만 보관한다.
 """V1 articles 테이블을 V2 스키마로 교체한다.
 
 V1 스키마(headline, language, tickers_mentioned 등)가 잔존하여

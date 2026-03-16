@@ -1,4 +1,4 @@
-"""EOD 차트 데이터 계산 및 Redis 저장 모듈이다.
+"""EOD 차트 데이터 계산 및 캐시 저장 모듈이다.
 
 오늘의 거래 목록과 일일 PnL을 받아 5종 차트 캐시 키를 갱신한다.
 EOD 시퀀스 Step 2.5에서 호출되며 90일 치 이력을 보관한다.
@@ -123,7 +123,7 @@ async def write_chart_data(
 ) -> int:
     """오늘의 거래 데이터로 5종 차트 캐시를 갱신한다.
 
-    Redis에 저장되는 키:
+    캐시에 저장되는 키:
       - charts:daily_returns     : 일별 PnL 이력
       - charts:cumulative_returns: 누적 수익률 이력
       - charts:heatmap_ticker    : 티커별 승률 히트맵
@@ -161,6 +161,13 @@ async def write_chart_data(
     await cache.write_json("charts:daily_returns", daily_returns, ttl=_CHART_TTL)
     updated += 1
     logger.debug("[차트] daily_returns 갱신: %d일치", len(daily_returns))
+
+    # portfolio:daily_returns — SimpleVaR(trading_loop.py)가 읽는 list[float] 형태이다
+    # charts:daily_returns의 pnl_pct 값만 추출하여 기록한다
+    pnl_pct_list: list[float] = [
+        _safe_float(d.get("pnl_pct")) for d in daily_returns
+    ]
+    await cache.write_json("portfolio:daily_returns", pnl_pct_list, ttl=_CHART_TTL)
 
     # --- 2. cumulative_returns: 누적 수익률을 갱신한다 ---
     cumulative: list[dict] = await cache.read_json("charts:cumulative_returns") or []
@@ -202,6 +209,14 @@ async def write_chart_data(
     await cache.write_json("charts:drawdown", drawdown_data, ttl=_CHART_TTL)
     updated += 1
     logger.debug("[차트] drawdown 갱신: %.2f%%", dd_pct)
+
+    # risk:max_drawdown — 리스크 대시보드 API(risk.py)가 cache.read()로 읽는 키이다
+    # 전체 이력에서 최대 낙폭(절대값이 가장 큰 음수)을 계산하여 문자열로 기록한다
+    max_dd = min(
+        (_safe_float(d.get("drawdown_pct")) for d in drawdown_data),
+        default=0.0,
+    )
+    await cache.write("risk:max_drawdown", str(round(max_dd, 2)), ttl=_CHART_TTL)
 
     logger.info("차트 데이터 갱신 완료: %d건 (daily_pnl=$%.2f, pnl_pct=%.2f%%)",
                 updated, daily_pnl, pnl_pct)

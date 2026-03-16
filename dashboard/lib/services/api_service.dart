@@ -24,6 +24,7 @@ import '../models/stock_analysis_models.dart';
 import '../models/ticker_params_models.dart';
 import '../constants/api_constants.dart';
 import '../utils/env_loader.dart';
+import 'server_launcher.dart';
 
 /// 서버에 물리적으로 연결할 수 없을 때 발생하는 예외이다.
 /// SocketException, TimeoutException 등 네트워크 레벨 실패를 나타낸다.
@@ -36,7 +37,7 @@ class ServerUnreachableException implements Exception {
 }
 
 class ApiService {
-  final String baseUrl;
+  String baseUrl;
 
   /// 자동매매 제어 엔드포인트(POST /api/trading/start, /stop) 인증에 사용하는 API 키이다.
   /// 백엔드 .env의 API_SECRET_KEY와 일치해야 한다.
@@ -52,9 +53,17 @@ class ApiService {
       : baseUrl = baseUrl ??
             EnvLoader.get(
               'API_BASE_URL',
-              defaultValue: 'http://localhost:9501',
+              defaultValue: ServerLauncher.instance.baseUrl,
             ),
         apiKey = apiKey ?? EnvLoader.get('API_SECRET_KEY');
+
+  /// ServerLauncher가 감지한 포트로 baseUrl을 갱신한다.
+  void refreshBaseUrl() {
+    final detected = ServerLauncher.instance.baseUrl;
+    if (detected != baseUrl) {
+      baseUrl = detected;
+    }
+  }
 
   /// 예외가 서버 미연결(네트워크 레벨) 오류인지 판별한다.
   static bool isConnectionError(Object e) {
@@ -140,6 +149,16 @@ class ApiService {
             data = decoded['trades'] as List;
           } else if (decoded['items'] is List) {
             data = decoded['items'] as List;
+          } else if (decoded['entries'] is List) {
+            data = decoded['entries'] as List;
+          } else if (decoded['suggestions'] is List) {
+            data = decoded['suggestions'] as List;
+          } else if (decoded['adjustments'] is List) {
+            data = decoded['adjustments'] as List;
+          } else if (decoded['universe'] is List) {
+            data = decoded['universe'] as List;
+          } else if (decoded['alerts'] is List) {
+            data = decoded['alerts'] as List;
           } else {
             // 알려진 키가 없으면 첫 번째 List 타입 값을 사용한다
             data = decoded.values
@@ -423,9 +442,6 @@ class ApiService {
 
   Future<RealtimeIndicator> getRealtimeIndicator(String ticker) async {
     try {
-      // TODO(v2): V2 백엔드에 /api/indicators/realtime/{ticker} 엔드포인트가
-      // 추가되면 아래 경로를 '/api/indicators/realtime/$ticker'로 변경한다.
-      // 현재는 V1 경로를 유지하며, 404 응답 시 빈 객체를 반환하도록 처리한다.
       return await _get(
         '/api/indicators/realtime/$ticker',
         (data) => RealtimeIndicator.fromJson(data),
@@ -443,6 +459,8 @@ class ApiService {
       // V2: GET /api/strategy/params
       return await _get(ApiConstants.strategyParams,
           (data) => StrategyParams.fromJson(data));
+    } on ServerUnreachableException {
+      rethrow;
     } catch (e) {
       debugPrint('getStrategyParams error: $e');
       return StrategyParams.fromJson({});
@@ -482,10 +500,7 @@ class ApiService {
 
   Future<FeedbackReport> getWeeklyReport(String week) async {
     try {
-      // TODO(v2): V2 백엔드에 주간 리포트 엔드포인트가 없다.
-      // /api/feedback/weekly/{week} 가 추가되면 경로를 업데이트한다.
-      // 현재는 빈 객체를 반환하여 UI가 graceful하게 처리하도록 한다.
-      return await _get('/feedback/weekly/$week',
+      return await _get('/api/feedback/weekly/$week',
           (data) => FeedbackReport.fromJson(data));
     } catch (e) {
       debugPrint('getWeeklyReport error: $e');
@@ -495,30 +510,22 @@ class ApiService {
 
   Future<List<PendingAdjustment>> getPendingAdjustments() async {
     try {
-      // TODO(v2): V2 백엔드에 /api/feedback/pending-adjustments 엔드포인트가
-      // 추가되면 경로를 업데이트한다.
       return await _getList(
-          '/feedback/pending-adjustments', PendingAdjustment.fromJson);
+          '/api/feedback/pending-adjustments', PendingAdjustment.fromJson);
     } catch (e) {
       debugPrint('getPendingAdjustments error: $e');
       return [];
     }
   }
 
-  // 백엔드 PendingAdjustment.id는 UUID String이다.
-  // TODO(v2): V2 백엔드에 해당 엔드포인트가 추가되면 경로를 업데이트한다.
   Future<void> approveAdjustment(String id) async {
-    await _postVoid('/feedback/approve-adjustment/$id', {});
+    await _postVoid('/api/feedback/approve-adjustment/$id', {});
   }
 
-  // TODO(v2): V2 백엔드에 해당 엔드포인트가 추가되면 경로를 업데이트한다.
   Future<void> rejectAdjustment(String id) async {
-    await _postVoid('/feedback/reject-adjustment/$id', {});
+    await _postVoid('/api/feedback/reject-adjustment/$id', {});
   }
 
-  // 일간 리포트 목록
-  // TODO(v2): V2 백엔드에 /reports/daily/list 엔드포인트가 없다.
-  // /api/feedback/daily/{date} 로 대체되었으므로 이 메서드는 빈 목록을 반환한다.
   Future<List<Map<String, dynamic>>> getReportsList() async {
     try {
       return await _get('/api/reports/daily/list', (data) {
@@ -538,6 +545,8 @@ class ApiService {
     try {
       // V2: /api/universe
       return await _getList(ApiConstants.universe, UniverseTicker.fromJson);
+    } on ServerUnreachableException {
+      rethrow;
     } catch (e) {
       debugPrint('getUniverse error: $e');
       return [];
@@ -561,9 +570,6 @@ class ApiService {
   }
 
   // ── Crawl endpoints ──
-  // TODO(v2): V2 백엔드에 크롤 전용 엔드포인트가 없다.
-  // 뉴스 수집은 POST /api/news/collect-and-send 로 통합되었다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며, 빈 응답 또는 예외를 반환한다.
 
   Future<CrawlStatus> startManualCrawl() async {
     return _post('/api/crawl/manual', {}, (data) => CrawlStatus.fromJson(data));
@@ -574,9 +580,6 @@ class ApiService {
   }
 
   // ── Alert endpoints ──
-  // TODO(v2): V2 백엔드의 알림 전용 REST 엔드포인트 경로가 확정되지 않았다.
-  // 실시간 알림은 WebSocket /ws/alerts 채널로 수신한다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며, V2 경로가 확정되면 업데이트한다.
 
   Future<List<AlertNotification>> getAlerts({
     int limit = 50,
@@ -598,8 +601,8 @@ class ApiService {
   Future<int> getUnreadCount() async {
     try {
       return await _get('/api/alerts/unread-count', (data) {
-        // 'count' 또는 'unread_count' 필드 모두 허용한다
-        final count = data['unread_count'] ?? data['count'];
+        // 백엔드가 'count' 키로 반환하므로 우선 시도하고, 폴백으로 'unread_count'를 사용한다
+        final count = data['count'] ?? data['unread_count'];
         return (count as num? ?? 0).toInt();
       });
     } catch (e) {
@@ -613,9 +616,6 @@ class ApiService {
   }
 
   // ── Profit Target endpoints ──
-  // TODO(v2): V2 백엔드에 /api/target/* 엔드포인트가 아직 없다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며,
-  // V2에 해당 경로가 추가되면 /api/target/* 으로 경로를 업데이트한다.
 
   Future<ProfitTargetStatus> getProfitTargetStatus() async {
     try {
@@ -665,8 +665,6 @@ class ApiService {
   }
 
   // ── Risk Dashboard endpoints ──
-  // TODO(v2): V2 백엔드에 /api/risk/dashboard 엔드포인트가 아직 없다.
-  // V2에 해당 경로가 추가되면 경로를 업데이트한다.
 
   Future<RiskDashboardData> getRiskDashboard() async {
     try {
@@ -681,9 +679,6 @@ class ApiService {
   }
 
   // ── Tax endpoints ──
-  // TODO(v2): V2 백엔드에 /api/tax/* 엔드포인트가 없다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며, 빈 데이터를 반환한다.
-  // V2에 세금 관련 엔드포인트가 추가되면 /api/tax/* 로 경로를 업데이트한다.
 
   Future<TaxStatus> getTaxStatus() async {
     try {
@@ -697,7 +692,7 @@ class ApiService {
   Future<Map<String, dynamic>> getTaxReport(int year) async {
     try {
       return await _get(
-          '/api/tax/report/$year', (data) => data as Map<String, dynamic>);
+          '/api/tax/report?year=$year', (data) => data as Map<String, dynamic>);
     } catch (e) {
       debugPrint('getTaxReport error: $e');
       return {};
@@ -755,8 +750,10 @@ class ApiService {
   }
 
   Future<void> triggerEmergencyStop({String reason = 'Manual'}) async {
-    // V2: /api/emergency/stop
-    await _postVoid(ApiConstants.emergencyStop, {'reason': reason});
+    // V2: /api/emergency/stop — reason은 쿼리 파라미터로 전달한다
+    await _postVoid(
+        '${ApiConstants.emergencyStop}?reason=${Uri.encodeComponent(reason)}',
+        {});
   }
 
   Future<void> resumeTrading() async {
@@ -765,9 +762,6 @@ class ApiService {
   }
 
   // ── Slippage endpoints ──
-  // TODO(v2): V2 백엔드에 /api/slippage/* 엔드포인트가 없다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며, 빈 데이터를 반환한다.
-  // V2에 슬리피지 관련 엔드포인트가 추가되면 /api/slippage/* 로 경로를 업데이트한다.
 
   Future<SlippageStats> getSlippageStats() async {
     try {
@@ -781,8 +775,8 @@ class ApiService {
 
   Future<List<OptimalHour>> getOptimalHours(String ticker) async {
     try {
-      // 백엔드는 {"ticker": ..., "optimal_hours": [...], "data_points": N} 형태로 반환한다.
-      // _getList가 아닌 _get으로 호출하여 optimal_hours 배열을 추출한다.
+      // 백엔드는 {"ticker": ..., "hours": [...], "data_points": N} 형태로 반환한다.
+      // 'hours' 키를 우선 시도하고, 폴백으로 'optimal_hours'를 사용한다.
       return await _get(
         '/api/slippage/optimal-hours?ticker=$ticker',
         (data) {
@@ -790,7 +784,7 @@ class ApiService {
           if (data is List) {
             hours = data;
           } else if (data is Map) {
-            hours = (data['optimal_hours'] as List?) ?? [];
+            hours = (data['hours'] as List?) ?? (data['optimal_hours'] as List?) ?? [];
           } else {
             hours = [];
           }
@@ -834,7 +828,7 @@ class ApiService {
 
   /// 현재 모드(virtual/real)의 보유 포지션 목록을 반환한다.
   /// 백엔드 응답: [{"ticker": ..., "quantity": ..., "avg_price": ...,
-  ///   "current_price": ..., "pnl_pct": ..., "pnl_amount": ...,
+  ///   "current_price": ..., "unrealized_pnl_pct": ..., "unrealized_pnl": ...,
   ///   "current_value": ..., "name": ..., "exchange": ...}, ...]
   Future<List<Map<String, dynamic>>> getPositions({String? mode}) async {
     try {
@@ -850,10 +844,6 @@ class ApiService {
     }
   }
 
-  // 주의: 백엔드 /api/dashboard/trades/recent는 mode 파라미터를 지원하지 않는다.
-  // 현재 limit만 허용된다. mode는 무시된다.
-  // TODO(v2): V2 스펙에 해당 엔드포인트가 명시되어 있지 않다.
-  // V2 백엔드에 추가되면 ApiConstants.dashboardTradesRecent 로 교체한다.
   Future<List<dynamic>> getRecentTrades({int limit = 10, String? mode}) async {
     try {
       // mode 파라미터는 백엔드가 지원하지 않으므로 limit만 전송한다.
@@ -970,9 +960,6 @@ class ApiService {
   }
 
   // ── Daily Reports endpoints ──
-  // TODO(v2): V2 백엔드에 /reports/daily/* 엔드포인트가 없다.
-  // 일간 피드백은 /api/feedback/daily/{date} 로 이동하였다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며, V2 경로가 확정되면 업데이트한다.
 
   /// 사용 가능한 리포트 날짜 목록을 가져온다.
   Future<List<ReportDate>> getReportDates({int limit = 30}) async {
@@ -1006,6 +993,7 @@ class ApiService {
   // ── Universe (Extended) endpoints ──
 
   /// 유니버스 종목 목록을 UniverseTickerEx 형태로 가져온다.
+  /// 백엔드 UniverseResponse는 {"universe": [...], "total": N, "enabled": N} 구조이다.
   Future<List<UniverseTickerEx>> getUniverseEx() async {
     try {
       // V2: /api/universe
@@ -1013,8 +1001,11 @@ class ApiService {
         List<dynamic> data;
         if (decoded is List) {
           data = decoded;
-        } else if (decoded is Map && decoded['data'] is List) {
-          data = decoded['data'] as List;
+        } else if (decoded is Map) {
+          // 백엔드 래핑 키: universe, data 순서로 탐색한다
+          data = (decoded['data'] as List?) ??
+              (decoded['universe'] as List?) ??
+              [];
         } else {
           data = [];
         }
@@ -1122,10 +1113,8 @@ class ApiService {
   }
 
   /// 인디케이터 설정을 업데이트한다.
-  /// TODO(v2): V2 백엔드에 /api/indicators/config 엔드포인트가 없다.
-  /// V2에 추가되면 경로를 업데이트한다.
   Future<void> updateIndicatorConfig(Map<String, dynamic> config) async {
-    await _putVoid('/api/indicators/config', config);
+    await _putVoid('/api/indicators/config', {'config': config});
   }
 
   // ── News endpoints ──
@@ -1169,7 +1158,11 @@ class ApiService {
   /// 뉴스 기사 상세 내용을 가져온다.
   Future<NewsArticle> getArticleDetail(String id) async {
     try {
-      return await _get('/api/news/$id', (data) => NewsArticle.fromJson(data as Map<String, dynamic>));
+      return await _get('/api/news/$id', (data) {
+        final map = data as Map<String, dynamic>;
+        final article = map['article'] ?? map;  // 백엔드 래퍼 처리, 폴백으로 직접 데이터 사용
+        return NewsArticle.fromJson(article as Map<String, dynamic>);
+      });
     } catch (e) {
       debugPrint('getArticleDetail error: $e');
       rethrow;
@@ -1230,7 +1223,7 @@ class ApiService {
 
   /// 핵심 원칙(슬로건)을 수정한다.
   Future<void> updateCorePrinciple(String text) async {
-    await _putVoid('/api/principles/core', {'core_principle': text});
+    await _putVoid('/api/principles/core', {'text': text});
   }
 
   // ── Trade Reasoning endpoints ──
@@ -1333,7 +1326,17 @@ class ApiService {
         final body = json.decode(response.body) as Map<String, dynamic>;
         // 서버 응답은 {ticker, analysis: {...}, source, message} 형태이다.
         // analysis 내부 dict를 꺼내서 fromJson에 전달한다.
-        final analysisData = body['analysis'] as Map<String, dynamic>? ?? body;
+        final rawAnalysis = body['analysis'];
+        if (rawAnalysis == null || rawAnalysis is! Map<String, dynamic>) {
+          // analysis가 null이면 서버가 분석 데이터를 생성하지 못한 것이다.
+          final msg = body['message'] as String? ?? '분석 데이터 없음';
+          throw Exception('분석 데이터를 가져올 수 없습니다 ($ticker): $msg');
+        }
+        final analysisData = rawAnalysis;
+        // 서버 source 필드를 analysis dict에 포함하여 디버깅을 지원한다.
+        if (!analysisData.containsKey('source') && body.containsKey('source')) {
+          analysisData['source'] = body['source'];
+        }
         return StockAnalysisData.fromJson(analysisData);
       } else if (response.statusCode == 404) {
         throw Exception('분석 데이터를 찾을 수 없습니다 ($ticker): 404 Not Found');
@@ -1455,17 +1458,19 @@ class ApiService {
   // ── News Collect & Send ──
 
   /// 뉴스 수집 -> 분류 -> 번역 -> 텔레그램 전송 파이프라인을 실행한다.
-  /// 크롤링 30개 소스 + AI 분류 + 번역에 수 분 소요되므로 타임아웃을 300초로 설정한다.
+  /// 크롤링 30개 소스 + AI 분류 + 번역에 최대 1시간 소요될 수 있으므로 타임아웃을 3600초로 설정한다.
   /// 백엔드 응답: {"status": "sent" | "sent_no_key_news", "news_count": N,
   ///              "key_news_count": M, "crawl_saved": K, "telegram_sent": bool}
   Future<Map<String, dynamic>> collectAndSendNews() async {
     try {
+      // 크롤링 30개 소스 + AI 분류에 최대 1시간 소요될 수 있으므로 3600초 타임아웃을 적용한다
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/news/collect-and-send'),
             headers: _headers(withJson: true),
             body: json.encode({}),
-          );
+          )
+          .timeout(const Duration(seconds: 3600));
       if (response.statusCode == 200) {
         return Map<String, dynamic>.from(json.decode(response.body) as Map);
       } else if (response.statusCode == 401) {
@@ -1560,18 +1565,27 @@ class ApiService {
   }
 
   // ── Ticker Params (AI 종목별 전략 파라미터) endpoints ──
-  // TODO(v2): V2 백엔드에 /api/strategy/ticker-params/* 엔드포인트가 없다.
-  // 종목별 파라미터는 /api/strategy/params 로 통합되었다.
-  // 아래 메서드들은 하위 호환성을 위해 유지하며,
-  // V2에 해당 경로가 추가되면 /api/strategy/ticker-params/* 로 업데이트한다.
 
   /// 전체 종목 파라미터 요약 목록을 가져온다.
+  /// 백엔드 TickerParamsAllResponse는 {"ticker_params": {"SOXL": {...}, "QLD": {...}}}
+  /// dict of dict 구조이므로 _getList 대신 커스텀 파서를 사용한다.
   Future<List<TickerParamsSummary>> getTickerParams() async {
     try {
-      return await _getList(
-        '/api/strategy/ticker-params',
-        TickerParamsSummary.fromJson,
-      );
+      return await _get('/api/strategy/ticker-params', (decoded) {
+        if (decoded is Map) {
+          final tickerParams = decoded['ticker_params'];
+          if (tickerParams is Map) {
+            // dict of dict → List로 변환: 각 entry에 ticker 키를 삽입한다
+            return tickerParams.entries.map((e) {
+              final value =
+                  e.value is Map ? Map<String, dynamic>.from(e.value as Map) : <String, dynamic>{};
+              value['ticker'] = e.key;
+              return TickerParamsSummary.fromJson(value);
+            }).toList();
+          }
+        }
+        return <TickerParamsSummary>[];
+      });
     } catch (e) {
       debugPrint('getTickerParams error: $e');
       return [];
@@ -1592,9 +1606,16 @@ class ApiService {
   }
 
   /// 유저 오버라이드를 설정한다.
+  /// 백엔드는 {param_name, value} 단일 파라미터 구조를 기대하므로
+  /// overrides map을 순회하며 개별 PUT 요청으로 분리 전송한다.
   Future<void> setTickerOverride(
       String ticker, Map<String, dynamic> overrides) async {
-    await _putVoid('/api/strategy/ticker-params/$ticker/override', overrides);
+    for (final entry in overrides.entries) {
+      await _putVoid('/api/strategy/ticker-params/$ticker', {
+        'param_name': entry.key,
+        'value': entry.value,
+      });
+    }
   }
 
   /// 유저 오버라이드를 제거한다.
@@ -1602,7 +1623,7 @@ class ApiService {
   Future<void> clearTickerOverride(String ticker, {String? paramName}) async {
     // 백엔드는 쿼리 파라미터 이름으로 param_name을 기대한다.
     final query = paramName != null ? '?param_name=$paramName' : '';
-    await _delete('/api/strategy/ticker-params/$ticker/override$query');
+    await _delete('/api/strategy/ticker-params/$ticker$query');
   }
 
   /// AI 재분석을 트리거한다.
@@ -1620,6 +1641,7 @@ class ApiService {
     required String side,
     required int quantity,
   }) async {
+    refreshBaseUrl();
     try {
       final response = await http
           .post(
@@ -1655,6 +1677,7 @@ class ApiService {
     required String side,
     required int quantity,
   }) async {
+    refreshBaseUrl();
     try {
       final response = await http
           .post(

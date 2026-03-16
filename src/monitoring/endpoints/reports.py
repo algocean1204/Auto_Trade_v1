@@ -1,20 +1,23 @@
 """F7.28 ReportsEndpoints -- 일별 거래 리포트 조회 API이다.
 
-Redis에 날짜별로 저장된 PnL 이력과 피드백 데이터를 조합하여 반환한다.
+캐시에 날짜별로 저장된 PnL 이력과 피드백 데이터를 조합하여 반환한다.
 
-Redis 키 구조:
+캐시 키 구조:
   - pnl:history:{YYYY-MM-DD} : 해당 날짜 PnL + 거래 목록 dict
   - feedback:{YYYY-MM-DD}    : 해당 날짜 피드백 dict (EOD 저장)
   - pnl:history:dates        : 이력이 있는 날짜 목록 list[str]
 """
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from src.common.logger import get_logger
+from src.db.models import FeedbackReport
 
 if TYPE_CHECKING:
     from src.orchestration.init.dependency_injector import InjectedSystem
@@ -80,35 +83,90 @@ def _require_system() -> None:
 
 
 async def _load_pnl_history(date: str) -> dict[str, Any]:
-    """Redis pnl:history:{date} 에서 PnL 이력을 로드한다.
+    """캐시 pnl:history:{date} 에서 PnL 이력을 로드한다.
 
-    키가 없으면 빈 dict를 반환한다.
+    캐시 미스 시 DB feedback_reports 테이블을 조회한다.
     """
     cache = _system.components.cache  # type: ignore[union-attr]
     raw = await cache.read_json(f"pnl:history:{date}")
-    return raw if isinstance(raw, dict) else {}
+    if isinstance(raw, dict) and raw:
+        return raw
+    # DB fallback
+    return await _load_report_from_db(date)
 
 
 async def _load_feedback(date: str) -> dict[str, Any] | None:
-    """Redis feedback:{date} 에서 피드백을 로드한다.
+    """캐시 feedback:{date} 에서 피드백을 로드한다.
 
-    키가 없으면 None을 반환한다.
+    캐시 미스 시 DB feedback_reports 테이블의 indicator_feedback을 추출한다.
     """
     cache = _system.components.cache  # type: ignore[union-attr]
     raw = await cache.read_json(f"feedback:{date}")
-    return raw if isinstance(raw, dict) else None
+    if isinstance(raw, dict) and raw:
+        return raw
+    # DB fallback: feedback_reports content에서 indicator_feedback 추출
+    report = await _load_report_from_db(date)
+    if report:
+        fb = report.get("indicator_feedback")
+        if isinstance(fb, dict):
+            return {"indicators": fb}
+    return None
 
 
 async def _get_available_dates() -> list[str]:
     """이력이 있는 날짜 목록을 가져온다.
 
-    pnl:history:dates 키를 우선 조회하고, 없으면 빈 목록을 반환한다.
+    pnl:history:dates 캐시를 우선 조회하고, 캐시 미스 시 DB feedback_reports를 조회한다.
     """
     cache = _system.components.cache  # type: ignore[union-attr]
     raw = await cache.read_json("pnl:history:dates")
-    if isinstance(raw, list):
+    if isinstance(raw, list) and raw:
         return [str(d) for d in raw]
-    return []
+
+    # DB fallback: feedback_reports 테이블에서 날짜 목록을 조회한다
+    try:
+        db = _system.components.db  # type: ignore[union-attr]
+        async with db.get_session() as session:
+            stmt = (
+                select(FeedbackReport.report_date)
+                .distinct()
+                .order_by(FeedbackReport.report_date.desc())
+            )
+            result = await session.execute(stmt)
+            dates = [str(row[0]) for row in result.fetchall() if row[0]]
+            if dates:
+                # 캐시에 저장하여 이후 조회를 빠르게 한다
+                await cache.write_json("pnl:history:dates", dates, ttl=3600)
+            return dates
+    except Exception:
+        _logger.warning("DB에서 리포트 날짜 목록 조회 실패")
+        return []
+
+
+async def _load_report_from_db(date: str) -> dict[str, Any]:
+    """DB feedback_reports 테이블에서 일별 리포트를 로드한다.
+
+    같은 날짜에 여러 건이 있을 수 있으므로 daily_performance를 우선 선택한다.
+    """
+    try:
+        db = _system.components.db  # type: ignore[union-attr]
+        async with db.get_session() as session:
+            stmt = (
+                select(FeedbackReport)
+                .where(FeedbackReport.report_date == date)
+                .order_by(FeedbackReport.report_type.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            if row and row.content:
+                content = row.content
+                if isinstance(content, str):
+                    content = json.loads(content)
+                return content if isinstance(content, dict) else {}
+    except Exception:
+        _logger.warning("DB에서 리포트 조회 실패: %s", date)
+    return {}
 
 
 # ── Flutter 응답 변환 헬퍼 ────────────────────────────────────────────────
@@ -342,7 +400,7 @@ async def get_daily_report_list(limit: int = 30) -> DailyReportListResponse:
     """일별 리포트 목록을 반환한다.
 
     각 날짜별로 거래 수, PnL, 피드백 존재 여부를 포함한다.
-    Redis pnl:history:* 키 기반으로 구성한다.
+    캐시 pnl:history:* 키 기반으로 구성한다.
     """
     _require_system()
     try:
@@ -388,7 +446,7 @@ async def get_daily_report(date: str) -> DailyReportResponse:
     """특정 날짜의 상세 리포트를 반환한다.
 
     date 파라미터 형식: YYYY-MM-DD
-    Redis pnl:history:{date} 와 feedback:{date} 키를 조합하여 반환한다.
+    캐시 pnl:history:{date} 와 feedback:{date} 키를 조합하여 반환한다.
     Flutter DailyReport.fromJson 형식에 맞춰 응답을 구성한다.
     해당 날짜 데이터가 없으면 404를 반환한다.
     """

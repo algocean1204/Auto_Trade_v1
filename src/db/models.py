@@ -1,26 +1,27 @@
 """DB ORM 모델 -- 26개 테이블의 SQLAlchemy 2.0 모델이다.
 
-UUID PK, TIMESTAMP(timezone=True), server_default=func.now() 컨벤션을 따른다.
-Base는 database_gateway에서 가져온다.
+UUID PK, TIMESTAMP(timezone=True), server_default=text("(datetime('now'))") 컨벤션을 따른다.
+SQLite(aiosqlite) 기반이다. Base는 database_gateway에서 가져온다.
 """
 from __future__ import annotations
 
 import uuid
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     Integer,
+    JSON,
     String,
     Text,
+    text,
 )
-from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql import func
 
 from src.common.database_gateway import Base
 
@@ -43,7 +44,7 @@ class Article(Base):
     impact_score = Column(Float, default=0.0)
     direction = Column(String, default="neutral")
     category = Column(String, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 2. 매매 기록 ──
@@ -56,7 +57,7 @@ class Trade(Base):
     price = Column(Float, nullable=False)
     order_id = Column(String, default="")
     reason = Column(Text, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 3. ETF 유니버스 ──
@@ -68,18 +69,18 @@ class EtfUniverse(Base):
     leverage = Column(Float, default=2.0)
     exchange = Column(String, default="NAS")
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 4. 지표 이력 ──
 class IndicatorHistory(Base):
     __tablename__ = "indicator_history"
-    id = Column(String, primary_key=True, default=_uuid)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     ticker = Column(String, nullable=False, index=True)
     indicator_name = Column(String, nullable=False)
     value = Column(Float)
+    recorded_at = Column(DateTime(timezone=True))
     metadata_ = Column("metadata", JSON, default={})
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ── 5. 전략 파라미터 변경 이력 ──
@@ -90,7 +91,7 @@ class StrategyParamHistory(Base):
     old_value = Column(String)
     new_value = Column(String)
     reason = Column(Text, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 6. 피드백 보고서 ──
@@ -98,19 +99,19 @@ class FeedbackReport(Base):
     __tablename__ = "feedback_reports"
     id = Column(String, primary_key=True, default=_uuid)
     report_type = Column(String, default="daily")
+    report_date = Column(Date)
     content = Column(JSON, default={})
-    summary = Column(Text, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 7. 크롤링 체크포인트 ──
 class CrawlCheckpoint(Base):
     __tablename__ = "crawl_checkpoints"
-    id = Column(String, primary_key=True, default=_uuid)
-    source = Column(String, nullable=False, unique=True)
-    last_url = Column(String, default="")
-    last_published = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    checkpoint_at = Column(DateTime(timezone=True), nullable=False)
+    total_articles = Column(Integer)
+    source_stats = Column(JSON, nullable=False, default={})
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 8. 대기 중 조정 ──
@@ -121,7 +122,7 @@ class PendingAdjustment(Base):
     adjustment_type = Column(String, nullable=False)
     value = Column(Float)
     applied = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 9. 세금 기록 ──
@@ -132,16 +133,17 @@ class TaxRecord(Base):
     gain_usd = Column(Float, default=0.0)
     tax_krw = Column(Float, default=0.0)
     fx_rate = Column(Float, default=0.0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 10. 환율 기록 ──
 class FxRateRecord(Base):
     __tablename__ = "fx_rates"
-    id = Column(String, primary_key=True, default=_uuid)
-    usd_krw = Column(Float, nullable=False)
-    source = Column(String, default="kis")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    usd_krw_rate = Column(Float, nullable=False)
+    source = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 11. 슬리피지 기록 ──
@@ -151,7 +153,7 @@ class SlippageLog(Base):
     order_id = Column(String, default="")
     slippage_pct = Column(Float, default=0.0)
     slippage_amount = Column(Float, default=0.0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 12. 긴급 이벤트 ──
@@ -161,7 +163,7 @@ class EmergencyEvent(Base):
     event_type = Column(String, nullable=False)
     reason = Column(Text, default="")
     action_taken = Column(String, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 13. 벤치마크 스냅샷 ──
@@ -171,7 +173,7 @@ class BenchmarkSnapshot(Base):
     benchmark = Column(String, nullable=False)
     value = Column(Float)
     portfolio_value = Column(Float)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 14. 자본 보호 로그 ──
@@ -181,17 +183,20 @@ class CapitalGuardLog(Base):
     guard_type = Column(String, nullable=False)
     trigger_value = Column(Float)
     action = Column(String, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 15. 알림 로그 ──
 class NotificationLog(Base):
     __tablename__ = "notification_log"
     id = Column(String, primary_key=True, default=_uuid)
-    channel = Column(String, default="telegram")
-    event_type = Column(String, nullable=False)
-    success = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    channel = Column(String, nullable=False)
+    severity = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    sent_at = Column(DateTime(timezone=True), nullable=False)
+    delivered = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 16. 수익 목표 ──
@@ -201,7 +206,7 @@ class ProfitTarget(Base):
     ticker = Column(String, nullable=False)
     target_pct = Column(Float, nullable=False)
     achieved = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 17. 일일 PnL ──
@@ -212,7 +217,7 @@ class DailyPnlLog(Base):
     pnl_amount = Column(Float, default=0.0)
     pnl_pct = Column(Float, default=0.0)
     equity = Column(Float, default=0.0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 18. 리스크 설정 ──
@@ -222,7 +227,7 @@ class RiskConfig(Base):
     param_name = Column(String, unique=True, nullable=False)
     param_value = Column(String, nullable=False)
     description = Column(Text, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 19. 리스크 이벤트 ──
@@ -232,7 +237,7 @@ class RiskEvent(Base):
     event_type = Column(String, nullable=False)
     severity = Column(String, default="medium")
     detail = Column(Text, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 20. 백테스트 결과 ──
@@ -242,7 +247,7 @@ class BacktestResult(Base):
     strategy_name = Column(String, nullable=False)
     params = Column(JSON, default={})
     metrics = Column(JSON, default={})
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 21. Fear&Greed 이력 ──
@@ -252,7 +257,7 @@ class FearGreedHistory(Base):
     index_value = Column(Float, nullable=False)
     label = Column(String, default="neutral")
     source = Column(String, default="cnn")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 22. 예측시장 ──
@@ -262,7 +267,7 @@ class PredictionMarket(Base):
     market_name = Column(String, nullable=False)
     probability = Column(Float)
     source = Column(String, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 23. 과거 분석 ──
@@ -272,7 +277,7 @@ class HistoricalAnalysis(Base):
     analysis_type = Column(String, nullable=False)
     ticker = Column(String, default="")
     result = Column(JSON, default={})
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 24. 분석 진행 ──
@@ -282,7 +287,7 @@ class HistoricalAnalysisProgress(Base):
     task_name = Column(String, nullable=False)
     status = Column(String, default="pending")
     progress_pct = Column(Float, default=0.0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 25. 틱 데이터 ──
@@ -293,7 +298,7 @@ class TickData(Base):
     price = Column(Float, nullable=False)
     volume = Column(Integer, default=0)
     timestamp = Column(DateTime(timezone=True), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 26. RAG 문서 ──
@@ -304,7 +309,7 @@ class RagDocument(Base):
     title = Column(String, default="")
     content = Column(Text)
     embedding_id = Column(String, default="")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=text("(datetime('now'))"))
 
 
 # ── 27. 유니버스 설정 ──
@@ -323,8 +328,11 @@ class UniverseConfig(Base):
     pair_ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=text("(datetime('now'))")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        server_default=text("(datetime('now'))"),
+        # SQLite는 서버사이드 onupdate를 지원하지 않으므로 Python-side 콜백으로 처리한다
+        onupdate=lambda: datetime.now(timezone.utc),
     )

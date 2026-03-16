@@ -6,6 +6,7 @@ import '../providers/settings_provider.dart';
 import '../providers/emergency_provider.dart';
 import '../providers/trading_control_provider.dart';
 import '../providers/locale_provider.dart';
+import '../providers/token_provider.dart';
 import '../theme/app_typography.dart';
 import '../theme/app_spacing.dart';
 import '../theme/trading_colors.dart';
@@ -171,91 +172,121 @@ class _ShellScreenState extends State<ShellScreen> {
       backgroundColor: tc.surface,
       elevation: 0,
       toolbarHeight: 52,
+      titleSpacing: 12,
       title: Consumer<LocaleProvider>(
         builder: (context, locale, _) {
           return Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.auto_graph_rounded, size: 20, color: tc.primary),
               AppSpacing.hGapSm,
-              Text(locale.t('app_title'), style: AppTypography.displaySmall),
+              Flexible(
+                child: Text(
+                  locale.t('app_title'),
+                  style: AppTypography.displaySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           );
         },
       ),
       actions: [
-        // 언어 토글 버튼
-        Consumer<LocaleProvider>(
-          builder: (context, locale, _) {
-            return IconButton(
-              icon: Text(
-                locale.isKorean ? 'EN' : 'KR',
-                style: AppTypography.labelMedium.copyWith(
-                  color: tc.textSecondary,
-                  fontSize: 12,
-                ),
-              ),
-              tooltip:
-                  locale.isKorean ? 'Switch to English' : '한국어로 전환',
-              onPressed: () => locale.toggleLocale(),
-            );
-          },
-        ),
-        // 알림 벨 아이콘
-        Consumer2<SettingsProvider, NavigationProvider>(
-          builder: (context, settingsProvider, navProvider, _) {
-            return Stack(
+        // 창 축소 시 overflow 방지를 위해 SingleChildScrollView로 감싼다.
+        Flexible(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
-                  icon: Icon(
-                    navProvider.alertPanelOpen
-                        ? Icons.notifications_rounded
-                        : Icons.notifications_none_rounded,
-                    size: 22,
-                    color: navProvider.alertPanelOpen
-                        ? tc.primary
-                        : tc.textSecondary,
-                  ),
-                  tooltip: context.read<LocaleProvider>().t('alerts'),
-                  onPressed: () {
-                    navProvider.toggleAlertPanel();
-                  },
-                ),
-                if (settingsProvider.unreadCount > 0)
-                  Positioned(
-                    right: 8,
-                    top: 8,
-                    child: Container(
-                      padding: const EdgeInsets.all(3),
-                      decoration: BoxDecoration(
-                        color: tc.loss,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Text(
-                        settingsProvider.unreadCount > 9
-                            ? '9+'
-                            : '${settingsProvider.unreadCount}',
-                        style: const TextStyle(
-                          fontSize: 9,
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
+                // 언어 토글 버튼
+                Consumer<LocaleProvider>(
+                  builder: (context, locale, _) {
+                    return IconButton(
+                      icon: Text(
+                        locale.isKorean ? 'EN' : 'KR',
+                        style: AppTypography.labelMedium.copyWith(
+                          color: tc.textSecondary,
+                          fontSize: 12,
                         ),
                       ),
-                    ),
-                  ),
+                      tooltip:
+                          locale.isKorean ? 'Switch to English' : '한국어로 전환',
+                      onPressed: () => locale.toggleLocale(),
+                    );
+                  },
+                ),
+                // 알림 벨 아이콘
+                Consumer2<SettingsProvider, NavigationProvider>(
+                  builder: (context, settingsProvider, navProvider, _) {
+                    return Stack(
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                            navProvider.alertPanelOpen
+                                ? Icons.notifications_rounded
+                                : Icons.notifications_none_rounded,
+                            size: 22,
+                            color: navProvider.alertPanelOpen
+                                ? tc.primary
+                                : tc.textSecondary,
+                          ),
+                          tooltip: context.read<LocaleProvider>().t('alerts'),
+                          onPressed: () {
+                            navProvider.toggleAlertPanel();
+                          },
+                        ),
+                        if (settingsProvider.unreadCount > 0)
+                          Positioned(
+                            right: 8,
+                            top: 8,
+                            child: Container(
+                              padding: const EdgeInsets.all(3),
+                              decoration: BoxDecoration(
+                                color: tc.loss,
+                                shape: BoxShape.circle,
+                              ),
+                              child: Text(
+                                settingsProvider.unreadCount > 9
+                                    ? '9+'
+                                    : '${settingsProvider.unreadCount}',
+                                style: const TextStyle(
+                                  fontSize: 9,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(width: 4),
+                // ═══ 체인 버튼 시작 ═══
+                // 1) 토큰 발급 버튼 (항상 활성)
+                const _TokenButton(),
+                const SizedBox(width: 4),
+                // 2) 서버 시작 버튼 (토큰 1시간 이내 시 활성)
+                const _ServerStartButton(),
+                const SizedBox(width: 2),
+                // 2b) 서버 중지 버튼 (서버 connected 시에만 표시)
+                const _ServerStopButton(),
+                const SizedBox(width: 4),
+                // 3) 자동매매 시작/중지 버튼 (서버 connected 시 활성)
+                const _TradingControlButton(),
+                const SizedBox(width: 4),
+                // 4) 뉴스 수집 버튼 (서버 connected 시 활성)
+                const _NewsCollectButton(),
+                // ═══ 체인 버튼 끝 ═══
+                const SizedBox(width: 4),
+                // 긴급 정지 버튼 (항상 표시)
+                const EmergencyButton(),
+                const SizedBox(width: 8),
               ],
-            );
-          },
+            ),
+          ),
         ),
-        const SizedBox(width: 4),
-        // 뉴스 수집 & 텔레그램 전송 버튼
-        const _NewsCollectButton(),
-        const SizedBox(width: 4),
-        // 자동매매 시작/중지 버튼
-        const _TradingControlButton(),
-        const SizedBox(width: 4),
-        // 긴급 정지 버튼 (항상 표시)
-        const EmergencyButton(),
-        const SizedBox(width: 8),
       ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),
@@ -265,6 +296,256 @@ class _ShellScreenState extends State<ShellScreen> {
         ),
       ),
     );
+  }
+}
+
+/// KIS 토큰 발급 AppBar 버튼이다.
+///
+/// 항상 활성이며, 클릭 시 TokenProvider.issueToken()을 호출한다.
+/// 토큰 상태에 따라 색상이 변한다:
+/// - 유효+갱신 불필요: profit 색상 (초록)
+/// - 유효+갱신 필요 (16시간 경과 또는 만료 임박): warning 색상 (주황)
+/// - 무효: textSecondary 색상 (회색)
+class _TokenButton extends StatelessWidget {
+  const _TokenButton();
+
+  @override
+  Widget build(BuildContext context) {
+    final tc = context.tc;
+    return Consumer<TokenProvider>(
+      builder: (context, token, _) {
+        final isValid = token.isTokenValid;
+        final isIssuing = token.isIssuing;
+
+        // 토큰 상태에 따라 버튼 색상을 결정한다.
+        final Color buttonColor;
+        if (isValid && !token.needsMandatoryRenewal && !token.isExpiringSoon) {
+          buttonColor = tc.profit; // 초록: 유효 + 갱신 불필요
+        } else if (isValid) {
+          buttonColor = tc.warning; // 주황: 유효하지만 갱신 필요 (16시간 경과 또는 만료 임박)
+        } else {
+          buttonColor = tc.textSecondary; // 회색: 토큰 없음 또는 만료
+        }
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Tooltip(
+            message: token.statusText,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: buttonColor.withValues(alpha: 0.12),
+                foregroundColor: buttonColor,
+                side: BorderSide(
+                  color: buttonColor.withValues(alpha: 0.3),
+                  width: 1,
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppSpacing.borderRadiusMd,
+                ),
+                textStyle: AppTypography.labelLarge.copyWith(fontSize: 12),
+              ),
+              onPressed: isIssuing ? null : () => token.issueToken(),
+              icon: isIssuing
+                  ? SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: buttonColor,
+                      ),
+                    )
+                  : const Icon(Icons.key_rounded, size: 16),
+              label: Text(isIssuing ? '...' : 'TOKEN'),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 서버 시작 AppBar 버튼이다.
+///
+/// 활성 조건: 토큰이 유효함 (isTokenValid).
+/// 서버 실행 중이면 SERVER(초록) 상태 표시, 미실행이면 SERVER(회색) + 클릭으로 시작.
+class _ServerStartButton extends StatelessWidget {
+  const _ServerStartButton();
+
+  @override
+  Widget build(BuildContext context) {
+    final tc = context.tc;
+    return Consumer2<TokenProvider, TradingControlProvider>(
+      builder: (context, token, ctrl, _) {
+        final canActivate = token.isTokenValid;
+        final isConnected = ctrl.isConnected;
+        final isStarting = ctrl.isStartingServer;
+
+        // 서버 연결 상태를 TokenProvider에 전달한다 (자동 갱신 트리거용).
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          token.setServerConnected(isConnected);
+        });
+
+        // 서버 실행 중이면 초록 상태 표시 (클릭 불가)
+        if (isConnected) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Tooltip(
+              message: '서버 실행 중',
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: tc.profit.withValues(alpha: 0.15),
+                  foregroundColor: tc.profit,
+                  side: BorderSide(
+                      color: tc.profit.withValues(alpha: 0.4), width: 1),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: AppSpacing.borderRadiusMd,
+                  ),
+                  textStyle: AppTypography.labelLarge.copyWith(fontSize: 12),
+                ),
+                onPressed: null,
+                icon: const Icon(Icons.dns_rounded, size: 16),
+                label: const Text('SERVER'),
+              ),
+            ),
+          );
+        }
+
+        // 서버 미실행 — 토큰 조건 충족 시에만 시작 활성화
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Tooltip(
+            message:
+                !canActivate ? '유효한 토큰이 필요합니다' : '서버 시작',
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: canActivate
+                    ? tc.primary.withValues(alpha: 0.15)
+                    : tc.surface,
+                foregroundColor: canActivate
+                    ? tc.primary
+                    : tc.textSecondary.withValues(alpha: 0.5),
+                side: BorderSide(
+                  color: canActivate
+                      ? tc.primary.withValues(alpha: 0.4)
+                      : tc.surfaceBorder.withValues(alpha: 0.3),
+                  width: 1,
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppSpacing.borderRadiusMd,
+                ),
+                textStyle: AppTypography.labelLarge.copyWith(fontSize: 12),
+              ),
+              onPressed: (canActivate && !isStarting)
+                  ? () => _handleStart(context, ctrl)
+                  : null,
+              icon: isStarting
+                  ? SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: tc.primary,
+                      ),
+                    )
+                  : const Icon(Icons.dns_outlined, size: 16),
+              label: Text(isStarting ? '...' : 'SERVER'),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _handleStart(
+      BuildContext context, TradingControlProvider ctrl) async {
+    final success = await ctrl.startServer();
+    if (context.mounted && !success && ctrl.error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('서버 시작 실패: ${ctrl.error}'),
+          backgroundColor: context.tc.loss,
+        ),
+      );
+    }
+  }
+}
+
+/// 서버 수동 중지 AppBar 버튼이다.
+///
+/// 서버가 connected 상태일 때만 표시된다.
+/// 클릭 시 확인 다이얼로그 후 서버를 종료한다.
+class _ServerStopButton extends StatelessWidget {
+  const _ServerStopButton();
+
+  @override
+  Widget build(BuildContext context) {
+    final tc = context.tc;
+    return Consumer<TradingControlProvider>(
+      builder: (context, ctrl, _) {
+        // 서버 미연결 시 빈 위젯 (숨김)
+        if (!ctrl.isConnected) return const SizedBox.shrink();
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 6),
+          child: Tooltip(
+            message: '서버 수동 종료',
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: tc.warning.withValues(alpha: 0.12),
+                foregroundColor: tc.warning,
+                side: BorderSide(
+                    color: tc.warning.withValues(alpha: 0.3), width: 1),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppSpacing.borderRadiusMd,
+                ),
+                textStyle: AppTypography.labelLarge.copyWith(fontSize: 11),
+              ),
+              onPressed:
+                  ctrl.canStopServer ? () => _handleStop(context, ctrl) : null,
+              icon: const Icon(Icons.power_settings_new_rounded, size: 15),
+              label: const Text('OFF'),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _handleStop(
+      BuildContext context, TradingControlProvider ctrl) async {
+    final t = context.read<LocaleProvider>().t;
+    final confirmed = await ConfirmationDialog.show(
+      context,
+      title: '서버 중지',
+      message: '서버를 중지하시겠습니까?\n자동매매가 실행 중이면 함께 종료됩니다.',
+      confirmLabel: '중지',
+      cancelLabel: t('cancel'),
+      confirmColor: context.tc.warning,
+      icon: Icons.power_settings_new_rounded,
+    );
+    if (confirmed && context.mounted) {
+      final success = await ctrl.stopServer();
+      if (context.mounted && !success && ctrl.error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ctrl.error!),
+            backgroundColor: context.tc.loss,
+          ),
+        );
+      }
+    }
   }
 }
 

@@ -1,146 +1,110 @@
-"""F2 AI 분석 -- 5개 AI 페르소나를 순차 실행하여 종합 보고서를 생성한다."""
+"""F2 AI 분석 -- Sonnet 4에이전트를 병렬 실행하여 객관적 분석 결과를 생성한다.
+
+Layer 1: 4에이전트가 독립 병렬로 분석하여 앵커링 편향을 방지한다.
+MASTER_ANALYST는 Layer 2(Opus 3+1 팀)로 이동하였다.
+"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
-from src.analysis.models import AnalysisContext, ComprehensiveReport
+from src.analysis.models import AnalysisContext
 from src.analysis.prompts.prompt_registry import PromptRegistry
 from src.common.ai_gateway import AiClient, AiResponse
 from src.common.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
 
-# 5개 에이전트 실행 순서이다
-_AGENT_ORDER: list[str] = [
+# Layer 1: 4에이전트 병렬 실행 (MASTER_ANALYST는 Layer 2로 이동)
+_AGENT_KEYS: list[str] = [
     "NEWS_ANALYST",
     "MACRO_STRATEGIST",
     "RISK_MANAGER",
     "SHORT_TERM_TRADER",
-    "MASTER_ANALYST",
 ]
 
 
-def _build_agent_prompt(context: AnalysisContext, prior_results: list[dict]) -> str:
-    """에이전트에게 전달할 분석 프롬프트를 생성한다."""
-    prior_text = json.dumps(prior_results, default=str, ensure_ascii=False)
+def _build_independent_prompt(context: AnalysisContext) -> str:
+    """에이전트에게 전달할 독립 분석 프롬프트를 생성한다.
+
+    앵커링 방지를 위해 이전 에이전트 결과를 포함하지 않는다.
+    """
     return (
         f"뉴스 요약: {context.news_summary}\n"
         f"기술 지표: {json.dumps(context.indicators, default=str)}\n"
         f"현재 레짐: {context.regime}\n"
         f"보유 포지션: {json.dumps(context.positions, default=str)}\n"
-        f"시장 데이터: {json.dumps(context.market_data, default=str)}\n"
-        f"이전 에이전트 분석: {prior_text}\n\n"
-        "위 정보를 바탕으로 분석하고 JSON으로 응답하라."
+        f"시장 데이터: {json.dumps(context.market_data, default=str)}\n\n"
+        "위 정보를 바탕으로 독립적으로 분석하고 JSON으로 응답하라."
     )
 
 
-def _parse_agent_output(raw: str) -> dict:
-    """에이전트 응답을 JSON dict로 파싱한다."""
+def _parse_agent_output(raw: str) -> dict | None:
+    """에이전트 응답을 JSON dict로 파싱한다. 실패 시 None을 반환한다."""
     try:
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
         return json.loads(cleaned)
     except (json.JSONDecodeError, IndexError):
-        return {"raw_response": raw[:500]}
-
-
-def _merge_signals(agent_results: list[dict]) -> list[dict]:
-    """모든 에이전트의 signals를 병합한다."""
-    merged: list[dict] = []
-    for result in agent_results:
-        signals = result.get("signals", [])
-        if isinstance(signals, list):
-            merged.extend(signals)
-    return merged
-
-
-def _calculate_confidence(agent_results: list[dict]) -> float:
-    """에이전트 결과들의 평균 확신도를 계산한다."""
-    confidences: list[float] = []
-    for result in agent_results:
-        conf = result.get("confidence", 0.5)
-        if isinstance(conf, (int, float)):
-            confidences.append(float(conf))
-    return round(sum(confidences) / max(len(confidences), 1), 3)
-
-
-def _extract_recommendations(agent_results: list[dict]) -> list[str]:
-    """에이전트 결과에서 추천사항을 추출한다."""
-    recs: list[str] = []
-    for result in agent_results:
-        items = result.get("recommendations", result.get("actions", []))
-        if isinstance(items, list):
-            recs.extend(str(r) for r in items)
-    return recs
-
-
-def _determine_risk_level(agent_results: list[dict]) -> str:
-    """RISK_MANAGER 결과에서 위험 수준을 추출한다."""
-    for result in agent_results:
-        level = result.get("risk_level")
-        if level in ("low", "medium", "high", "critical"):
-            return level
-    return "medium"
+        logger.warning("에이전트 응답 JSON 파싱 실패 — 이번 분석 건너뜀: %s", raw[:200])
+        return None
 
 
 class ComprehensiveTeam:
-    """5개 AI 페르소나를 순차 실행하여 종합 분석 보고서를 생성한다.
+    """Sonnet 4에이전트를 병렬 실행하여 독립 분석 결과를 생성한다.
 
-    순서: NEWS_ANALYST -> MACRO_STRATEGIST -> RISK_MANAGER
-          -> SHORT_TERM_TRADER -> MASTER_ANALYST
-    이전 에이전트 결과가 다음 에이전트에게 컨텍스트로 전달된다.
+    Layer 1: NEWS_ANALYST, MACRO_STRATEGIST, RISK_MANAGER, SHORT_TERM_TRADER
+    4에이전트가 동시에 독립 분석하여 앵커링 편향을 방지한다.
+    최종 종합 판단은 Layer 2(Opus 3+1 팀)에서 수행한다.
     """
 
     def __init__(self, ai_client: AiClient) -> None:
         self._ai = ai_client
         self._registry = PromptRegistry()
-        logger.info("ComprehensiveTeam 초기화 완료 (%d 에이전트)", len(_AGENT_ORDER))
+        logger.info("ComprehensiveTeam 초기화 완료 (%d 에이전트, 병렬)", len(_AGENT_KEYS))
 
-    async def analyze(self, context: AnalysisContext) -> ComprehensiveReport:
-        """5개 에이전트를 순차 실행하고 결과를 종합한다."""
-        agent_results: list[dict] = []
+    async def analyze(self, context: AnalysisContext) -> dict[str, str]:
+        """4에이전트를 병렬 실행하고 각 에이전트의 분석 텍스트를 반환한다.
 
-        for agent_key in _AGENT_ORDER:
-            result = await self._run_agent(agent_key, context, agent_results)
-            agent_results.append(result)
+        반환: {에이전트키: 분석결과텍스트} dict
+        Opus 3+1 팀이 이 결과를 받아 최종 판단을 내린다.
+        """
+        prompt = _build_independent_prompt(context)
+
+        tasks = [
+            self._run_agent(agent_key, prompt)
+            for agent_key in _AGENT_KEYS
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        reports: dict[str, str] = {}
+        for agent_key, result in zip(_AGENT_KEYS, results, strict=False):
+            if isinstance(result, Exception):
+                logger.warning("에이전트 실패: %s — %s", agent_key, result)
+                reports[agent_key] = json.dumps(
+                    {"agent": agent_key, "error": str(result)},
+                    ensure_ascii=False,
+                )
+            else:
+                reports[agent_key] = result
             logger.info("에이전트 완료: %s", agent_key)
 
-        return self._build_report(agent_results, context)
+        return reports
 
     async def _run_agent(
         self,
         agent_key: str,
-        context: AnalysisContext,
-        prior_results: list[dict],
-    ) -> dict:
-        """단일 에이전트를 실행한다."""
-        system = self._registry.get(agent_key)
-        prompt = _build_agent_prompt(context, prior_results)
+        prompt: str,
+    ) -> str:
+        """단일 에이전트를 실행하고 원본 응답 텍스트를 반환한다."""
+        system_prompt = self._registry.get(agent_key)
         try:
             response: AiResponse = await self._ai.send_text(
-                prompt, system=system, model="sonnet",
+                prompt, system=system_prompt, model="sonnet",
             )
-            parsed = _parse_agent_output(response.content)
-            parsed["agent"] = agent_key
-            return parsed
+            return response.content
         except Exception:
             logger.exception("에이전트 실행 실패: %s", agent_key)
-            return {"agent": agent_key, "error": True}
-
-    def _build_report(
-        self,
-        agent_results: list[dict],
-        context: AnalysisContext,
-    ) -> ComprehensiveReport:
-        """에이전트 결과들을 종합 보고서로 합성한다."""
-        return ComprehensiveReport(
-            signals=_merge_signals(agent_results),
-            confidence=_calculate_confidence(agent_results),
-            recommendations=_extract_recommendations(agent_results),
-            regime_assessment=context.regime,
-            risk_level=_determine_risk_level(agent_results),
-            timestamp=datetime.now(tz=timezone.utc),
-        )
+            raise

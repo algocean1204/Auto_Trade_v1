@@ -4,7 +4,7 @@ import '../models/scalper_tape_models.dart';
 import '../services/websocket_service.dart';
 
 /// 스캘퍼 테이프 실시간 데이터 프로바이더이다.
-/// WebSocket /ws/realtime-tape/{ticker} 엔드포인트를 통해 1초마다 데이터를 수신한다.
+/// WebSocket /ws/orderflow 엔드포인트를 통해 1초마다 데이터를 수신한다.
 class ScalperTapeProvider extends ChangeNotifier {
   final WebSocketService _wsService;
 
@@ -56,7 +56,7 @@ class ScalperTapeProvider extends ChangeNotifier {
     // 기존 연결 해제
     _subscription?.cancel();
     _subscription = null;
-    _wsService.disconnectEndpoint('/ws/realtime-tape/$_selectedTicker');
+    _wsService.disconnectEndpoint('/ws/orderflow');
 
     _selectedTicker = ticker;
     _clearHistory();
@@ -110,7 +110,7 @@ class ScalperTapeProvider extends ChangeNotifier {
   void disconnect() {
     _subscription?.cancel();
     _subscription = null;
-    _wsService.disconnectEndpoint('/ws/realtime-tape/$_selectedTicker');
+    _wsService.disconnectEndpoint('/ws/orderflow');
     _isConnected = false;
     notifyListeners();
   }
@@ -118,6 +118,11 @@ class ScalperTapeProvider extends ChangeNotifier {
   // ── 데이터 처리 ──
 
   void _onData(ScalperTapeData data) {
+    // 선택된 티커와 일치하지 않는 데이터는 무시한다
+    if (data.ticker.isNotEmpty && data.ticker != _selectedTicker) {
+      return;
+    }
+
     _currentData = data;
     _isConnected = true;
     _error = null;

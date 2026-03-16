@@ -41,11 +41,17 @@ def _extract_action(report: ComprehensiveReport) -> str:
 
 
 def _extract_ticker(report: ComprehensiveReport) -> str:
-    """보고서에서 추천 티커를 추출한다."""
+    """보고서에서 추천 티커를 추출하고 레지스트리에서 유효성을 검증한다."""
+    from src.common.ticker_registry import get_ticker_registry
+
+    reg = get_ticker_registry()
     for signal in report.signals:
-        ticker = signal.get("ticker", "")
-        if ticker:
-            return ticker.upper()
+        ticker = signal.get("ticker", "").strip().upper()
+        if not ticker:
+            continue
+        if reg.has_ticker(ticker):
+            return ticker
+        logger.warning("AI가 유효하지 않은 티커 반환: %s (무시)", ticker)
     return ""
 
 

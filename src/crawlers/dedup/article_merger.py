@@ -7,13 +7,16 @@ from src.common.logger import get_logger
 logger = get_logger(__name__)
 
 # Jaccard 유사도 임계값 -- 이 이상이면 같은 사건으로 간주한다
-_SIMILARITY_THRESHOLD: float = 0.4
+# 0.4는 영문 금융 기사에서 오병합 빈도가 높아 0.6으로 상향한다
+_SIMILARITY_THRESHOLD: float = 0.6
 
-# 제목 토큰화 시 제거할 불용어이다
+# 제목 토큰화 시 제거할 불용어이다 (영어 + 한국어)
 _STOP_WORDS: set[str] = {
     "the", "a", "an", "is", "are", "was", "were", "in", "on", "at",
     "to", "for", "of", "and", "or", "but", "with", "by", "from",
     "it", "its", "this", "that", "as", "be", "has", "have", "had",
+    "및", "등", "의", "에", "를", "을", "이", "가", "은", "는",
+    "로", "으로", "에서", "와", "과", "도", "만", "까지", "부터",
 }
 
 
@@ -34,7 +37,7 @@ class ArticleMerger:
     """유사 기사를 제목 기반으로 병합한다."""
 
     def merge(self, articles: list[ClassifiedNews]) -> list[ClassifiedNews]:
-        """유사도 >= 0.4인 기사를 그룹으로 묶고 대표 기사를 선정한다."""
+        """유사도 >= 0.6인 기사를 그룹으로 묶고 대표 기사를 선정한다."""
         n = len(articles)
         if n <= 1:
             return articles
@@ -56,11 +59,24 @@ class ArticleMerger:
         # 토큰 사전 계산
         tokens = [_tokenize(a.title) for a in articles]
 
-        # O(n^2) 쌍별 유사도 → Union-Find 병합
-        for i in range(n):
-            for j in range(i + 1, n):
-                if _jaccard(tokens[i], tokens[j]) >= _SIMILARITY_THRESHOLD:
-                    union(i, j)
+        # 역 인덱스: 토큰 → 해당 토큰을 포함하는 기사 인덱스 집합
+        token_to_indices: dict[str, list[int]] = {}
+        for i, toks in enumerate(tokens):
+            for t in toks:
+                token_to_indices.setdefault(t, []).append(i)
+
+        # 공유 토큰이 있는 쌍만 비교한다 (O(n²) → 실질적으로 훨씬 적은 비교)
+        compared: set[tuple[int, int]] = set()
+        for indices in token_to_indices.values():
+            for idx_a in range(len(indices)):
+                for idx_b in range(idx_a + 1, len(indices)):
+                    i, j = indices[idx_a], indices[idx_b]
+                    pair = (i, j) if i < j else (j, i)
+                    if pair in compared:
+                        continue
+                    compared.add(pair)
+                    if _jaccard(tokens[i], tokens[j]) >= _SIMILARITY_THRESHOLD:
+                        union(i, j)
 
         # 그룹 구성
         groups: dict[int, list[int]] = {}

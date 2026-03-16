@@ -12,9 +12,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
+from src.monitoring.schemas.indicator_schemas import (
+    BollingerData,
+    IndicatorConfigResponse,
+    IndicatorConfigUpdateRequest,
+    IndicatorWeightsResponse,
+    IndicatorWeightUpdateResponse,
+    MacdData,
+    RealtimeIndicatorResponse,
+    RsiDataResponse,
+    RsiIndicatorItem,
+    TripleRsiResponse,
+    WeightUpdateRequest,
+)
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
@@ -33,102 +45,6 @@ _RSI_CACHE_TTL: int = 300
 
 # RSI 시그널 라인 SMA 기간이다
 _RSI_SIGNAL_PERIOD: int = 9
-
-
-# ── 요청 모델 ──────────────────────────────────────────────────────────────
-
-class WeightUpdateRequest(BaseModel):
-    """가중치 업데이트 요청 모델이다."""
-
-    weights: dict[str, float]
-
-
-class IndicatorConfigUpdateRequest(BaseModel):
-    """지표 설정 업데이트 요청 모델이다."""
-
-    config: dict[str, Any]
-
-
-# ── 응답 모델 ──────────────────────────────────────────────────────────────
-
-class IndicatorWeightsResponse(BaseModel):
-    """지표 가중치 조회 응답 모델이다."""
-
-    weights: dict[str, float]
-
-
-class IndicatorWeightUpdateResponse(BaseModel):
-    """지표 가중치 업데이트 응답 모델이다."""
-
-    status: str
-    weights: dict[str, float]
-
-
-class RsiDataResponse(BaseModel):
-    """RSI 데이터 조회 응답 모델이다."""
-
-    rsi_data: dict[str, Any]
-    message: str | None
-
-
-class IndicatorConfigResponse(BaseModel):
-    """지표 설정 응답 모델이다."""
-
-    updated: bool
-    config: dict[str, Any]
-
-
-class MacdData(BaseModel):
-    """MACD 구성 요소 모델이다."""
-
-    macd: float | None = None
-    signal: float | None = None
-    histogram: float | None = None
-
-
-class BollingerData(BaseModel):
-    """볼린저 밴드 구성 요소 모델이다."""
-
-    upper: float | None = None
-    middle: float | None = None
-    lower: float | None = None
-
-
-class RsiIndicatorItem(BaseModel):
-    """개별 RSI 기간 데이터 모델이다. 프론트엔드 RsiIndicator와 일치한다."""
-
-    rsi: float = 50.0
-    signal: float = 50.0
-    histogram: float = 0.0
-    rsi_series: list[float] = Field(default_factory=list)
-    signal_series: list[float] = Field(default_factory=list)
-    overbought: bool = False
-    oversold: bool = False
-
-
-class TripleRsiResponse(BaseModel):
-    """트리플 RSI(7, 14, 21) 응답 모델이다. 프론트엔드 TripleRsiData와 일치한다."""
-
-    rsi_7: RsiIndicatorItem = Field(default_factory=RsiIndicatorItem)
-    rsi_14: RsiIndicatorItem = Field(default_factory=RsiIndicatorItem)
-    rsi_21: RsiIndicatorItem = Field(default_factory=RsiIndicatorItem)
-    consensus: str = "neutral"
-    divergence: bool = False
-    dates: list[str] = Field(default_factory=list)
-    ticker: str = ""
-    analysis_ticker: str = ""
-
-
-class RealtimeIndicatorResponse(BaseModel):
-    """실시간 기술 지표 응답 모델이다."""
-
-    ticker: str
-    rsi: float | None
-    macd: MacdData | None
-    bollinger: BollingerData | None
-    atr: float | None
-    volume: float | None
-    timestamp: str
 
 
 # ── 의존성 주입 ────────────────────────────────────────────────────────────
@@ -242,7 +158,7 @@ async def update_indicator_config(
     """지표 설정을 업데이트한다. 인증 필수.
 
     strategy_params.json 내 indicator_config 섹션을 갱신한다.
-    Redis에도 indicators:config 키로 캐시하여 빠른 조회를 지원한다.
+    캐시에도 indicators:config 키로 캐시하여 빠른 조회를 지원한다.
     """
     _require_system()
     try:
@@ -255,7 +171,7 @@ async def update_indicator_config(
 
         _save_strategy_params(params)
 
-        # Redis 캐시도 갱신한다
+        # 캐시도 갱신한다
         cache = _system.components.cache  # type: ignore[union-attr]
         await cache.write_json("indicators:config", merged_config)
 
@@ -272,7 +188,7 @@ async def update_indicator_config(
 async def get_realtime_indicators(ticker: str) -> RealtimeIndicatorResponse:
     """특정 티커의 실시간 기술 지표를 반환한다.
 
-    IndicatorBundleBuilder 피처 또는 Redis 캐시에서 데이터를 조회한다.
+    IndicatorBundleBuilder 피처 또는 캐시에서 데이터를 조회한다.
     캐시 키: indicators:realtime:{ticker}
     피처가 없으면 캐시에서만 조회한다.
     """
@@ -335,9 +251,9 @@ async def get_triple_rsi(
 ) -> TripleRsiResponse:
     """특정 티커의 트리플 RSI(7, 14, 21) 데이터를 반환한다.
 
-    1. Redis 캐시(indicators:rsi:{ticker})에서 먼저 조회한다.
+    1. 캐시(indicators:rsi:{ticker})에서 먼저 조회한다.
     2. 캐시 미스 시 KIS API로 일봉 데이터를 가져와 직접 계산한다.
-    3. 계산 결과를 5분 TTL로 Redis에 캐시한다.
+    3. 계산 결과를 5분 TTL로 캐시에 저장한다.
     """
     _require_system()
     try:
@@ -345,7 +261,7 @@ async def get_triple_rsi(
         cache = _system.components.cache  # type: ignore[union-attr]
         cache_key = f"indicators:rsi:{ticker_upper}"
 
-        # 1. Redis 캐시에서 조회한다
+        # 1. 캐시에서 조회한다
         cached = await cache.read_json(cache_key)
         if cached and isinstance(cached, dict):
             _logger.debug("트리플 RSI 캐시 히트: %s", ticker_upper)
@@ -355,7 +271,7 @@ async def get_triple_rsi(
         _logger.info("트리플 RSI 캐시 미스, KIS API로 직접 계산 시작: %s (days=%d)", ticker_upper, days)
         result = await _calculate_triple_rsi(ticker_upper, days)
 
-        # 3. 결과를 Redis에 캐시한다
+        # 3. 결과를 캐시에 저장한다
         await cache.write_json(cache_key, result.model_dump(), ttl=_RSI_CACHE_TTL)
         _logger.info("트리플 RSI 계산 및 캐시 완료: %s", ticker_upper)
 

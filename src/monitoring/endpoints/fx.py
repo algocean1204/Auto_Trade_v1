@@ -1,7 +1,7 @@
 """FxEndpoints -- USD/KRW 환율 조회 API이다.
 
 현재 환율 현황 및 이력 데이터를 제공한다.
-FxManager 인스턴스가 있으면 실시간 데이터를, 없으면 Redis 캐시 또는 기본값을 반환한다.
+FxManager 인스턴스가 있으면 실시간 데이터를, 없으면 캐시 또는 기본값을 반환한다.
 """
 from __future__ import annotations
 
@@ -77,12 +77,12 @@ async def get_fx_status() -> FxStatusResponse:
     """현재 USD/KRW 환율 현황을 반환한다.
 
     FxManager가 주입되어 있으면 실시간 데이터를 사용한다.
-    없으면 Redis 캐시 키 fx:current 또는 기본값 1350.0을 반환한다.
+    없으면 캐시 키 fx:current 또는 기본값 1350.0을 반환한다.
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        # 1차: Redis 캐시를 우선 확인한다 (FxScheduler가 3-tier 폴백으로 갱신한 데이터)
+        # 1차: 캐시를 우선 확인한다 (FxScheduler가 3-tier 폴백으로 갱신한 데이터)
         cache = _system.components.cache
         cached = await cache.read_json("fx:current")
         if cached and isinstance(cached, dict):
@@ -126,7 +126,7 @@ async def get_fx_status() -> FxStatusResponse:
 async def get_fx_history(limit: int = 30) -> FxHistoryResponse:
     """USD/KRW 환율 이력을 반환한다.
 
-    Redis 캐시 키 fx:history에서 데이터를 읽는다.
+    캐시 키 fx:history에서 데이터를 읽는다.
     캐시 미스 시 빈 목록을 반환한다.
 
     Args:

@@ -32,10 +32,11 @@ class DashboardSummaryResponse(BaseModel):
     total_asset, cash, today_pnl 등은 accounts 데이터에서 집계하여 채운다.
     """
 
-    status: str
+    system_status: str
     session_type: str
     is_trading_window: bool
     current_kst: str
+    timestamp: str = ""
     positions: list[dict] = Field(default_factory=list)
     daily_pnl: float = 0.0
     total_equity: float = 0.0
@@ -49,6 +50,13 @@ class DashboardSummaryResponse(BaseModel):
     account_number: str = ""
     positions_value: float = 0.0
     buying_power: float = 0.0
+    # Flutter DashboardSummary.fromJson 추가 필드 (미실현 손익, 전체 수익, 초기 자본, 통화)
+    unrealized_pnl: float = 0.0
+    unrealized_pnl_pct: float = 0.0
+    total_pnl: float = 0.0
+    total_pnl_pct: float = 0.0
+    initial_capital: float = 0.0
+    currency: str = "USD"
 
 
 class ServiceHealthItem(BaseModel):
@@ -62,15 +70,36 @@ class ServiceHealthItem(BaseModel):
 class SystemStatusResponse(BaseModel):
     """종합 시스템 상태 응답이다.
 
-    Flutter SystemStatus.fromJson이 기대하는 claude/kis/database/redis 필드를 포함한다.
+    Flutter SystemStatus.fromJson이 기대하는 claude/kis/database/cache(인메모리 캐시) 필드를 포함한다.
     """
 
     claude: ServiceHealthItem = Field(default_factory=ServiceHealthItem)
     kis: ServiceHealthItem = Field(default_factory=ServiceHealthItem)
     database: ServiceHealthItem = Field(default_factory=ServiceHealthItem)
-    redis: ServiceHealthItem = Field(default_factory=ServiceHealthItem)
+    cache: ServiceHealthItem = Field(default_factory=ServiceHealthItem)
     fallback: bool = False
     timestamp: str = ""
+    quota: dict = Field(default_factory=lambda: {
+        "calls_in_window": 0,
+        "max_calls": 225,
+        "mode": "api",
+        "remaining": 225,
+        "usage_pct": 0.0,
+        "window_hours": 5,
+        "can_call": True,
+        "kis_calls_today": 0,
+        "kis_limit": 1000,
+    })
+    safety: dict = Field(default_factory=lambda: {
+        "is_shutdown": False,
+        "daily_trades": 0,
+        "max_daily_trades": 30,
+        "daily_pnl_pct": 0.0,
+        "max_daily_loss_pct": -5.0,
+        "stop_loss_pct": -2.0,
+        "max_hold_days": 5,
+        "vix_shutdown_threshold": 35,
+    })
 
 
 class HealthResponse(BaseModel):

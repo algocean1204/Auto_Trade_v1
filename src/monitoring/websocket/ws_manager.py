@@ -4,7 +4,7 @@
 /ws/dashboard, /ws/positions, /ws/orderflow, /ws/alerts, /ws/trades
 
 크롤링 진행 상태 스트림:
-/ws/crawl/{task_id} -- Redis crawl:task:{task_id} 를 1초 주기로 폴링하여 전송한다.
+/ws/crawl/{task_id} -- 캐시 crawl:task:{task_id} 를 1초 주기로 폴링하여 전송한다.
                        태스크가 completed/failed 상태이면 최종 결과를 보내고 연결을 종료한다.
 """
 from __future__ import annotations
@@ -130,7 +130,7 @@ async def ws_trades(ws: WebSocket) -> None:
 async def ws_crawl_progress(ws: WebSocket, task_id: str) -> None:
     """크롤링 태스크의 진행 상태를 실시간으로 스트리밍한다.
 
-    Redis crawl:task:{task_id} 키를 1초 주기로 폴링하여 클라이언트에 전송한다.
+    캐시 crawl:task:{task_id} 키를 1초 주기로 폴링하여 클라이언트에 전송한다.
     태스크 상태가 completed 또는 failed가 되면 최종 결과를 전송하고 연결을 종료한다.
     존재하지 않는 task_id이면 즉시 에러 메시지를 전송하고 연결을 종료한다.
     """
@@ -143,7 +143,7 @@ async def ws_crawl_progress(ws: WebSocket, task_id: str) -> None:
         await ws.close()
         return
 
-    redis_key = f"crawl:task:{task_id}"
+    cache_key = f"crawl:task:{task_id}"
     # 연결 종료 상태 집합 — 이 상태에 도달하면 스트림을 닫는다
     _TERMINAL_STATUSES = frozenset({"completed", "failed"})
     # 태스크가 존재하지 않을 때 재시도 횟수 상한이다 (3초 대기 후 종료)
@@ -154,7 +154,7 @@ async def ws_crawl_progress(ws: WebSocket, task_id: str) -> None:
         while True:
             try:
                 cache = _system.components.cache
-                raw = await cache.read_json(redis_key)
+                raw = await cache.read_json(cache_key)
             except Exception:
                 _logger.debug("크롤링 WS 캐시 조회 실패: %s", task_id)
                 raw = None

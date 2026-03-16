@@ -1,3 +1,6 @@
+# [DEPRECATED] PostgreSQL 전용 마이그레이션 -- SQLite 환경에서는 사용하지 않는다.
+# 0004_sqlite_initial.py를 단독 initial migration으로 사용한다.
+# 이 파일은 PostgreSQL 백업/참고용으로만 보관한다.
 """V2 순수 초기 스키마 -- 26개 테이블 신규 생성이다.
 
 V1 호환성 없이 완전히 새로운 스키마로 시작한다.

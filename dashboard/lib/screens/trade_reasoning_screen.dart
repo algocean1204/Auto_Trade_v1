@@ -485,9 +485,10 @@ class _StatsSection extends StatelessWidget {
               AppSpacing.hGapSm,
               _StatChip(
                 label: '총 손익',
+                // totalPnl은 달러 금액이므로 $ 접두사를 사용한다
                 value: stats.totalPnl >= 0
-                    ? '+${stats.totalPnl.toStringAsFixed(2)}%'
-                    : '${stats.totalPnl.toStringAsFixed(2)}%',
+                    ? '+\$${stats.totalPnl.toStringAsFixed(2)}'
+                    : '-\$${stats.totalPnl.abs().toStringAsFixed(2)}',
                 icon: stats.totalPnl >= 0
                     ? Icons.trending_up_rounded
                     : Icons.trending_down_rounded,

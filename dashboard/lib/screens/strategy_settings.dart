@@ -17,6 +17,31 @@ class StrategySettings extends StatefulWidget {
 class _StrategySettingsState extends State<StrategySettings> {
   final Map<String, TextEditingController> _controllers = {};
 
+  /// V2 전략 파라미터 정의 (key, 표시 이름, 설명, 기본값)이다.
+  static const _paramDefs = <_ParamDef>[
+    _ParamDef('beast_min_confidence', '최소 신뢰도', '매매 신호 최소 신뢰도 임계값 (0-1)', '0.7'),
+    _ParamDef('default_position_size_pct', '기본 포지션 %', '기본 포지션 배분 비율', '10.0'),
+    _ParamDef('max_position_pct', '최대 포지션 %', '단일 포지션 최대 비율', '23.75'),
+    _ParamDef('beast_min_obi', '최소 OBI', 'Order Book Imbalance 최소 임계값', '0.2'),
+    _ParamDef('obi_threshold', 'OBI 게이트 임계값', 'OBI 게이트 통과 기준', '0.1'),
+    _ParamDef('ml_threshold', 'ML 임계값', 'ML 모델 예측 신뢰도 임계값', '0.3'),
+    _ParamDef('friction_hurdle', '거래비용 허들', '거래비용 대비 최소 기대수익 비율', '0.7'),
+    _ParamDef('beast_max_daily', '일일 최대 거래', '하루 최대 거래 횟수', '10'),
+    _ParamDef('beast_cooldown_seconds', '쿨다운 (초)', '연속 거래 간 최소 대기 시간', '180'),
+    _ParamDef('pyramid_level1_pct', '피라미딩 1단계 %', '1차 추가 매수 진입 수익률', '1.5'),
+    _ParamDef('pyramid_level2_pct', '피라미딩 2단계 %', '2차 추가 매수 진입 수익률', '3.0'),
+    _ParamDef('pyramid_level3_pct', '피라미딩 3단계 %', '3차 추가 매수 진입 수익률', '5.0'),
+  ];
+
+  /// 토글 스위치 파라미터 정의이다.
+  static const _toggleDefs = <_ToggleDef>[
+    _ToggleDef('beast_mode_enabled', 'Beast Mode', '고빈도 단타 전략 활성화'),
+    _ToggleDef('pyramiding_enabled', 'Pyramiding', '수익 구간 추가 매수 활성화'),
+    _ToggleDef('stat_arb_enabled', 'Stat Arb', '통계적 차익거래 전략 활성화'),
+    _ToggleDef('news_fading_enabled', 'News Fading', '뉴스 기반 역추세 전략 활성화'),
+    _ToggleDef('wick_catcher_enabled', 'Wick Catcher', '급락 꼬리 잡기 전략 활성화'),
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -83,59 +108,81 @@ class _StrategySettingsState extends State<StrategySettings> {
           return ListView(
             padding: AppSpacing.paddingScreen,
             children: [
+              // 토글 스위치 섹션
               StaggeredFadeSlide(
                 index: 0,
-                child: _buildParamCard(
-                  'Min Confidence', 'min_confidence',
-                  params.params['min_confidence']?.toString() ?? '0.7',
-                  'Minimum confidence threshold for trade signals (0-1)',
-                ),
-              ),
-              AppSpacing.vGapLg,
-              StaggeredFadeSlide(
-                index: 1,
-                child: _buildParamCard(
-                  'Take Profit %', 'take_profit_pct',
-                  params.params['take_profit_pct']?.toString() ?? '5.0',
-                  'Target profit percentage',
-                ),
-              ),
-              AppSpacing.vGapLg,
-              StaggeredFadeSlide(
-                index: 2,
-                child: _buildParamCard(
-                  'Stop Loss %', 'stop_loss_pct',
-                  params.params['stop_loss_pct']?.toString() ?? '3.0',
-                  'Maximum loss tolerance percentage',
-                ),
-              ),
-              AppSpacing.vGapLg,
-              StaggeredFadeSlide(
-                index: 3,
-                child: _buildParamCard(
-                  'Trailing Stop %', 'trailing_stop_pct',
-                  params.params['trailing_stop_pct']?.toString() ?? '2.0',
-                  'Trailing stop from high watermark',
-                ),
-              ),
-              AppSpacing.vGapLg,
-              StaggeredFadeSlide(
-                index: 4,
-                child: _buildParamCard(
-                  'Max Position %', 'max_position_pct',
-                  params.params['max_position_pct']?.toString() ?? '30.0',
-                  'Maximum single position allocation',
-                ),
+                child: _buildTogglesCard(params.params, provider),
               ),
               AppSpacing.vGapXxl,
+              // 수치 파라미터 섹션
+              ..._paramDefs.asMap().entries.map((entry) {
+                final idx = entry.key;
+                final def = entry.value;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: StaggeredFadeSlide(
+                    index: idx + 1,
+                    child: _buildParamCard(
+                      def.label,
+                      def.key,
+                      params.params[def.key]?.toString() ?? def.defaultValue,
+                      def.description,
+                    ),
+                  ),
+                );
+              }),
+              AppSpacing.vGapXxl,
+              // 레짐 섹션
               StaggeredFadeSlide(
-                index: 5,
+                index: _paramDefs.length + 1,
                 child: _buildRegimesCard(params),
               ),
               AppSpacing.vGapXxl,
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildTogglesCard(Map<String, dynamic> params, TradeProvider provider) {
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('전략 모듈', style: AppTypography.headlineMedium),
+          AppSpacing.vGapSm,
+          Text('활성화할 전략 모듈을 선택한다', style: AppTypography.bodySmall),
+          AppSpacing.vGapLg,
+          ..._toggleDefs.map((def) {
+            final enabled = params[def.key] == true;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(def.label, style: AppTypography.labelLarge),
+                        Text(def.description, style: AppTypography.bodySmall),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: enabled,
+                    onChanged: (value) {
+                      final updated = Map<String, dynamic>.from(params);
+                      updated[def.key] = value;
+                      provider.updateStrategyParams(updated);
+                    },
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
       ),
     );
   }
@@ -148,6 +195,10 @@ class _StrategySettingsState extends State<StrategySettings> {
   ) {
     if (!_controllers.containsKey(paramKey)) {
       _controllers[paramKey] = TextEditingController(text: defaultValue);
+    } else if (_controllers[paramKey]!.text.isEmpty ||
+        _controllers[paramKey]!.text == '0' ||
+        _controllers[paramKey]!.text == '0.0') {
+      _controllers[paramKey]!.text = defaultValue;
     }
 
     return GlassCard(
@@ -170,7 +221,7 @@ class _StrategySettingsState extends State<StrategySettings> {
               AppSpacing.hGapMd,
               ElevatedButton(
                 onPressed: () => _saveParam(paramKey),
-                child: const Text('Save'),
+                child: const Text('저장'),
               ),
             ],
           ),
@@ -236,29 +287,35 @@ class _StrategySettingsState extends State<StrategySettings> {
             style: AppTypography.bodySmall,
           ),
           AppSpacing.vGapLg,
-          ...params.regimes.entries.map<Widget>((entry) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    _regimeLabel(entry.key as String),
-                    style: AppTypography.bodyMedium,
-                  ),
-                  Flexible(
-                    child: Text(
-                      _formatRegimeValue(entry.value),
-                      style: AppTypography.numberSmall.copyWith(
-                        color: context.tc.primary,
-                      ),
-                      textAlign: TextAlign.end,
+          if (params.regimes.isEmpty)
+            Text(
+              '레짐 설정이 없다 (data/strategy_params.json에 regimes 키 추가 필요)',
+              style: AppTypography.bodySmall,
+            )
+          else
+            ...params.regimes.entries.map<Widget>((entry) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _regimeLabel(entry.key as String),
+                      style: AppTypography.bodyMedium,
                     ),
-                  ),
-                ],
-              ),
-            );
-          }),
+                    Flexible(
+                      child: Text(
+                        _formatRegimeValue(entry.value),
+                        style: AppTypography.numberSmall.copyWith(
+                          color: context.tc.primary,
+                        ),
+                        textAlign: TextAlign.end,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -272,7 +329,7 @@ class _StrategySettingsState extends State<StrategySettings> {
     if (numValue == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Please enter a valid number'),
+          content: const Text('유효한 숫자를 입력해주세요'),
           backgroundColor: context.tc.loss,
         ),
       );
@@ -290,7 +347,7 @@ class _StrategySettingsState extends State<StrategySettings> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text('Parameter saved'),
+            content: const Text('저장 완료'),
             backgroundColor: context.tc.profit,
           ),
         );
@@ -299,11 +356,30 @@ class _StrategySettingsState extends State<StrategySettings> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Save failed: $e'),
+            content: Text('저장 실패: $e'),
             backgroundColor: context.tc.loss,
           ),
         );
       }
     }
   }
+}
+
+/// 수치 파라미터 정의이다.
+class _ParamDef {
+  final String key;
+  final String label;
+  final String description;
+  final String defaultValue;
+
+  const _ParamDef(this.key, this.label, this.description, this.defaultValue);
+}
+
+/// 토글 파라미터 정의이다.
+class _ToggleDef {
+  final String key;
+  final String label;
+  final String description;
+
+  const _ToggleDef(this.key, this.label, this.description);
 }

@@ -13,7 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.common.error_handler import register_exception_handlers
 from src.common.logger import get_logger
 from src.monitoring.endpoints.agents import (
-    agents_compat_router,
     agents_router,
     set_agents_deps,
 )
@@ -24,7 +23,6 @@ from src.monitoring.endpoints.crawl_control import (
     set_crawl_control_deps,
 )
 from src.monitoring.endpoints.feedback import (
-    feedback_compat_router,
     feedback_router,
     set_feedback_deps,
 )
@@ -126,13 +124,11 @@ def _register_routes(app: FastAPI) -> None:
         manual_trade_router,
         principles_router,
         agents_router,
-        agents_compat_router,      # Flutter /agents/* 하드코딩 경로 호환
         performance_router,
         order_flow_router,
         indicator_crawler_router,
         strategy_router,           # /api/strategy/* (전략 파라미터)
-        feedback_router,           # /api/feedback/* (일별/최신 피드백)
-        feedback_compat_router,    # /feedback/* (주별/pending Flutter TODO 경로)
+        feedback_router,           # /api/feedback/* (일별/주별/최신 피드백)
         charts_router,             # /api/dashboard/charts/* (차트 데이터)
         alerts_router,             # /api/alerts/* (알림 목록/읽음 처리)
         crawl_control_router,      # /api/crawl/* (뉴스 수동 크롤링)
@@ -210,10 +206,27 @@ def inject_system(app: FastAPI, system: InjectedSystem) -> None:
 
     @app.on_event("startup")
     async def _start_background_schedulers() -> None:
-        """서버 시작 시 백그라운드 스케줄러를 기동한다."""
+        """서버 시작 시 백그라운드 스케줄러와 FRED 캐시를 초기화한다."""
         if _fx_scheduler is not None:
             _fx_scheduler.start()
             _logger.info("FxScheduler 백그라운드 태스크 등록 완료")
+
+        # FRED 거시지표 캐시가 비어 있으면 채운다 (대시보드 즉시 표시용)
+        try:
+            from src.indicators.misc.fred_fetcher import (
+                is_fred_cache_populated,
+                populate_fred_cache,
+            )
+            cache = system.components.cache
+            if not await is_fred_cache_populated(cache):
+                http = system.components.http
+                vault = system.components.vault
+                count = await populate_fred_cache(http, vault, cache)
+                _logger.info("FRED 거시지표 캐시 초기화: %d건", count)
+            else:
+                _logger.info("FRED 캐시 이미 존재 -- 건너뜀")
+        except Exception as exc:
+            _logger.warning("FRED 캐시 초기화 실패 (무시): %s", exc)
 
     @app.on_event("shutdown")
     async def _stop_background_schedulers() -> None:
@@ -223,48 +236,83 @@ def inject_system(app: FastAPI, system: InjectedSystem) -> None:
             _logger.info("FxScheduler 백그라운드 태스크 정리 완료")
 
 
+_ALLOWED_PORTS: list[int] = [9500, 9501, 9502, 9503, 9504, 9505]
+_PORT_FILE: str = "data/server_port.txt"
+
+
+def _is_port_available(port: int) -> bool:
+    """포트가 사용 가능한지 확인한다."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
+def _find_available_port() -> int | None:
+    """9500-9505 범위에서 사용 가능한 첫 번째 포트를 반환한다. 없으면 None이다."""
+    for port in _ALLOWED_PORTS:
+        if _is_port_available(port):
+            return port
+    return None
+
+
+def _write_port_file(port: int) -> None:
+    """서버 포트를 파일에 기록한다. Flutter에서 읽어 접속한다."""
+    from pathlib import Path
+    Path(_PORT_FILE).parent.mkdir(exist_ok=True)
+    Path(_PORT_FILE).write_text(str(port))
+    _logger.info("포트 파일 기록: %s → %d", _PORT_FILE, port)
+
+
+def _remove_port_file() -> None:
+    """서버 종료 시 포트 파일을 삭제한다."""
+    from pathlib import Path
+    try:
+        Path(_PORT_FILE).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 async def start_server(
     app: FastAPI,
     host: str = "0.0.0.0",
-    port: int = 9501,
-    max_retries: int = 5,
+    port: int | None = None,
 ) -> None:
-    """API 서버를 시작한다. 포트 충돌 시 재시도한다.
+    """API 서버를 시작한다. 9500-9505 범위에서 빈 포트를 자동 탐색한다.
 
-    LaunchAgent KeepAlive 환경에서 이전 프로세스의 포트 해제가
-    지연될 수 있으므로 EADDRINUSE 발생 시 대기 후 재시도한다.
+    port를 명시하면 해당 포트만 시도한다.
+    port가 None이면 9500-9505 범위에서 사용 가능한 첫 포트를 선택한다.
+    선택된 포트를 data/server_port.txt에 기록하여 Flutter가 접속할 수 있게 한다.
     """
-    import asyncio
-
     import uvicorn
 
-    for attempt in range(1, max_retries + 1):
-        _logger.info(
-            "API 서버 시작 시도 %d/%d: http://%s:%d",
-            attempt, max_retries, host, port,
-        )
-        config = uvicorn.Config(
-            app,
-            host=host,
-            port=port,
-            log_level="info",
-        )
-        server = uvicorn.Server(config)
-        try:
-            await server.serve()
-            return  # 정상 종료 (shutdown_event에 의한 종료)
-        except SystemExit as exc:
-            # uvicorn이 포트 바인드 실패 시 SystemExit(1)을 발생시킨다
-            if attempt < max_retries:
-                wait_sec = attempt * 3
-                _logger.warning(
-                    "포트 %d 바인드 실패 (시도 %d/%d). %d초 후 재시도한다.",
-                    port, attempt, max_retries, wait_sec,
-                )
-                await asyncio.sleep(wait_sec)
-            else:
-                _logger.error(
-                    "포트 %d 바인드 실패 -- %d회 재시도 모두 실패. 서버를 시작할 수 없다.",
-                    port, max_retries,
-                )
-                raise
+    if port is not None:
+        # 명시적 포트 지정 시 해당 포트만 사용한다
+        if port not in _ALLOWED_PORTS:
+            _logger.warning("포트 %d는 허용 범위(9500-9505) 밖이다. 그래도 시도한다.", port)
+        selected_port = port
+    else:
+        selected_port = _find_available_port()
+        if selected_port is None:
+            _logger.error(
+                "포트 9500-9505 모두 사용 중이다. 서버를 시작할 수 없다.",
+            )
+            raise SystemExit(1)
+
+    _logger.info("API 서버 시작: http://%s:%d", host, selected_port)
+    _write_port_file(selected_port)
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=selected_port,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+    try:
+        await server.serve()
+    finally:
+        _remove_port_file()

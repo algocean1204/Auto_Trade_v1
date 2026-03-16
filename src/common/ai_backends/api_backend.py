@@ -67,9 +67,19 @@ class ApiBackend:
                 resolved,
                 len(text),
             )
+            # 토큰 사용량 기록
+            input_tok = getattr(response.usage, "input_tokens", 0) if hasattr(response, "usage") else 0
+            output_tok = getattr(response.usage, "output_tokens", 0) if hasattr(response, "usage") else 0
+            from src.common.token_tracker import record_usage
+            record_usage(
+                model=resolved, source="api",
+                input_tokens=input_tok, output_tokens=output_tok,
+            )
             return AiBackendResponse(content=text, model=resolved, source="api")
         except Exception as exc:
             _logger.error("Anthropic API 호출 실패: %s", exc)
+            from src.common.token_tracker import record_error
+            record_error(model=resolved, source="api")
             raise AiError(message="Anthropic API 호출 실패", detail=str(exc)) from exc
 
     async def close(self) -> None:

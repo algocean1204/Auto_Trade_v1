@@ -1,7 +1,7 @@
-"""F2 AI 분석 -- MLX 1차 필터 + Claude Haiku 정밀 분류로 뉴스를 분류한다.
+"""F2 AI 분석 -- MLX 1차 필터 + Claude Sonnet 정밀 분류로 뉴스를 분류한다.
 
 MLX 3모델 앙상블로 시장 무관 기사를 빠르게 걸러내고(impact=low),
-medium/high 기사는 Claude Haiku로 단타 트레이딩 맥락에서 정밀 분석한다.
+medium/high 기사는 Claude Sonnet으로 단타 트레이딩 맥락에서 정밀 분석한다.
 """
 from __future__ import annotations
 
@@ -27,7 +27,12 @@ _PRECISION_THRESHOLD: float = 0.5
 
 # 영향도 분류 — MLX가 high/medium/low를 분류하면 수치로 변환한다
 _IMPACT_LEVELS: list[str] = ["high", "medium", "low"]
-_IMPACT_SCORE_MAP: dict[str, float] = {"high": 0.85, "medium": 0.55, "low": 0.25}
+_IMPACT_HIGH: float = 0.85
+_IMPACT_MEDIUM: float = 0.55
+_IMPACT_LOW: float = 0.25
+_IMPACT_SCORE_MAP: dict[str, float] = {
+    "high": _IMPACT_HIGH, "medium": _IMPACT_MEDIUM, "low": _IMPACT_LOW,
+}
 
 
 def _build_classify_prompt(article: VerifiedArticle) -> str:
@@ -60,24 +65,24 @@ def _build_classify_prompt(article: VerifiedArticle) -> str:
         "- tickers_affected는 절대 빈 배열 금지. impact_score>0.05면 반드시 관련 ETF 포함\n"
         "  예: 반도체→SOXL, 나스닥/기술주→QLD/TQQQ, S&P→UPRO, 유가→UCO, 에너지→ERX\n"
         "- impact_score는 0.0~1.0 연속값 (0.25/0.55/0.85 같은 고정값 금지)\n\n"
-        f"제목: {article.title}\n"
-        f"내용: {article.content[:2000]}\n"
-        f"출처: {article.source}\n"
+        f"제목: {json.dumps(article.title, ensure_ascii=False)}\n"
+        f"내용: {json.dumps(article.content[:2000], ensure_ascii=False)}\n"
+        f"출처: {json.dumps(article.source, ensure_ascii=False)}\n"
         f"발행일: {json.dumps(article.published_at, default=str)}\n\n"
         "JSON만 출력하라:"
     )
 
 
-def _parse_claude_response(raw: str) -> dict:
-    """Claude 응답에서 JSON을 파싱한다. 실패 시 기본값을 반환한다."""
+def _parse_claude_response(raw: str) -> dict | None:
+    """Claude 응답에서 JSON을 파싱한다. 실패 시 None을 반환한다."""
     try:
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
         return json.loads(cleaned)
     except (json.JSONDecodeError, IndexError):
-        logger.warning("Claude 응답 JSON 파싱 실패: %s", raw[:200])
-        return {}
+        logger.warning("Claude 응답 JSON 파싱 실패 — 이번 분석 건너뜀: %s", raw[:200])
+        return None
 
 
 async def _classify_single_local(
@@ -109,11 +114,31 @@ async def _classify_single_local(
     )
 
 
+# 유효한 레버리지 ETF 티커 목록이다
+_VALID_TICKERS: set[str] = {
+    "SOXL", "SOXS", "QLD", "QID", "TQQQ", "SQQQ",
+    "UPRO", "SPXU", "SSO", "SDS", "UCO", "SCO",
+    "ERX", "ERY", "NUGT", "DUST", "LABU", "LABD",
+    "TNA", "TZA", "UDOW", "SDOW", "FAS", "FAZ",
+}
+
+
+def _validate_tickers(tickers: list) -> list[str]:
+    """tickers_affected를 검증하고 유효한 티커만 반환한다.
+
+    빈 배열이면 기본 QLD를 반환한다 (프롬프트에서 빈 배열 금지).
+    """
+    if not isinstance(tickers, list):
+        return ["QLD"]
+    valid = [t for t in tickers if isinstance(t, str) and t.upper() in _VALID_TICKERS]
+    return valid if valid else ["QLD"]
+
+
 async def _refine_with_claude(
     news: ClassifiedNews,
     ai_client: AiClient,
 ) -> ClassifiedNews:
-    """Claude Haiku로 뉴스를 단타 트레이딩 관점에서 정밀 재분석한다."""
+    """Claude Sonnet으로 뉴스를 단타 트레이딩 관점에서 정밀 재분석한다."""
     article = VerifiedArticle(
         title=news.title, content=news.content, url=news.url,
         source=news.source, published_at=news.published_at,
@@ -121,7 +146,7 @@ async def _refine_with_claude(
     )
     prompt = _build_classify_prompt(article)
     response: AiResponse = await ai_client.send_text(
-        prompt, model="haiku", max_tokens=1024,
+        prompt, model="sonnet", max_tokens=1024,
     )
     parsed = _parse_claude_response(response.content)
 
@@ -132,7 +157,7 @@ async def _refine_with_claude(
         "impact_score": parsed.get("impact_score", news.impact_score),
         "direction": parsed.get("direction", news.direction),
         "category": parsed.get("category", news.category),
-        "tickers_affected": parsed.get("tickers_affected", []),
+        "tickers_affected": _validate_tickers(parsed.get("tickers_affected", [])),
         "reasoning": parsed.get("reasoning", news.reasoning),
         "time_sensitivity": parsed.get("time_sensitivity", "analysis"),
         "actionability": parsed.get("actionability", "informational"),
@@ -140,11 +165,90 @@ async def _refine_with_claude(
     })
 
 
+# 키워드 기반 3차 폴백용 패턴이다
+_KEYWORD_HIGH: set[str] = {
+    "crash", "halt", "halted", "surge", "plunge", "crisis", "emergency",
+    "bankrupt", "default", "recession", "fed", "rate cut", "rate hike",
+    "circuit breaker", "margin call", "급락", "급등", "폭락", "폭등",
+    "파산", "긴급", "서킷브레이커", "금리",
+}
+_KEYWORD_BEARISH: set[str] = {
+    "crash", "plunge", "fall", "drop", "decline", "down", "loss", "weak",
+    "halt", "halted", "crisis", "bankrupt", "recession", "default",
+    "급락", "폭락", "하락", "약세", "파산", "위기",
+}
+_KEYWORD_BULLISH: set[str] = {
+    "surge", "rally", "jump", "gain", "rise", "up", "strong", "boom",
+    "record", "high", "beat", "exceed",
+    "급등", "폭등", "상승", "강세", "신고가", "호실적",
+}
+_KEYWORD_TICKERS: dict[str, list[str]] = {
+    "semiconductor": ["SOXL"], "chip": ["SOXL"], "반도체": ["SOXL"],
+    "nvidia": ["SOXL"], "amd": ["SOXL"], "tsmc": ["SOXL"],
+    "nasdaq": ["QLD", "TQQQ"], "나스닥": ["QLD", "TQQQ"],
+    "tech": ["QLD", "TQQQ"], "기술주": ["QLD", "TQQQ"],
+    "s&p": ["UPRO", "SSO"], "oil": ["UCO"], "유가": ["UCO"],
+    "energy": ["ERX"], "에너지": ["ERX"],
+}
+
+
+def _fallback_keyword(article: VerifiedArticle) -> ClassifiedNews:
+    """AI 분류 전부 실패 시 키워드 기반으로 분류한다.
+
+    긴급 뉴스가 분류 실패로 사라지는 것을 방지한다.
+    키워드 매칭이므로 정확도는 낮지만, 기사 손실보다 낫다.
+    """
+    text = f"{article.title} {article.content[:300]}".lower()
+
+    # 영향도 판정
+    is_high = any(kw in text for kw in _KEYWORD_HIGH)
+    impact = 0.7 if is_high else 0.4
+
+    # 방향 판정
+    bear_count = sum(1 for kw in _KEYWORD_BEARISH if kw in text)
+    bull_count = sum(1 for kw in _KEYWORD_BULLISH if kw in text)
+    if bear_count > bull_count:
+        direction = "bearish"
+    elif bull_count > bear_count:
+        direction = "bullish"
+    else:
+        direction = "neutral"
+
+    # 관련 티커 추출
+    tickers: set[str] = set()
+    for keyword, etfs in _KEYWORD_TICKERS.items():
+        if keyword in text:
+            tickers.update(etfs)
+    if not tickers:
+        tickers = {"QLD"}  # 기본 나스닥 ETF
+
+    logger.info(
+        "키워드 폴백 분류: %s → impact=%.1f, dir=%s, tickers=%s",
+        article.title[:40], impact, direction, tickers,
+    )
+
+    return ClassifiedNews(
+        title=article.title,
+        content=article.content,
+        url=article.url,
+        source=article.source,
+        published_at=article.published_at,
+        impact_score=impact,
+        direction=direction,
+        category="macro",
+        tickers_affected=list(tickers),
+        reasoning="[키워드 폴백] AI 분류 실패, 키워드 기반 자동 분류",
+        time_sensitivity="developing" if is_high else "background",
+        actionability="watch" if is_high else "informational",
+        leveraged_etf_impact="",
+    )
+
+
 class NewsClassifier:
-    """MLX 1차 필터 + Claude Haiku 정밀 분류로 뉴스를 분류한다.
+    """MLX 1차 필터 + Claude Sonnet 정밀 분류로 뉴스를 분류한다.
 
     MLX로 low impact 기사를 빠르게 걸러내고,
-    medium/high impact 기사는 Claude Haiku로 정밀 분석한다.
+    medium/high impact 기사는 Claude Sonnet으로 정밀 분석한다.
     """
 
     def __init__(self, ai_client: AiClient) -> None:
@@ -155,7 +259,7 @@ class NewsClassifier:
         self,
         articles: list[VerifiedArticle],
     ) -> list[ClassifiedNews]:
-        """기사 목록을 분류한다. medium 이상은 Claude Haiku로 정밀 분석한다."""
+        """기사 목록을 분류한다. medium 이상은 Claude Sonnet으로 정밀 분석한다."""
         results: list[ClassifiedNews] = []
         for article in articles:
             classified = await self._classify_one(article)
@@ -164,15 +268,26 @@ class NewsClassifier:
         return results
 
     async def _classify_one(self, article: VerifiedArticle) -> ClassifiedNews:
-        """단일 기사를 분류한다."""
+        """단일 기사를 분류한다.
+
+        3단계 폴백: MLX 로컬 → Claude Sonnet → 룰 기반 키워드 분류.
+        모든 단계 실패 시에도 기사를 unclassified 상태로 보존한다.
+        Claude 폴백으로 분류된 기사는 이미 Claude가 분석했으므로 정밀 분석을 건너뛴다.
+        """
+        used_claude_fallback = False
         try:
             news = await _classify_single_local(article, self._ai)
         except Exception:
             logger.warning("로컬 분류 실패, Claude 폴백: %s", article.title[:50])
-            news = await self._fallback_claude(article)
+            try:
+                news = await self._fallback_claude(article)
+                used_claude_fallback = True
+            except Exception:
+                logger.warning("Claude 폴백도 실패, 키워드 분류: %s", article.title[:50])
+                news = _fallback_keyword(article)
 
-        # medium(0.55) 이상은 모두 Claude Haiku로 정밀 분석한다
-        if news.impact_score >= _PRECISION_THRESHOLD:
+        # medium 이상은 Claude로 정밀 분석한다 — 단, 이미 Claude로 분류했으면 건너뛴다
+        if not used_claude_fallback and news.impact_score >= _PRECISION_THRESHOLD:
             try:
                 news = await _refine_with_claude(news, self._ai)
             except Exception:
@@ -183,12 +298,17 @@ class NewsClassifier:
         return news
 
     async def _fallback_claude(self, article: VerifiedArticle) -> ClassifiedNews:
-        """로컬 분류 실패 시 Claude Haiku로 분류한다."""
+        """로컬 분류 실패 시 Claude Sonnet으로 분류한다."""
         prompt = _build_classify_prompt(article)
         response = await self._ai.send_text(
-            prompt, model="haiku", max_tokens=1024,
+            prompt, model="sonnet", max_tokens=1024,
         )
         parsed = _parse_claude_response(response.content)
+
+        if not parsed:
+            # JSON 파싱 실패 시 키워드 폴백으로 전환한다
+            logger.warning("Claude 응답 파싱 실패, 키워드 분류 전환: %s", article.title[:50])
+            return _fallback_keyword(article)
 
         return ClassifiedNews(
             title=article.title,
@@ -199,7 +319,7 @@ class NewsClassifier:
             impact_score=parsed.get("impact_score", 0.5),
             direction=parsed.get("direction", "neutral"),
             category=parsed.get("category", "macro"),
-            tickers_affected=parsed.get("tickers_affected", []),
+            tickers_affected=_validate_tickers(parsed.get("tickers_affected", [])),
             reasoning=parsed.get("reasoning", ""),
             time_sensitivity=parsed.get("time_sensitivity", "analysis"),
             actionability=parsed.get("actionability", "informational"),

@@ -436,8 +436,8 @@ class _OverviewScreenState extends State<OverviewScreen> {
     final quantity = (pos['quantity'] as num?)?.toInt() ?? 0;
     final avgPrice = (pos['avg_price'] as num?)?.toDouble() ?? 0.0;
     final currentPrice = (pos['current_price'] as num?)?.toDouble() ?? 0.0;
-    final pnlPct = (pos['pnl_pct'] as num?)?.toDouble() ?? 0.0;
-    final pnlAmount = (pos['pnl_amount'] as num?)?.toDouble() ?? 0.0;
+    final pnlPct = (pos['unrealized_pnl_pct'] as num?)?.toDouble() ?? 0.0;
+    final pnlAmount = (pos['unrealized_pnl'] as num?)?.toDouble() ?? 0.0;
     final currentValue = (pos['current_value'] as num?)?.toDouble() ?? 0.0;
 
     final isProfit = pnlPct >= 0;
@@ -1358,7 +1358,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
   /// 서버 미연결 시 시스템 상태 카드 대신 표시하는 플레이스홀더 카드이다.
   Widget _buildSystemStatusDisconnectedCard() {
     final t = context.watch<LocaleProvider>().t;
-    final services = ['Claude AI', 'KIS API', 'Database', 'Redis'];
+    final services = ['Claude AI', 'KIS API', 'Database', 'Cache'];
 
     return GlassCard(
       child: Column(
@@ -1504,7 +1504,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
           _buildStatusRow('Database', status.database,
               serverDisconnected: isServerDisconnected),
           AppSpacing.vGapMd,
-          _buildStatusRow('Redis', status.redis,
+          _buildStatusRow('Cache', status.cache,
               serverDisconnected: isServerDisconnected),
           AppSpacing.vGapLg,
           // 쿼터 정보 (서버 미연결 시 희미하게 표시한다)

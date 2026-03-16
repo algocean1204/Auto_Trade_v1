@@ -20,7 +20,7 @@ _DRAG_BENCHMARK: str = "VIX"
 
 
 async def _read_float(cache: CacheClient, key: str) -> float | None:
-    """Redis에서 float 값을 읽는다."""
+    """캐시에서 float 값을 읽는다."""
     raw = await cache.read(key)
     if raw is None:
         return None

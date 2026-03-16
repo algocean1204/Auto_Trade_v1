@@ -1,12 +1,13 @@
 """F7.14 PrinciplesEndpoints -- 매매 원칙 CRUD API이다.
 
 매매 원칙을 조회/추가/수정/삭제할 수 있다.
-원칙은 Redis 캐시에 저장한다.
+원칙은 캐시에 저장한다.
 """
 from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,7 @@ class PrincipleUpdateRequest(BaseModel):
     title: str | None = None
     content: str | None = None
     category: str | None = None
+    enabled: bool | None = None
 
 
 class PrincipleItem(BaseModel):
@@ -107,7 +109,7 @@ _SEED_FILE = Path(__file__).resolve().parents[3] / "data" / "trading_principles.
 
 
 async def _ensure_seed_loaded() -> None:
-    """Redis에 원칙 데이터가 없으면 시드 파일에서 자동 로드한다."""
+    """캐시에 원칙 데이터가 없으면 시드 파일에서 자동 로드한다."""
     if _system is None:
         return
     cache = _system.components.cache  # type: ignore[union-attr]
@@ -191,6 +193,10 @@ async def add_principle(
             "title": req.title,
             "content": req.content,
             "category": req.category,
+            "priority": 0,
+            "is_system": False,
+            "enabled": True,
+            "created_at": datetime.now().isoformat(),
         }
         principles.append(principle)
         await _save_principles(principles)
@@ -243,6 +249,8 @@ async def update_principle(
                     p["content"] = req.content
                 if req.category is not None:
                     p["category"] = req.category
+                if req.enabled is not None:
+                    p["enabled"] = req.enabled
                 await _save_principles(principles)
                 _logger.info("매매 원칙 수정: %s", principle_id)
                 return PrincipleUpdateResponse(status="updated", principle=p)

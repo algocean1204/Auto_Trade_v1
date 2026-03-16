@@ -75,7 +75,7 @@ class _SystemDots extends StatelessWidget {
             AppSpacing.hGapMd,
             _StatusDot(label: 'DB', online: status.database),
             AppSpacing.hGapMd,
-            _StatusDot(label: 'RDB', online: status.redis),
+            _StatusDot(label: 'Cache', online: status.cache),
           ],
         );
       },

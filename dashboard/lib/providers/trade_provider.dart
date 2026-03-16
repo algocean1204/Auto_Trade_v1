@@ -158,6 +158,19 @@ class TradeProvider with ChangeNotifier {
     }
   }
 
+  /// 티커 코드만으로 유니버스에 추가한다. 페어 티커도 자동으로 함께 추가된다.
+  Future<Map<String, dynamic>> autoAddTicker(String ticker) async {
+    try {
+      final result = await _apiService.autoAddTicker(ticker);
+      await loadUniverse();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      rethrow;
+    }
+  }
+
   Future<void> toggleTicker(String ticker, bool enabled) async {
     try {
       await _apiService.toggleTicker(ticker, enabled);

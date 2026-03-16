@@ -34,23 +34,29 @@ class CrawlerBase(ABC):
     async def safe_crawl(self, source: SourceConfig) -> list[RawArticle]:
         """타임아웃과 에러를 격리하여 crawl()을 실행한다.
 
-        타임아웃 초과나 예외 발생 시 빈 리스트를 반환하여
-        다른 소스 크롤링에 영향을 주지 않는다.
+        1회 실패 시 2초 대기 후 재시도한다. 2회 모두 실패하면
+        빈 리스트를 반환하여 다른 소스 크롤링에 영향을 주지 않는다.
         """
-        try:
-            articles = await asyncio.wait_for(
-                self.crawl(source),
-                timeout=source.timeout,
-            )
-            logger.info(
-                "%s 크롤링 완료: %d건", source.name, len(articles),
-            )
-            return articles
-        except asyncio.TimeoutError:
-            logger.warning(
-                "%s 크롤링 타임아웃: %d초 초과", source.name, source.timeout,
-            )
-            return []
-        except Exception:
-            logger.exception("%s 크롤링 실패", source.name)
-            return []
+        for attempt in range(2):
+            try:
+                articles = await asyncio.wait_for(
+                    self.crawl(source),
+                    timeout=source.timeout,
+                )
+                logger.info(
+                    "%s 크롤링 완료: %d건", source.name, len(articles),
+                )
+                return articles
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "%s 크롤링 타임아웃 (시도 %d/2): %d초 초과",
+                    source.name, attempt + 1, source.timeout,
+                )
+            except Exception:
+                logger.warning(
+                    "%s 크롤링 실패 (시도 %d/2)", source.name, attempt + 1,
+                    exc_info=True,
+                )
+            if attempt == 0:
+                await asyncio.sleep(2)
+        return []

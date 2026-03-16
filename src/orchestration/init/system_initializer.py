@@ -50,7 +50,7 @@ def _init_vault() -> SecretProvider:
 def _init_infra(vault: SecretProvider) -> tuple[SessionFactory, CacheClient, AsyncHttpClient]:
     """DB, Cache, HTTP 인프라 계층을 초기화한다."""
     db = get_session_factory(database_url=vault.get_secret("DATABASE_URL"))
-    cache = get_cache_client(redis_url=vault.get_secret("REDIS_URL"))
+    cache = get_cache_client()
     http = get_http_client()
     logger.info("인프라 계층 초기화 완료 (DB, Cache, HTTP)")
     return db, cache, http

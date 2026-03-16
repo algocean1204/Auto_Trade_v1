@@ -41,6 +41,7 @@ class ExitDecision(BaseModel):
     reason: str
     ticker: str
     estimated_pnl_pct: float = 0.0
+    exit_level: int | None = None
 
 
 class BeastDecision(BaseModel):
@@ -115,21 +116,21 @@ class StrategyParams(BaseModel):
     stat_arb_enabled: bool = True
     news_fading_enabled: bool = True
     wick_catcher_enabled: bool = True
-    # Beast Mode
-    beast_min_confidence: float = 0.9
-    beast_min_obi: float = 0.4
-    beast_max_daily: int = 5
-    beast_cooldown_seconds: int = 300
+    # Beast Mode -- strategy_params.json과 동일한 기본값이다
+    beast_min_confidence: float = 0.7
+    beast_min_obi: float = 0.2
+    beast_max_daily: int = 10
+    beast_cooldown_seconds: int = 180
     # Pyramiding
-    pyramid_level1_pct: float = 1.0
-    pyramid_level2_pct: float = 2.0
-    pyramid_level3_pct: float = 3.0
+    pyramid_level1_pct: float = 1.5
+    pyramid_level2_pct: float = 3.0
+    pyramid_level3_pct: float = 5.0
     # 일반
-    default_position_size_pct: float = 5.0
-    max_position_pct: float = 15.0
-    obi_threshold: float = 0.3
-    ml_threshold: float = 0.6
-    friction_hurdle: float = 0.5
+    default_position_size_pct: float = 10.0
+    max_position_pct: float = 23.75
+    obi_threshold: float = 0.1
+    ml_threshold: float = 0.3
+    friction_hurdle: float = 0.7
 
 
 class TargetStatus(BaseModel):

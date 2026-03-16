@@ -38,10 +38,17 @@ class FeedbackRequest(BaseModel):
     notes: str = ""
 
 
-class TradeDatesResponse(BaseModel):
-    """매매 날짜 목록 응답 모델이다."""
+class TradeDateItem(BaseModel):
+    """개별 매매 날짜 + 거래 수 모델이다. Dart TradeReasoningDate.fromJson()과 매핑된다."""
 
-    dates: list[str] = Field(default_factory=list)
+    date: str
+    trade_count: int = 0
+
+
+class TradeDatesResponse(BaseModel):
+    """매매 날짜 목록 응답 모델이다. Dart는 dates 내부에 {date, trade_count} 객체를 기대한다."""
+
+    dates: list[TradeDateItem] = Field(default_factory=list)
 
 
 class DailyReasoningResponse(BaseModel):
@@ -51,16 +58,24 @@ class DailyReasoningResponse(BaseModel):
     trades: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TickerCount(BaseModel):
+    """티커별 거래 횟수 모델이다."""
+
+    ticker: str
+    count: int = 0
+
+
 class TradeStatsResponse(BaseModel):
-    """매매 통계 응답 모델이다."""
+    """매매 통계 응답 모델이다. Dart TradeReasoningStats.fromJson()과 매핑된다."""
 
     total_trades: int = 0
-    win_rate: float = 0.0
-    avg_profit: float = 0.0
-    avg_loss: float = 0.0
-    best_trade: dict[str, Any] | None = None
-    worst_trade: dict[str, Any] | None = None
-    message: str = ""
+    win_count: int = 0
+    loss_count: int = 0
+    total_pnl_amount: float = 0.0
+    avg_confidence_winners: float = 0.0
+    avg_confidence_losers: float = 0.0
+    top_tickers: list[TickerCount] = Field(default_factory=list)
+    most_common_regime: str | None = None
 
 
 class TradeFeedbackResponse(BaseModel):
@@ -68,6 +83,49 @@ class TradeFeedbackResponse(BaseModel):
 
     status: str
     trade_id: str
+
+
+def _normalize_trade(record: dict[str, Any]) -> dict[str, Any]:
+    """원시 거래 레코드를 Dart 호환 필드로 정규화한다.
+
+    trades:today 캐시와 trades:reasoning:{date} 캐시 모두에서
+    동일한 구조로 반환하기 위해 키를 매핑한다.
+    """
+    out = dict(record)
+
+    # side → action 변환 (Dart는 action 키를 기대한다)
+    if "side" in out and "action" not in out:
+        out["action"] = out["side"]
+
+    # price → entry_price 매핑 (원본도 유지한다)
+    if "price" in out and "entry_price" not in out:
+        out["entry_price"] = out["price"]
+
+    # timestamp → entry_at 매핑 (원본도 유지한다)
+    if "timestamp" in out and "entry_at" not in out:
+        out["entry_at"] = out["timestamp"]
+
+    # exit_type → exit_reason 매핑 (원본도 유지한다)
+    if "exit_type" in out and "exit_reason" not in out:
+        out["exit_reason"] = out["exit_type"]
+
+    # id가 없으면 ticker-timestamp 조합으로 생성한다
+    if "id" not in out:
+        ticker = out.get("ticker", "")
+        ts = out.get("timestamp", "")
+        out["id"] = f"{ticker}-{ts}" if ticker or ts else str(id(out))
+
+    # pnl_amount 기반 pnl_pct 기본값을 설정한다
+    if "pnl_pct" not in out:
+        pnl_amount = out.get("pnl_amount")
+        if pnl_amount is not None:
+            out["pnl_pct"] = float(pnl_amount)
+        else:
+            out["pnl_pct"] = 0.0
+
+    out.setdefault("reason", "")
+
+    return out
 
 
 def set_trade_reasoning_deps(system: InjectedSystem) -> None:
@@ -79,14 +137,44 @@ def set_trade_reasoning_deps(system: InjectedSystem) -> None:
 
 @trade_reasoning_router.get("/dates", response_model=TradeDatesResponse)
 async def get_trade_dates() -> TradeDatesResponse:
-    """매매가 존재하는 날짜 목록을 반환한다."""
+    """매매가 존재하는 날짜 목록을 반환한다.
+
+    trades:dates 키를 우선 조회하고, 없으면 trades:today에서 오늘 날짜를 추출한다.
+    Dart TradeReasoningDate.fromJson()이 {date, trade_count} 구조를 기대한다.
+    """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         cache = _system.components.cache
+
+        # 1차: trades:dates 키에서 날짜 목록을 읽는다
         cached = await cache.read_json("trades:dates")
-        dates = cached if isinstance(cached, list) else []
-        return TradeDatesResponse(dates=dates)
+        raw_dates: list[str] = cached if isinstance(cached, list) else []
+
+        date_items: list[TradeDateItem] = []
+        for d in raw_dates:
+            if not isinstance(d, str):
+                continue
+            trades_data = await cache.read_json(f"trades:reasoning:{d}")
+            count = len(trades_data) if isinstance(trades_data, list) else 0
+            date_items.append(TradeDateItem(date=d, trade_count=count))
+
+        # 2차: trades:dates가 비어있으면 trades:today에서 오늘 거래를 추출한다
+        if not date_items:
+            today_trades = await cache.read_json("trades:today")
+            if today_trades and isinstance(today_trades, list) and len(today_trades) > 0:
+                from collections import Counter
+                date_counter: Counter[str] = Counter()
+                for t in today_trades:
+                    if isinstance(t, dict):
+                        ts = str(t.get("timestamp", ""))
+                        date_str = ts[:10] if len(ts) >= 10 else ""
+                        if date_str:
+                            date_counter[date_str] += 1
+                for d_str, cnt in sorted(date_counter.items(), reverse=True):
+                    date_items.append(TradeDateItem(date=d_str, trade_count=cnt))
+
+        return TradeDatesResponse(dates=date_items)
     except HTTPException:
         raise
     except Exception:
@@ -98,14 +186,37 @@ async def get_trade_dates() -> TradeDatesResponse:
 async def get_daily_reasoning(
     date: str = "",
 ) -> DailyReasoningResponse:
-    """일별 매매 근거를 반환한다."""
+    """일별 매매 근거를 반환한다.
+
+    trades:reasoning:{date} 키를 우선 조회하고, 없으면 trades:today에서
+    해당 날짜 거래를 필터링하여 반환한다.
+    """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         cache = _system.components.cache
+
+        # 1차: trades:reasoning:{date} 키에서 읽는다
         key = f"trades:reasoning:{date}" if date else "trades:reasoning:latest"
         cached = await cache.read_json(key)
-        trades = cached if isinstance(cached, list) else []
+        raw_trades = cached if isinstance(cached, list) else []
+
+        # reasoning 캐시 데이터도 정규화한다
+        trades = [_normalize_trade(t) for t in raw_trades if isinstance(t, dict)]
+
+        # 2차: 비어있으면 trades:today에서 해당 날짜 거래를 필터링한다
+        if not trades:
+            today_trades = await cache.read_json("trades:today")
+            if today_trades and isinstance(today_trades, list):
+                for t in today_trades:
+                    if not isinstance(t, dict):
+                        continue
+                    ts = str(t.get("timestamp", ""))
+                    t_date = ts[:10] if len(ts) >= 10 else ""
+                    # 날짜 미지정이거나 일치하면 포함한다
+                    if not date or t_date == date:
+                        trades.append(_normalize_trade(t))
+
         return DailyReasoningResponse(date=date or "latest", trades=trades)
     except HTTPException:
         raise
@@ -115,29 +226,128 @@ async def get_daily_reasoning(
 
 
 @trade_reasoning_router.get("/stats", response_model=TradeStatsResponse)
-async def get_trade_stats() -> TradeStatsResponse:
-    """매매 통계를 반환한다. 승률, 평균 수익 등이다."""
+async def get_trade_stats(date: str = "") -> TradeStatsResponse:
+    """매매 통계를 반환한다.
+
+    trades:reasoning:{date} 키를 우선 조회하고, 없으면 trades:today에서 계산한다.
+    Dart TradeReasoningStats.fromJson()이 기대하는 구조로 반환한다.
+    """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         cache = _system.components.cache
-        cached = await cache.read_json("trades:stats")
-        if cached and isinstance(cached, dict):
-            return TradeStatsResponse(
-                total_trades=cached.get("total_trades", 0),
-                win_rate=cached.get("win_rate", 0.0),
-                avg_profit=cached.get("avg_profit", 0.0),
-                avg_loss=cached.get("avg_loss", 0.0),
-                best_trade=cached.get("best_trade"),
-                worst_trade=cached.get("worst_trade"),
-                message=cached.get("message", ""),
-            )
-        return TradeStatsResponse(message="통계 데이터가 없다")
+
+        # 1차: trades:reasoning:{date} 키에서 읽는다
+        key = f"trades:reasoning:{date}" if date else "trades:reasoning:latest"
+        trades_raw = await cache.read_json(key)
+        trades: list[dict] = [
+            _normalize_trade(t) for t in (trades_raw if isinstance(trades_raw, list) else [])
+            if isinstance(t, dict)
+        ]
+
+        # 2차: 비어있으면 trades:today에서 해당 날짜 거래를 필터링한다
+        if not trades:
+            today_raw = await cache.read_json("trades:today")
+            if today_raw and isinstance(today_raw, list):
+                for t in today_raw:
+                    if not isinstance(t, dict):
+                        continue
+                    ts = str(t.get("timestamp", ""))
+                    t_date = ts[:10] if len(ts) >= 10 else ""
+                    if not date or t_date == date:
+                        converted = _normalize_trade(t)
+                        # pnl_pct를 실제 비율로 계산한다 (가격*수량 기반)
+                        pnl = converted.get("pnl")
+                        price = converted.get("price", 0)
+                        qty = converted.get("quantity", 0)
+                        if pnl is not None and price > 0 and qty > 0:
+                            converted["pnl_pct"] = (float(pnl) / (float(price) * float(qty))) * 100.0
+                        converted.setdefault("pnl_amount", float(pnl) if pnl is not None else 0.0)
+                        trades.append(converted)
+
+        return _compute_stats(trades)
     except HTTPException:
         raise
     except Exception:
         _logger.exception("매매 통계 조회 실패")
         raise HTTPException(status_code=500, detail="통계 조회 실패") from None
+
+
+def _compute_stats(trades: list[dict]) -> TradeStatsResponse:
+    """거래 목록에서 Dart 호환 통계를 계산한다."""
+    from collections import Counter
+
+    if not trades:
+        return TradeStatsResponse()
+
+    total = len(trades)
+    win_count = 0
+    loss_count = 0
+    total_pnl = 0.0
+    winner_confidences: list[float] = []
+    loser_confidences: list[float] = []
+    ticker_counter: Counter[str] = Counter()
+    regime_counter: Counter[str] = Counter()
+
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+
+        pnl = float(t.get("pnl_pct", 0.0) or 0.0)
+        pnl_amount = float(t.get("pnl_amount", 0.0) or 0.0)
+        confidence = t.get("ai_confidence")
+        ticker = t.get("ticker", "")
+        regime = t.get("market_regime")
+
+        total_pnl += pnl_amount
+
+        if pnl >= 0:
+            win_count += 1
+            if confidence is not None:
+                winner_confidences.append(float(confidence))
+        else:
+            loss_count += 1
+            if confidence is not None:
+                loser_confidences.append(float(confidence))
+
+        if ticker:
+            ticker_counter[ticker] += 1
+        if regime:
+            regime_counter[str(regime)] += 1
+
+    # 평균 신뢰도 계산한다
+    avg_conf_win = (
+        sum(winner_confidences) / len(winner_confidences)
+        if winner_confidences
+        else 0.0
+    )
+    avg_conf_loss = (
+        sum(loser_confidences) / len(loser_confidences)
+        if loser_confidences
+        else 0.0
+    )
+
+    # 상위 티커 목록을 빈도순으로 정렬한다
+    top_tickers = [
+        TickerCount(ticker=tk, count=cnt)
+        for tk, cnt in ticker_counter.most_common(5)
+    ]
+
+    # 가장 빈번한 시장 레짐이다
+    most_common_regime = (
+        regime_counter.most_common(1)[0][0] if regime_counter else None
+    )
+
+    return TradeStatsResponse(
+        total_trades=total,
+        win_count=win_count,
+        loss_count=loss_count,
+        total_pnl_amount=round(total_pnl, 2),
+        avg_confidence_winners=round(avg_conf_win, 4),
+        avg_confidence_losers=round(avg_conf_loss, 4),
+        top_tickers=top_tickers,
+        most_common_regime=most_common_regime,
+    )
 
 
 @trade_reasoning_router.post(

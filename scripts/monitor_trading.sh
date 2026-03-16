@@ -1,14 +1,32 @@
 #!/bin/bash
 # 트레이딩 시스템 모니터 - 오전 7시까지 5분마다 체크
-API_URL="http://localhost:9501"
-LOG_FILE="/Users/kimtaekyu/Documents/Develop_Fold/Secret_Project/Stock_Trading/logs/monitor.log"
 PROJECT_DIR="/Users/kimtaekyu/Documents/Develop_Fold/Secret_Project/Stock_Trading"
+LOG_FILE="$PROJECT_DIR/logs/monitor.log"
+PORT_FILE="$PROJECT_DIR/data/server_port.txt"
+
+# 포트 파일에서 서버 포트를 읽는다. 없으면 9500을 반환한다.
+read_port() {
+    if [ -f "$PORT_FILE" ]; then
+        local p
+        p=$(cat "$PORT_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$p" ] && [ "$p" -ge 9500 ] && [ "$p" -le 9505 ] 2>/dev/null; then
+            echo "$p"
+            return
+        fi
+    fi
+    echo "9500"
+}
+
+API_URL="http://localhost:$(read_port)"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 check_and_fix() {
+    # 포트 파일을 다시 읽어 갱신한다 (서버 재시작 시 포트 변경 대응).
+    API_URL="http://localhost:$(read_port)"
+
     # 1. 프로세스 생존 체크
     PROC=$(ps aux | grep "python -m src.main" | grep -v grep | wc -l | tr -d ' ')
     if [ "$PROC" -eq "0" ]; then

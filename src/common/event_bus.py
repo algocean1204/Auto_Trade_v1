@@ -71,8 +71,16 @@ class EventBus:
         self._handlers: dict[str, list[EventHandler]] = defaultdict(list)
 
     def subscribe(self, event_type: str, handler: EventHandler) -> None:
-        """이벤트 타입에 핸들러를 등록한다."""
-        self._handlers[event_type].append(handler)
+        """이벤트 타입에 핸들러를 등록한다. 중복 등록은 무시한다."""
+        handlers = self._handlers[event_type]
+        if handler in handlers:
+            _logger.debug(
+                "핸들러 이미 등록됨 (건너뜀): %s -> %s",
+                event_type,
+                getattr(handler, "__name__", str(handler)),
+            )
+            return
+        handlers.append(handler)
         _logger.debug(
             "이벤트 구독 등록: %s -> %s",
             event_type,

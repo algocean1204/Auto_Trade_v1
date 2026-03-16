@@ -84,7 +84,7 @@ class WriteResult(BaseModel):
 
 
 class PublishResult(BaseModel):
-    """Redis 발행 결과이다."""
+    """캐시 발행 결과이다."""
 
     published: bool
     channel: str

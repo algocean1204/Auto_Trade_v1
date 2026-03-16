@@ -77,7 +77,7 @@ async def health_check() -> HealthResponse:
 async def system_status() -> SystemStatusResponse:
     """종합 시스템 상태를 반환한다.
 
-    Claude AI, KIS API, Database(PostgreSQL), Redis의 연결 상태를 실시간 점검한다.
+    Claude AI, KIS API, Database(SQLite), 캐시의 연결 상태를 실시간 점검한다.
     Flutter SystemStatus.fromJson이 기대하는 형식으로 응답한다.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -112,7 +112,7 @@ async def system_status() -> SystemStatusResponse:
         except Exception as exc:
             _logger.debug("KIS API 상태 점검 실패: %s", exc)
 
-    # Database(PostgreSQL) 상태 점검
+    # Database(SQLite) 상태 점검
     db_item = ServiceHealthItem(ok=False, status="OFFLINE", connected=False)
     if _system is not None:
         try:
@@ -126,37 +126,94 @@ async def system_status() -> SystemStatusResponse:
         except Exception as exc:
             _logger.debug("Database 상태 점검 실패: %s", exc)
 
-    # Redis 상태 점검
-    redis_item = ServiceHealthItem(ok=False, status="OFFLINE", connected=False)
+    # 캐시 상태 점검 (인메모리)
+    cache_item = ServiceHealthItem(ok=False, status="OFFLINE", connected=False)
     if _system is not None:
         try:
             cache = _system.components.cache
-            # redis-py의 ping()으로 실제 연결을 확인한다
-            redis_client = getattr(cache, "_client", None)
-            if redis_client is not None:
-                await redis_client.ping()
-                redis_item = ServiceHealthItem(
-                    ok=True,
-                    status="NORMAL",
-                    connected=True,
-                )
-            else:
-                # _client가 없으면 cache 객체 존재만으로 판단한다
-                redis_item = ServiceHealthItem(
-                    ok=True,
-                    status="DEGRADED",
-                    connected=True,
-                )
+            await cache.ping()
+            cache_item = ServiceHealthItem(
+                ok=True,
+                status="NORMAL",
+                connected=True,
+            )
         except Exception as exc:
-            _logger.debug("Redis 상태 점검 실패: %s", exc)
+            _logger.debug("캐시 상태 점검 실패: %s", exc)
+
+    # 토큰/API 사용량 quota 집계 (Flutter SystemStatus.fromJson 호환)
+    max_calls = 225
+    calls_in_window = 0
+    quota: dict = {
+        "calls_in_window": 0,
+        "max_calls": max_calls,
+        "mode": "api",
+        "remaining": max_calls,
+        "usage_pct": 0.0,
+        "window_hours": 5,
+        "can_call": True,
+    }
+    try:
+        from src.common.token_tracker import get_summary as get_token_summary
+
+        summary = get_token_summary()
+        combined = summary.get("combined", {})
+        calls_in_window = combined.get("total_calls", 0)
+        remaining = max_calls - calls_in_window
+        quota["calls_in_window"] = calls_in_window
+        quota["remaining"] = max(remaining, 0)
+        quota["usage_pct"] = round(calls_in_window / max_calls * 100, 2) if max_calls > 0 else 0.0
+        quota["can_call"] = remaining > 0
+    except Exception as exc:
+        _logger.debug("토큰 사용량 조회 실패 (기본값 사용): %s", exc)
+
+    # KIS 브로커 호출 횟수 (Flutter QuotaInfo.fromJson 호환)
+    quota["kis_calls_today"] = 0
+    quota["kis_limit"] = 1000
+    if _system is not None:
+        try:
+            broker = _system.components.broker
+            if broker is not None:
+                quota["kis_calls_today"] = getattr(broker, "_call_count", 0)
+                quota["kis_limit"] = getattr(broker, "_rate_limit", 1000)
+        except Exception as exc:
+            _logger.debug("KIS 호출 횟수 조회 실패 (기본값 사용): %s", exc)
+
+    # 안전 모듈 상태 조회 (Flutter SafetyInfo.fromJson 호환)
+    safety: dict = {
+        "is_shutdown": False,
+        "daily_trades": 0,
+        "max_daily_trades": 30,
+        "daily_pnl_pct": 0.0,
+        "max_daily_loss_pct": -5.0,
+        "stop_loss_pct": -2.0,
+        "max_hold_days": 5,
+        "vix_shutdown_threshold": 35,
+    }
+    if _system is not None:
+        try:
+            hard_safety = _system.features.get("hard_safety")
+            if hard_safety is not None:
+                # HardSafety에서 셧다운 상태를 가져온다
+                safety["is_shutdown"] = getattr(hard_safety, "_shutdown", False)
+                safety["daily_trades"] = getattr(hard_safety, "_daily_trade_count", 0)
+                safety["max_daily_trades"] = getattr(hard_safety, "_max_daily_trades", 30)
+                safety["daily_pnl_pct"] = getattr(hard_safety, "_daily_pnl_pct", 0.0)
+                safety["max_daily_loss_pct"] = getattr(hard_safety, "_max_daily_loss_pct", -5.0)
+                safety["stop_loss_pct"] = getattr(hard_safety, "_stop_loss_pct", -2.0)
+                safety["max_hold_days"] = getattr(hard_safety, "_max_hold_days", 5)
+                safety["vix_shutdown_threshold"] = getattr(hard_safety, "_vix_threshold", 35)
+        except Exception as exc:
+            _logger.debug("안전 모듈 상태 조회 실패 (기본값 사용): %s", exc)
 
     return SystemStatusResponse(
         claude=claude_item,
         kis=kis_item,
         database=db_item,
-        redis=redis_item,
+        cache=cache_item,
         fallback=False,
         timestamp=now_iso,
+        quota=quota,
+        safety=safety,
     )
 
 

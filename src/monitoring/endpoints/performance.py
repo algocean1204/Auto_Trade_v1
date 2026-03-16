@@ -4,12 +4,15 @@
 """
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from src.common.logger import get_logger
+from src.db.models import DailyPnlLog, FeedbackReport
 
 if TYPE_CHECKING:
     from src.orchestration.init.dependency_injector import InjectedSystem
@@ -53,6 +56,86 @@ def set_performance_deps(system: InjectedSystem) -> None:
     _logger.info("PerformanceEndpoints 의존성 주입 완료")
 
 
+async def _build_summary_from_db() -> dict[str, Any] | None:
+    """DB daily_pnl_log + feedback_reports에서 성과 요약을 생성한다."""
+    if _system is None:
+        return None
+    try:
+        db = _system.components.db
+        async with db.get_session() as session:
+            # daily_pnl_log에서 총 PnL/수익률 계산
+            stmt = select(DailyPnlLog).order_by(DailyPnlLog.date.desc())
+            result = await session.execute(stmt)
+            pnl_rows = result.scalars().all()
+
+            # feedback_reports에서 거래 통계 계산
+            stmt2 = select(FeedbackReport).order_by(
+                FeedbackReport.report_date.desc()
+            )
+            result2 = await session.execute(stmt2)
+            reports = result2.scalars().all()
+
+        if not pnl_rows and not reports:
+            return None
+
+        total_pnl = sum(r.pnl_amount or 0 for r in pnl_rows)
+        total_pnl_pct = sum(r.pnl_pct or 0 for r in pnl_rows)
+
+        # 피드백 리포트에서 거래 수/승률 합산
+        total_trades = 0
+        wins = 0
+        for report in reports:
+            content = report.content
+            if isinstance(content, str):
+                content = json.loads(content)
+            if isinstance(content, dict):
+                summary = content.get("summary", {})
+                total_trades += summary.get("total_trades", 0)
+                wins += summary.get("winning_trades", 0)
+
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+
+        return {
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pnl_pct, 4),
+            "today_pnl": pnl_rows[0].pnl_amount if pnl_rows else 0.0,
+            "win_rate": round(win_rate, 2),
+            "total_trades": total_trades,
+            "message": "DB 기반 요약",
+        }
+    except Exception:
+        _logger.warning("DB에서 성과 요약 생성 실패")
+        return None
+
+
+async def _build_daily_from_db(limit: int) -> list[dict[str, Any]]:
+    """DB daily_pnl_log에서 일별 성과 목록을 생성한다."""
+    if _system is None:
+        return []
+    try:
+        db = _system.components.db
+        async with db.get_session() as session:
+            stmt = (
+                select(DailyPnlLog)
+                .order_by(DailyPnlLog.date.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+        return [
+            {
+                "date": r.date,
+                "pnl": r.pnl_amount or 0.0,
+                "pnl_pct": r.pnl_pct or 0.0,
+                "equity": r.equity or 0.0,
+            }
+            for r in rows
+        ]
+    except Exception:
+        _logger.warning("DB에서 일별 성과 조회 실패")
+        return []
+
+
 @performance_router.get("/summary", response_model=PerformanceSummaryResponse)
 async def get_performance_summary() -> PerformanceSummaryResponse:
     """성과 요약을 반환한다."""
@@ -72,6 +155,10 @@ async def get_performance_summary() -> PerformanceSummaryResponse:
                 max_drawdown=cached.get("max_drawdown", 0.0),
                 message=cached.get("message", ""),
             )
+        # 캐시 미스 시 DB fallback
+        db_summary = await _build_summary_from_db()
+        if db_summary:
+            return PerformanceSummaryResponse(**db_summary)
         return PerformanceSummaryResponse(message="성과 데이터가 없다")
     except HTTPException:
         raise
@@ -91,7 +178,11 @@ async def get_daily_performance(
         cache = _system.components.cache
         cached = await cache.read_json("performance:daily")
         data = cached if isinstance(cached, list) else []
-        return DailyPerformanceResponse(daily=data[:limit])
+        if data:
+            return DailyPerformanceResponse(daily=data[:limit])
+        # 캐시 미스 시 DB fallback
+        db_daily = await _build_daily_from_db(limit)
+        return DailyPerformanceResponse(daily=db_daily)
     except HTTPException:
         raise
     except Exception:

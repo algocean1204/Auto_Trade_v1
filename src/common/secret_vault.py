@@ -14,8 +14,8 @@ from dotenv import dotenv_values
 
 _instance: SecretProvider | None = None
 
-# 필수 키이다. DATABASE_URL/REDIS_URL은 개별 변수에서 자동 조합 후 검증한다
-_REQUIRED_KEYS: list[str] = ["DATABASE_URL", "REDIS_URL", "TELEGRAM_BOT_TOKEN"]
+# 필수 키이다. DATABASE_URL은 미설정 시 SQLite 기본값을 자동 부여한다
+_REQUIRED_KEYS: list[str] = ["TELEGRAM_BOT_TOKEN"]
 
 # KIS 키 쌍 -- 최소 하나의 쌍이 존재해야 한다
 _KIS_KEY_PAIRS: list[tuple[str, str]] = [
@@ -23,14 +23,14 @@ _KIS_KEY_PAIRS: list[tuple[str, str]] = [
     ("KIS_REAL_APP_KEY", "KIS_REAL_APP_SECRET"),
 ]
 
-# SecretVault가 관리하는 전체 시크릿 키 목록이다 (34개)
+# SecretVault가 관리하는 전체 시크릿 키 목록이다 (23개)
+# 캐시는 인메모리 구현을 사용한다 (외부 의존성 없음)
 _MANAGED_KEYS: list[str] = [
     "KIS_VIRTUAL_APP_KEY", "KIS_VIRTUAL_APP_SECRET",
     "KIS_REAL_APP_KEY", "KIS_REAL_APP_SECRET",
     "KIS_VIRTUAL_ACCOUNT", "KIS_REAL_ACCOUNT", "KIS_ACCOUNT",
     "KIS_HTS_ID", "KIS_MODE",
-    "DATABASE_URL", "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
-    "REDIS_URL", "REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD",
+    "DATABASE_URL",
     "ANTHROPIC_API_KEY", "CLAUDE_MODE",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "TELEGRAM_BOT_TOKEN_2", "TELEGRAM_CHAT_ID_2",
@@ -48,25 +48,14 @@ def _mask_value(value: str) -> str:
 
 
 def _build_composite_secrets(raw: dict[str, str | None]) -> dict[str, str | None]:
-    """개별 DB/Redis 환경변수로부터 복합 URL을 자동 생성한다."""
+    """DATABASE_URL 기본값 부여를 수행한다.
+
+    DATABASE_URL이 미설정이면 로컬 SQLite 경로를 기본값으로 설정한다.
+    """
+    # DATABASE_URL 미설정 시 SQLite 기본값을 사용한다
     if not raw.get("DATABASE_URL"):
-        host = raw.get("DB_HOST")
-        port = raw.get("DB_PORT", "5432")
-        user = raw.get("DB_USER")
-        pw = raw.get("DB_PASSWORD")
-        name = raw.get("DB_NAME")
-        if all([host, user, pw, name]):
-            raw["DATABASE_URL"] = (
-                f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{name}"
-            )
-    if not raw.get("REDIS_URL"):
-        r_host = raw.get("REDIS_HOST", "localhost")
-        r_port = raw.get("REDIS_PORT", "6379")
-        r_pass = raw.get("REDIS_PASSWORD")
-        if r_pass:
-            raw["REDIS_URL"] = f"redis://:{r_pass}@{r_host}:{r_port}/0"
-        else:
-            raw["REDIS_URL"] = f"redis://{r_host}:{r_port}/0"
+        raw["DATABASE_URL"] = "sqlite+aiosqlite:///data/trading.db"
+
     return raw
 
 

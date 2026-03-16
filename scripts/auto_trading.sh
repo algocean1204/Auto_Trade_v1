@@ -17,9 +17,25 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$HOME/Library/Logs/trading"
 ENV_FILE="$PROJECT_ROOT/.env"
-SERVER_URL="http://localhost:9501"
+PORT_FILE="$PROJECT_ROOT/data/server_port.txt"
+DEFAULT_PORT=9500
 STOP_HOUR=6
 STOP_MINUTE=30
+
+# 포트 파일에서 현재 서버 포트를 읽는다. 파일이 없으면 기본값을 반환한다.
+read_port() {
+    if [ -f "$PORT_FILE" ]; then
+        local port
+        port=$(cat "$PORT_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$port" ] && [ "$port" -ge 9500 ] 2>/dev/null && [ "$port" -le 9505 ] 2>/dev/null; then
+            echo "$port"
+            return
+        fi
+    fi
+    echo "$DEFAULT_PORT"
+}
+
+SERVER_URL="http://localhost:$(read_port)"
 
 # API 키를 .env 파일에서 읽는다
 API_KEY=""
@@ -87,18 +103,21 @@ wait_for_server() {
     log "서버 상태 확인 중 (${SERVER_URL})..."
 
     while [ $retry -lt $max_retries ]; do
+        # 포트 파일이 갱신될 수 있으므로 매번 다시 읽는다
+        SERVER_URL="http://localhost:$(read_port)"
+
         # status 엔드포인트는 인증 불필요하다
         local response
         response=$(curl -s --max-time 5 "${SERVER_URL}/api/trading/status" 2>/dev/null) || true
 
         if [ -n "$response" ] && echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-            log "서버 응답 확인 완료"
+            log "서버 응답 확인 완료 (${SERVER_URL})"
             return 0
         fi
 
         retry=$((retry + 1))
         if [ $((retry % 6)) -eq 0 ]; then
-            log "서버 대기 중... ($retry/$max_retries, 경과: $((retry * 5))초)"
+            log "서버 대기 중... ($retry/$max_retries, 경과: $((retry * 5))초, URL: ${SERVER_URL})"
         fi
         sleep 5
     done

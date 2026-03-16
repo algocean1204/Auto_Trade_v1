@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import text
+
 from src.common.cache_gateway import CacheClient
 from src.common.database_gateway import SessionFactory
 from src.common.logger import get_logger
@@ -11,7 +13,7 @@ from src.optimization.models import DateRange, PreparedData
 
 logger = get_logger(__name__)
 
-# Redis 캐시 키 접두사이다
+# 캐시 키 접두사이다
 _CACHE_PREFIX: str = "ml:prepared_data"
 _CACHE_TTL: int = 3600
 
@@ -21,13 +23,16 @@ async def _fetch_trades(
 ) -> list[dict]:
     """거래 기록을 DB에서 조회한다."""
     async with session_factory.get_session() as session:
+        # 명시적 컬럼 나열 — 스키마 변경에 안전하다 (Trade 모델 기준)
         query = (
-            "SELECT * FROM trades "
+            "SELECT id, ticker, side, quantity, price, "
+            "order_id, reason, created_at "
+            "FROM trades "
             "WHERE created_at BETWEEN :start AND :end "
             "ORDER BY created_at"
         )
         result = await session.execute(
-            __import__("sqlalchemy").text(query),
+            text(query),
             {"start": date_range.start, "end": date_range.end},
         )
         rows = result.mappings().all()
@@ -37,15 +42,17 @@ async def _fetch_trades(
 async def _fetch_indicators(
     session_factory: SessionFactory, date_range: DateRange,
 ) -> list[dict]:
-    """기술 지표 데이터를 DB에서 조회한다."""
+    """기술 지표 데이터를 indicator_history 테이블에서 조회한다."""
     async with session_factory.get_session() as session:
         query = (
-            "SELECT * FROM indicators "
+            "SELECT id, ticker, indicator_name, value, "
+            "metadata, recorded_at "
+            "FROM indicator_history "
             "WHERE recorded_at BETWEEN :start AND :end "
             "ORDER BY recorded_at"
         )
         result = await session.execute(
-            __import__("sqlalchemy").text(query),
+            text(query),
             {"start": date_range.start, "end": date_range.end},
         )
         rows = result.mappings().all()
@@ -57,7 +64,7 @@ def _merge_and_clean(
 ) -> list[dict]:
     """거래와 지표 데이터를 병합하고 결측치를 제거한다."""
     merged: list[dict] = []
-    # 지표를 시간 기준 dict로 변환한다
+    # 지표를 시간 기준 dict로 변환한다 (indicator_history.recorded_at 사용)
     ind_map: dict[str, dict] = {}
     for ind in indicators:
         key = str(ind.get("recorded_at", ""))[:16]
@@ -83,7 +90,7 @@ def _merge_and_clean(
 async def _try_cache(
     cache: CacheClient | None, key: str,
 ) -> PreparedData | None:
-    """Redis 캐시에서 이전 결과를 조회한다."""
+    """캐시에서 이전 결과를 조회한다."""
     if cache is None:
         return None
     raw = await cache.read_json(key)
@@ -96,7 +103,7 @@ async def _try_cache(
 async def _save_cache(
     cache: CacheClient | None, key: str, result: PreparedData,
 ) -> None:
-    """결과를 Redis 캐시에 저장한다."""
+    """결과를 캐시에 저장한다."""
     if cache is None:
         return
     await cache.write_json(
@@ -112,7 +119,7 @@ async def prepare_data(
     """학습 데이터를 조회하고 정제하여 반환한다.
 
     거래 기록과 기술 지표를 DB에서 조회한 뒤 병합/정제한다.
-    Redis 캐시가 있으면 우선 조회하여 중복 쿼리를 방지한다.
+    캐시가 있으면 우선 조회하여 중복 쿼리를 방지한다.
     """
     cache_key = f"{_CACHE_PREFIX}:{date_range.start}:{date_range.end}"
 

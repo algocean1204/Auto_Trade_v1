@@ -5,6 +5,7 @@ import '../models/trade_models.dart';
 import '../models/dashboard_models.dart';
 import '../models/scalper_tape_models.dart';
 import '../constants/api_constants.dart';
+import 'server_launcher.dart';
 
 // WebSocket 연결 상태를 나타낸다.
 enum WsConnectionState { disconnected, connecting, connected, error }
@@ -13,7 +14,7 @@ enum WsConnectionState { disconnected, connecting, connected, error }
 /// V2 백엔드의 채널 형식: ws://host:8000/ws/{channel}
 /// 지원 채널: dashboard, positions, trades, alerts, orderflow
 class WebSocketService {
-  final String baseUrl;
+  String baseUrl;
 
   // 엔드포인트별 독립 채널 맵 (공유 채널 버그 수정)
   final Map<String, WebSocketChannel?> _channels = {};
@@ -21,7 +22,16 @@ class WebSocketService {
   final Map<String, int> _reconnectAttempts = {};
   final Map<String, WsConnectionState> _connectionStates = {};
 
-  WebSocketService({this.baseUrl = 'ws://localhost:9501'});
+  WebSocketService({String? baseUrl})
+      : baseUrl = baseUrl ?? ServerLauncher.instance.wsBaseUrl;
+
+  /// ServerLauncher가 감지한 포트로 baseUrl을 갱신한다.
+  void refreshBaseUrl() {
+    final detected = ServerLauncher.instance.wsBaseUrl;
+    if (detected != baseUrl) {
+      baseUrl = detected;
+    }
+  }
 
   // 지수 백오프 딜레이를 계산한다 (1s, 2s, 4s, 8s, 16s, max 30s)
   Duration _backoffDelay(String endpoint) {
@@ -71,9 +81,29 @@ class WebSocketService {
       channel.stream.listen(
         (message) {
           try {
-            final data = json.decode(message as String) as Map<String, dynamic>;
+            final decoded = json.decode(message as String);
+
+            // 백엔드 응답 래퍼 처리: {channel: "xxx", data: [...], count: N} 형식인 경우
+            // data 필드를 추출하고, 래퍼가 없으면 원본을 그대로 사용한다
+            final payload = (decoded is Map && decoded.containsKey('data'))
+                ? decoded['data']  // 래핑된 응답: data 필드 추출
+                : decoded;         // 래핑 없는 응답: 직접 사용
+
+            // data가 null이면 아직 데이터가 없는 상태이므로 무시한다
+            if (payload == null) return;
+
             if (!controller.isClosed) {
-              controller.add(fromJson(data));
+              if (payload is List) {
+                // 리스트 페이로드: 각 항목을 개별 모델로 변환하여 emit 한다
+                for (final item in payload) {
+                  if (item is Map<String, dynamic>) {
+                    controller.add(fromJson(item));
+                  }
+                }
+              } else if (payload is Map<String, dynamic>) {
+                // 단일 객체 페이로드: 그대로 변환한다
+                controller.add(fromJson(payload));
+              }
             }
           } catch (e) {
             if (!controller.isClosed) {
@@ -160,9 +190,6 @@ class WebSocketService {
   }
 
   /// 크롤 진행 상황 스트림을 반환한다.
-  /// TODO(v2): V2 백엔드에 /ws/crawl/{taskId} 채널이 없다.
-  /// 뉴스 수집 진행 상황은 POST /api/news/collect-and-send 응답으로 처리한다.
-  /// 하위 호환성을 위해 메서드를 유지하며, 연결 시도는 그대로 수행한다.
   Stream<CrawlProgress> getCrawlProgress(String taskId) {
     // 백엔드 WebSocket은 {"type": "crawl_progress", "data": {...이벤트...}} 형식으로 전송한다.
     // 실제 이벤트 데이터가 'data' 키 안에 있으므로 언래핑한다.

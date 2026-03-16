@@ -1,4 +1,4 @@
-"""기사 DB 저장 -- 분류된 뉴스를 PostgreSQL articles 테이블에 영구 저장한다."""
+"""기사 DB 저장 -- 분류된 뉴스를 articles 테이블에 영구 저장한다."""
 from __future__ import annotations
 
 import hashlib
@@ -15,16 +15,17 @@ logger = get_logger(__name__)
 async def persist_articles(
     db: SessionFactory,
     classified: list[dict],
-) -> int:
+) -> tuple[int, int]:
     """ClassifiedNews dict 리스트를 articles 테이블에 저장한다.
 
-    URL 기준 UPSERT (중복 URL은 건너뜀). 저장 건수를 반환한다.
+    URL 기준 UPSERT (중복 URL은 건너뜀). (저장 건수, 실패 건수) 튜플을 반환한다.
     기사별 독립 세션을 사용하여 개별 실패가 다른 기사에 영향을 주지 않는다.
     """
     if not classified:
-        return 0
+        return 0, 0
 
     saved = 0
+    failed = 0
     for item in classified:
         url = item.get("url", "")
         if not url:
@@ -55,7 +56,8 @@ async def persist_articles(
                 session.add(article)
             saved += 1
         except Exception as exc:
+            failed += 1
             logger.warning("[Step 3.5] 기사 저장 실패 (건너뜀): %s -- %s", url[:80], exc)
 
-    logger.info("[Step 3.5] DB 저장 완료: %d/%d건", saved, len(classified))
-    return saved
+    logger.info("[Step 3.5] DB 저장 완료: 성공=%d, 실패=%d, 전체=%d건", saved, failed, len(classified))
+    return saved, failed

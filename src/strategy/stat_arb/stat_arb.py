@@ -1,8 +1,12 @@
-"""F4 통계적 차익거래 -- Z-Score 기반 페어 스프레드 신호를 생성한다."""
+"""F4 통계적 차익거래 -- Z-Score 기반 페어 스프레드 신호를 생성한다.
+
+M-7: 자동 청산 조건을 추가한다 (평균회귀 완료, 스톱로스, 시간 제한).
+"""
 from __future__ import annotations
 
 import json
 import math
+from datetime import datetime, timezone
 
 from src.common.cache_gateway import CacheClient
 from src.common.logger import get_logger
@@ -22,6 +26,14 @@ _PAIRS: list[tuple[str, str]] = [
 # Z-Score 임계값
 _Z_LONG_THRESHOLD = -2.0
 _Z_SHORT_THRESHOLD = 2.0
+
+# 청산 Z-Score 임계값 (M-7)
+_Z_EXIT_MEAN_REVERSION = 0.5     # 평균회귀 완료 (|Z| <= 0.5)
+_Z_EXIT_STOP_LOSS = 3.0          # 발산 심화 스톱로스 (|Z| >= 3.0)
+_EXIT_MAX_HOLDING_DAYS = 5       # 최대 보유 기간 (일)
+
+# 진입 시각 캐시 키 접두사
+_ENTRY_TIME_PREFIX = "stat_arb:entry_time:"
 
 # 스프레드 이력 캐시 키 접두사
 _CACHE_PREFIX = "stat_arb:spread:"
@@ -64,7 +76,13 @@ def _compute_stats(history: list[float]) -> tuple[float, float]:
 
 
 class StatArb:
-    """Z-Score 기반 통계적 차익거래 신호를 생성한다."""
+    """Z-Score 기반 통계적 차익거래 신호를 생성한다.
+
+    M-7: 자동 청산 조건을 추가하여 포지션 관리를 완성한다.
+    - 평균회귀 완료: |Z| <= 0.5
+    - 발산 스톱로스: |Z| >= 3.0
+    - 시간 제한: 5일 초과 보유
+    """
 
     async def evaluate(
         self,
@@ -82,6 +100,84 @@ class StatArb:
                 signals.append(signal)
 
         return signals
+
+    async def should_exit_pair(
+        self,
+        pair_key: str,
+        current_z_score: float,
+        cache: CacheClient,
+    ) -> tuple[bool, str]:
+        """StatArb 포지션의 청산 조건을 검사한다.
+
+        Args:
+            pair_key: 페어 키 (예: "QQQ/QLD")
+            current_z_score: 현재 Z-Score
+            cache: 캐시 클라이언트
+
+        Returns:
+            (청산 여부, 사유)
+        """
+        # 조건 1: 평균회귀 완료 -- Z-Score가 ±0.5 이내로 수렴했다
+        if abs(current_z_score) <= _Z_EXIT_MEAN_REVERSION:
+            logger.info(
+                "StatArb 청산(평균회귀 완료): %s Z=%.2f",
+                pair_key, current_z_score,
+            )
+            return True, f"평균회귀 완료 (Z={current_z_score:.2f})"
+
+        # 조건 2: 발산 스톱로스 -- Z-Score가 ±3.0을 초과하여 발산이 심화되었다
+        if abs(current_z_score) >= _Z_EXIT_STOP_LOSS:
+            logger.warning(
+                "StatArb 청산(발산 스톱로스): %s Z=%.2f",
+                pair_key, current_z_score,
+            )
+            return True, f"발산 스톱로스 (Z={current_z_score:.2f})"
+
+        # 조건 3: 시간 제한 -- 5일 초과 보유 시 강제 청산한다
+        try:
+            entry_key = f"{_ENTRY_TIME_PREFIX}{pair_key}"
+            raw = await cache.read(entry_key)
+            if raw is not None:
+                entry_time = datetime.fromisoformat(raw)
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                holding_days = (datetime.now(tz=timezone.utc) - entry_time).days
+                if holding_days >= _EXIT_MAX_HOLDING_DAYS:
+                    logger.info(
+                        "StatArb 청산(시간 제한): %s %d일 보유",
+                        pair_key, holding_days,
+                    )
+                    return True, f"시간 제한 ({holding_days}일 >= {_EXIT_MAX_HOLDING_DAYS}일)"
+        except Exception as exc:
+            logger.debug("StatArb 진입 시각 조회 실패 (무시): %s", exc)
+
+        return False, ""
+
+    async def record_entry_time(
+        self, pair_key: str, cache: CacheClient,
+    ) -> None:
+        """StatArb 진입 시각을 캐시에 기록한다."""
+        try:
+            entry_key = f"{_ENTRY_TIME_PREFIX}{pair_key}"
+            # 이미 기록된 진입 시각이 없을 때만 저장한다
+            existing = await cache.read(entry_key)
+            if existing is None:
+                now_str = datetime.now(tz=timezone.utc).isoformat()
+                await cache.write(
+                    entry_key, now_str,
+                    ttl=_EXIT_MAX_HOLDING_DAYS * 86400 + 86400,
+                )
+        except Exception as exc:
+            logger.warning("StatArb 진입 시각 기록 실패 — 이 페어는 시간 제한 미적용: %s", exc)
+
+    async def clear_entry_time(
+        self, pair_key: str, cache: CacheClient,
+    ) -> None:
+        """StatArb 청산 후 진입 시각을 삭제한다."""
+        try:
+            await cache.delete(f"{_ENTRY_TIME_PREFIX}{pair_key}")
+        except Exception:
+            pass
 
     async def _evaluate_pair(
         self,

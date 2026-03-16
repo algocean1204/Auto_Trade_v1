@@ -1,16 +1,20 @@
 """F7.7 NewsEndpoints -- 뉴스 수집/조회 API이다.
 
 뉴스 날짜 목록, 일별 뉴스, 기사 상세, 요약, 수동 수집을 제공한다.
+캐시 미스 시 DB(articles 테이블)에서 폴백 조회한다.
 """
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select, text
 
 from src.common.logger import get_logger
+from src.db.models import Article
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
@@ -80,6 +84,36 @@ class NewsCollectResponse(BaseModel):
     persisted_count: int = 0
 
 
+# ── DB 헬퍼 함수 ──
+
+
+def _article_to_dict(row: Article) -> dict[str, Any]:
+    """Article ORM 모델을 Flutter 호환 dict로 변환한다."""
+    pub_at = row.published_at
+    return {
+        "id": row.id,
+        "title": row.title or "",
+        "content": row.content or "",
+        "url": row.url or "",
+        "source": row.source or "",
+        "published_at": pub_at.isoformat() if pub_at else "",
+        "impact_score": row.impact_score or 0.0,
+        "impact": _score_to_impact(row.impact_score or 0.0),
+        "direction": row.direction or "neutral",
+        "category": row.category or "",
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+    }
+
+
+def _score_to_impact(score: float) -> str:
+    """impact_score를 high/medium/low 문자열로 변환한다."""
+    if score >= 0.7:
+        return "high"
+    if score >= 0.4:
+        return "medium"
+    return "low"
+
+
 def set_news_deps(system: InjectedSystem) -> None:
     """InjectedSystem을 주입한다."""
     global _system
@@ -96,6 +130,31 @@ async def get_news_dates(limit: int = 30) -> NewsDatesResponse:
         cache = _system.components.cache
         cached = await cache.read_json("news:dates")
         dates = cached if isinstance(cached, list) else []
+
+        # 캐시 미스 시 DB에서 날짜별 기사 수를 조회한다
+        if not dates:
+            db = _system.components.db
+            async with db.get_session() as session:
+                stmt = (
+                    select(
+                        func.date(Article.published_at).label("dt"),
+                        func.count().label("cnt"),
+                    )
+                    .where(Article.published_at.isnot(None))
+                    .group_by(text("dt"))
+                    .order_by(text("dt DESC"))
+                    .limit(limit)
+                )
+                result = await session.execute(stmt)
+                rows = result.all()
+                dates = [
+                    {"date": str(r.dt), "article_count": r.cnt}
+                    for r in rows
+                ]
+                # 조회 결과를 캐시에 저장한다 (1시간 TTL)
+                if dates:
+                    await cache.write_json("news:dates", dates, ttl=3600)
+
         return NewsDatesResponse(dates=dates[:limit])
     except HTTPException:
         raise
@@ -136,6 +195,32 @@ async def get_daily_news(
             if isinstance(raw, list):
                 articles = [_to_flutter_article(a) for a in raw]
 
+        # 캐시에도 없으면 DB에서 조회한다
+        if not articles:
+            db = _system.components.db
+            async with db.get_session() as session:
+                stmt = (
+                    select(Article)
+                    .where(func.date(Article.published_at) == target_date)
+                    .order_by(Article.published_at.desc())
+                )
+                result = await session.execute(stmt)
+                rows = result.scalars().all()
+                articles = [_article_to_dict(r) for r in rows]
+                # 날짜 미지정이고 오늘 결과가 없으면 최신 날짜의 기사를 조회한다
+                if not articles and not date:
+                    stmt_latest = (
+                        select(Article)
+                        .where(Article.published_at.isnot(None))
+                        .order_by(Article.published_at.desc())
+                        .limit(limit)
+                    )
+                    result = await session.execute(stmt_latest)
+                    rows = result.scalars().all()
+                    articles = [_article_to_dict(r) for r in rows]
+                    if articles:
+                        target_date = articles[0].get("published_at", "")[:10]
+
         # category 필터링
         if category:
             articles = [
@@ -154,7 +239,7 @@ async def get_daily_news(
         articles = articles[offset : offset + limit]
 
         return DailyNewsResponse(
-            date=date or "latest",
+            date=target_date if date or articles else "latest",
             articles=articles,
             total=total,
         )
@@ -181,7 +266,59 @@ async def get_news_summary(date: str | None = None) -> NewsSummaryResponse:
         cached = await cache.read_json(key)
         if cached and isinstance(cached, dict):
             return NewsSummaryResponse(**cached)
-        return NewsSummaryResponse(message="요약 데이터가 없다")
+
+        # 캐시 미스 시 DB에서 집계하여 요약을 생성한다
+        db = _system.components.db
+        async with db.get_session() as session:
+            if date:
+                stmt = (
+                    select(Article)
+                    .where(func.date(Article.published_at) == date)
+                    .order_by(Article.published_at.desc())
+                )
+            else:
+                # 최신 날짜를 먼저 찾는다
+                latest_stmt = (
+                    select(func.date(Article.published_at).label("dt"))
+                    .where(Article.published_at.isnot(None))
+                    .order_by(text("dt DESC"))
+                    .limit(1)
+                )
+                latest_result = await session.execute(latest_stmt)
+                latest_row = latest_result.scalar()
+                if latest_row is None:
+                    return NewsSummaryResponse(message="요약 데이터가 없다")
+                date = str(latest_row)
+                stmt = (
+                    select(Article)
+                    .where(func.date(Article.published_at) == date)
+                    .order_by(Article.published_at.desc())
+                )
+
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+            if not rows:
+                return NewsSummaryResponse(message="요약 데이터가 없다")
+
+            # 집계 생성
+            by_category = dict(Counter(r.category or "unknown" for r in rows))
+            by_source = dict(Counter(r.source or "unknown" for r in rows))
+            sentiment_dist = dict(Counter(r.direction or "neutral" for r in rows))
+            high_impact = [
+                _article_to_dict(r) for r in rows
+                if (r.impact_score or 0) >= 0.7
+            ][:10]
+
+            return NewsSummaryResponse(
+                date=date,
+                total_articles=len(rows),
+                by_category=by_category,
+                by_source=by_source,
+                sentiment_distribution=sentiment_dist,
+                high_impact_articles=high_impact,
+                message="",
+            )
     except HTTPException:
         raise
     except Exception:
@@ -195,6 +332,7 @@ async def get_article_detail(article_id: str) -> ArticleDetailResponse:
 
     1차: news:article:{id} 개별 캐시에서 조회한다.
     2차: news:daily:{today} 목록에서 id가 일치하는 기사를 검색한다.
+    3차: DB에서 id로 직접 조회한다.
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -213,11 +351,23 @@ async def get_article_detail(article_id: str) -> ArticleDetailResponse:
         if isinstance(daily, list):
             for item in daily:
                 if isinstance(item, dict) and item.get("id") == article_id:
-                    # 찾은 기사를 개별 캐시에도 저장한다 (다음 조회 시 1차에서 히트)
                     await cache.write_json(
                         f"news:article:{article_id}", item, ttl=7200,
                     )
                     return ArticleDetailResponse(article=item)
+
+        # 3차: DB에서 직접 조회한다
+        db = _system.components.db
+        async with db.get_session() as session:
+            stmt = select(Article).where(Article.id == article_id)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            if row is not None:
+                article_dict = _article_to_dict(row)
+                await cache.write_json(
+                    f"news:article:{article_id}", article_dict, ttl=7200,
+                )
+                return ArticleDetailResponse(article=article_dict)
 
         raise HTTPException(status_code=404, detail="기사를 찾을 수 없다")
     except HTTPException:
@@ -291,7 +441,7 @@ class ThemeListResponse(BaseModel):
 async def get_situations() -> SituationListResponse:
     """활성 상황 보고서 목록을 반환한다.
 
-    Redis에 캐시된 상황 보고서와 메타데이터를 조회한다.
+    캐시에 저장된 상황 보고서와 메타데이터를 조회한다.
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -334,7 +484,7 @@ async def get_situations() -> SituationListResponse:
 async def get_themes() -> ThemeListResponse:
     """뉴스 테마 목록을 반환한다.
 
-    Redis에 캐시된 반복 테마를 조회한다.
+    캐시에 저장된 반복 테마를 조회한다.
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
