@@ -9,6 +9,7 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from src.common.logger import get_logger
 
@@ -137,13 +138,20 @@ def _aggregate_by_hour(records: list[dict]) -> dict[int, dict]:
     }
 
 
+_ET = ZoneInfo("US/Eastern")
+
+
 def _extract_hour(ts_str: str) -> int:
-    """ISO 타임스탬프에서 ET 시간(0-23)을 추출한다. 파싱 실패 시 0."""
+    """ISO 타임스탬프에서 ET 시간(0-23)을 추출한다. 파싱 실패 시 0.
+
+    ZoneInfo("US/Eastern")을 사용하여 EDT/EST 서머타임을 자동 처리한다.
+    """
     try:
         dt = datetime.fromisoformat(ts_str)
-        # UTC → ET (대략 -5 또는 -4, 간이 -5h 적용)
-        et_hour = (dt.hour - 5) % 24
-        return et_hour
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        et_dt = dt.astimezone(_ET)
+        return et_dt.hour
     except (ValueError, TypeError):
         return 0
 

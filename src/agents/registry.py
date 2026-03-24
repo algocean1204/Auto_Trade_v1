@@ -8,9 +8,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.agents.agent_meta import AgentMeta
+from src.common.paths import get_project_root
 
-# 문서 디렉터리 경로이다.
-_DOCS_DIR: Path = Path(__file__).resolve().parent / "docs"
+def _docs_dir() -> Path:
+    """문서 디렉터리 경로를 반환한다. 번들 환경에서는 _MEIPASS 기준이다."""
+    return get_project_root() / "src" / "agents" / "docs"
 
 # ── AI 에이전트 (5개, Claude 페르소나) ──
 
@@ -241,10 +243,10 @@ def get_team_ids() -> tuple[str, ...]:
 
 def get_docs_dir() -> Path:
     """에이전트 문서 디렉터리 경로를 반환한다."""
-    return _DOCS_DIR
+    return _docs_dir()
 
 
 def get_agent_doc_path(agent_id: str) -> Path | None:
     """에이전트 .md 문서 경로를 반환한다. 파일이 없으면 None이다."""
-    path = _DOCS_DIR / f"{agent_id}.md"
+    path = _docs_dir() / f"{agent_id}.md"
     return path if path.is_file() else None

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
 from src.optimization.feedback.models import DailyFeedbackResult, UpdateResult
+
+if TYPE_CHECKING:
+    from src.optimization.rag.knowledge_manager import KnowledgeManager
 
 logger = get_logger(__name__)
 
@@ -20,7 +25,7 @@ def _build_summary_doc(result: DailyFeedbackResult) -> str:
     """요약 문서 텍스트를 생성한다."""
     summary = result.summary
     parts: list[str] = [
-        f"일일 거래 요약 ({datetime.now():%Y-%m-%d})",
+        f"일일 거래 요약 ({datetime.now(tz=ZoneInfo('Asia/Seoul')):%Y-%m-%d})",
         f"총 거래: {summary.get('total', 0)}건",
         f"승률: {summary.get('win_rate', 0):.1%}",
         f"총 PnL: ${summary.get('total_pnl', 0):.2f}",
@@ -35,7 +40,7 @@ def _build_lesson_docs(
 ) -> list[tuple[str, dict]]:
     """교훈 문서 목록을 생성한다."""
     docs: list[tuple[str, dict]] = []
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
 
     for i, lesson in enumerate(result.lessons):
         text = f"[{date_str}] 교훈 #{i + 1}: {lesson}"
@@ -54,7 +59,7 @@ def _build_improvement_docs(
 ) -> list[tuple[str, dict]]:
     """개선 제안 문서 목록을 생성한다."""
     docs: list[tuple[str, dict]] = []
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
 
     for i, imp in enumerate(result.improvements):
         text = f"[{date_str}] 개선 #{i + 1}: {imp}"
@@ -70,7 +75,7 @@ def _build_improvement_docs(
 
 def update_from_daily(
     daily_result: DailyFeedbackResult,
-    knowledge_manager: object,
+    knowledge_manager: KnowledgeManager,
 ) -> UpdateResult:
     """일일 피드백 결과를 RAG 지식베이스에 저장한다.
 
@@ -86,7 +91,7 @@ def update_from_daily(
     summary_text = _build_summary_doc(daily_result)
     summary_meta = {
         "category": _CAT_SUMMARY,
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"),
     }
     try:
         knowledge_manager.store_document(summary_text, summary_meta)

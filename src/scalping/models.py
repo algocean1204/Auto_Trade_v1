@@ -1,7 +1,7 @@
 """FS 스캘핑 -- 공용 모델이다."""
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ScalpingDecision(BaseModel):
@@ -9,7 +9,7 @@ class ScalpingDecision(BaseModel):
 
     safe_to_trade: bool
     adjusted_size: float
-    warnings: list[str] = []
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DepthAnalysis(BaseModel):
@@ -17,7 +17,7 @@ class DepthAnalysis(BaseModel):
 
     depth_score: float
     imbalance: float
-    support_levels: list[float] = []
+    support_levels: list[float] = Field(default_factory=list)
 
 
 class ImpactEstimate(BaseModel):

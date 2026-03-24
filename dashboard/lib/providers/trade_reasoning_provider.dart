@@ -14,6 +14,9 @@ class TradeReasoningProvider with ChangeNotifier {
   bool _isSubmittingFeedback = false;
   String? _error;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   TradeReasoningProvider(this._api);
 
   // ── Getters ──
@@ -32,7 +35,7 @@ class TradeReasoningProvider with ChangeNotifier {
   Future<void> loadDates() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final raw = await _api.getTradeReasoningDates();
@@ -46,7 +49,7 @@ class TradeReasoningProvider with ChangeNotifier {
       final dates = _dates;
       if (dates != null && dates.isNotEmpty && _selectedDate == null) {
         _isLoading = false;
-        notifyListeners();
+        _safeNotify();
         await selectDate(dates.first.date);
         return;
       }
@@ -54,7 +57,7 @@ class TradeReasoningProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -62,7 +65,7 @@ class TradeReasoningProvider with ChangeNotifier {
   Future<void> loadDaily(String date) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final raw = await _api.getTradeReasoningDaily(date);
@@ -76,7 +79,7 @@ class TradeReasoningProvider with ChangeNotifier {
       _trades = [];
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -85,11 +88,11 @@ class TradeReasoningProvider with ChangeNotifier {
     try {
       final raw = await _api.getTradeReasoningStats(date);
       _stats = TradeReasoningStats.fromJson(raw);
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       // 통계 로드 실패는 조용히 처리한다 (매매 목록은 계속 표시)
       _stats = null;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -99,7 +102,7 @@ class TradeReasoningProvider with ChangeNotifier {
     _selectedDate = date;
     _trades = null;
     _stats = null;
-    notifyListeners();
+    _safeNotify();
 
     await Future.wait([
       loadDaily(date),
@@ -115,7 +118,7 @@ class TradeReasoningProvider with ChangeNotifier {
     String? notes,
   }) async {
     _isSubmittingFeedback = true;
-    notifyListeners();
+    _safeNotify();
 
     try {
       await _api.submitTradeReasoningFeedback(tradeId, {
@@ -137,7 +140,7 @@ class TradeReasoningProvider with ChangeNotifier {
       return false;
     } finally {
       _isSubmittingFeedback = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -149,5 +152,16 @@ class TradeReasoningProvider with ChangeNotifier {
     _selectedDate = null;
     _error = null;
     await loadDates();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

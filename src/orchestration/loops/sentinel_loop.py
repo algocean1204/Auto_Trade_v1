@@ -6,7 +6,6 @@ urgent 신호 발생 시 Sonnet → Opus 3+1 팀 에스컬레이션 경로를 �
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timezone
 
 from src.analysis.sentinel.anomaly_detector import detect_anomalies
@@ -14,9 +13,19 @@ from src.analysis.sentinel.escalation import (
     emergency_opus_judgment,
     evaluate_anomaly,
 )
-from src.analysis.sentinel.models import AnomalyResult, SentinelState
+from src.analysis.sentinel.models import (
+    AnomalyResult,
+    EscalationResult,
+    SentinelState,
+)
 from src.common.logger import get_logger
+from src.common.telegram_gateway import escape_html
 from src.orchestration.init.dependency_injector import InjectedSystem
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.analysis.models import ComprehensiveReport
 
 logger = get_logger(__name__)
 
@@ -146,25 +155,28 @@ async def _run_single_scan(
         msg = f"센티넬 스캔 실패: {exc}"
         logger.error(msg)
         state.errors.append(msg)
+        # 에러 리스트 무한 성장 방지: 최대 100건만 유지한다
+        if len(state.errors) > 100:
+            state.errors = state.errors[-100:]
 
 
 async def _send_emergency_telegram(
     system: InjectedSystem,
     anomaly: AnomalyResult,
-    report: object,
+    report: ComprehensiveReport,
 ) -> None:
     """긴급 판단 결과를 텔레그램으로 전송한다. 모든 감지 신호를 포함한다."""
     try:
         telegram = system.components.telegram
 
         # 모든 신호를 포함한다 (M2 수정: 첫 번째만 아닌 전체)
-        signal_lines = [f"  • {s.detail}" for s in anomaly.signals]
+        signal_lines = [f"  • {escape_html(str(s.detail))}" for s in anomaly.signals]
         signals_text = "\n".join(signal_lines) if signal_lines else "N/A"
 
         recs = getattr(report, "recommendations", [])
-        recs_text = "\n".join(f"  → {r}" for r in recs[:3]) if recs else "N/A"
+        recs_text = "\n".join(f"  → {escape_html(str(r))}" for r in recs[:3]) if recs else "N/A"
         confidence = getattr(report, "confidence", 0.0)
-        risk_level = getattr(report, "risk_level", "unknown")
+        risk_level = escape_html(str(getattr(report, "risk_level", "unknown")))
 
         await telegram.send_text(
             f"🚨 센티넬 긴급 판단 (Opus 3+1 팀)\n\n"
@@ -200,7 +212,7 @@ async def _accumulate_watch_signals(
 async def _accumulate_priority_signals(
     system: InjectedSystem,
     anomaly: AnomalyResult,
-    escalation: object,
+    escalation: EscalationResult,
 ) -> None:
     """next_cycle로 판정된 신호를 캐시에 원자적으로 누적 저장한다."""
     new_entry = {

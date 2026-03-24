@@ -85,3 +85,21 @@ class ArticleDeduplicator:
             content_hash=article.content_hash,
             existing_url=None,
         )
+
+    async def warm_from_db(self, hashes: set[str]) -> int:
+        """DB의 기존 content_hash로 캐시를 예열한다.
+
+        서버 재시작 후 InMemoryCache가 비어있을 때 호출하여
+        이미 DB에 저장된 기사의 재크롤링을 방지한다.
+        이미 캐시에 존재하는 해시는 건너뛴다.
+        """
+        warmed = 0
+        for h in hashes:
+            key = _build_key(h)
+            existing = await self._cache.read(key)
+            if existing is None:
+                await self._cache.write(key, "db_warmed", ttl=_DEDUP_TTL)
+                warmed += 1
+        if warmed > 0:
+            logger.info("dedup 캐시 예열 완료: %d건 (DB 기반)", warmed)
+        return warmed

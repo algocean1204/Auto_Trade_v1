@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from src.common.event_bus import EventType, get_event_bus
 from src.common.logger import get_logger
 from src.common.market_clock import TimeInfo
+from src.common.telegram_gateway import escape_html
 from src.orchestration.init.dependency_injector import InjectedSystem
 
 logger = get_logger(__name__)
@@ -81,16 +82,28 @@ async def _step_weekly_performance(
     system: InjectedSystem,
     report: WeeklyReport,
 ) -> None:
-    """Step 1: 주간 트레이딩 성과를 분석한다 (FF.2)."""
+    """Step 1: 주간 트레이딩 성과를 분석한다 (FF.2).
+
+    trades:dates에서 최근 7일 날짜를 추출하고
+    trades:reasoning:{date}에서 각 날짜의 거래를 읽어 합산한다.
+    """
     try:
         from src.optimization.feedback.weekly_analysis import analyze_weekly
 
         cache = system.components.cache
-        weekly_data = await cache.read_json("trades:weekly") or {"trades": []}
+        # trades:dates에서 최근 7일 거래를 집계한다
+        all_dates: list[str] = await cache.read_json("trades:dates") or []
+        recent_dates = sorted(all_dates, reverse=True)[:7]
+        all_trades: list[dict] = []
+        for d in recent_dates:
+            day_trades = await cache.read_json(f"trades:reasoning:{d}")
+            if isinstance(day_trades, list):
+                all_trades.extend(day_trades)
+        weekly_data = {"trades": all_trades}
         result = analyze_weekly(weekly_data)
         report.win_rate = result.win_rate * 100  # 퍼센트로 변환한다
         report.total_pnl = result.total_pnl
-        report.trade_count = len(weekly_data.get("trades", []))
+        report.trade_count = len(all_trades)
         best = result.best_trade
         worst = result.worst_trade
         if best:
@@ -98,8 +111,8 @@ async def _step_weekly_performance(
         if worst:
             report.worst_trade = f"{worst.get('ticker', '?')} ${worst.get('pnl', 0):.2f}"
         logger.info(
-            "[주간 Step 1] 성과 분석 완료: 승률=%.1f%%, PnL=$%.2f",
-            report.win_rate, report.total_pnl,
+            "[주간 Step 1] 성과 분석 완료: 승률=%.1f%%, PnL=$%.2f, %d일 %d건",
+            report.win_rate, report.total_pnl, len(recent_dates), len(all_trades),
         )
     except Exception as exc:
         _record_error(report, 1, "성과 분석", exc)
@@ -169,16 +182,16 @@ def _format_weekly_message(report: WeeklyReport) -> str:
         f"거래: {report.trade_count}건",
     ]
     if report.best_trade:
-        lines.append(f"최고: {report.best_trade}")
+        lines.append(f"최고: {escape_html(str(report.best_trade))}")
     if report.worst_trade:
-        lines.append(f"최악: {report.worst_trade}")
+        lines.append(f"최악: {escape_html(str(report.worst_trade))}")
     lines.append(
         f"ML 재학습: {'완료' if report.model_retrained else '미실행'}"
     )
     if report.errors:
         lines.append(f"\n<b>에러 ({len(report.errors)}건):</b>")
         for err in report.errors[:5]:
-            lines.append(f"- {err}")
+            lines.append(f"- {escape_html(str(err))}")
     return "\n".join(lines)
 
 

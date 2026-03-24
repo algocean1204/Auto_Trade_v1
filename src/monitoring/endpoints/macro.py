@@ -9,7 +9,9 @@ import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+
+from src.monitoring.server.auth import verify_api_key
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
@@ -46,6 +48,8 @@ class MacroHistoryResponse(BaseModel):
     """FRED 시리즈 이력 응답 모델이다."""
 
     series_id: str
+    name: str = ""
+    frequency: str = ""
     data: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -189,7 +193,7 @@ def _compute_yoy_change(series: list[dict]) -> float | None:
         if year_ago == 0:
             return None
         return round((current / year_ago - 1) * 100, 1)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
@@ -201,8 +205,16 @@ def _compute_mom_change(series: list[dict]) -> float | None:
         current = float(series[0].get("value", 0))
         previous = float(series[1].get("value", 0))
         return round(current - previous, 2)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError):
         return None
+
+
+def _get_series_name(series_id: str) -> str:
+    """FRED 시리즈 ID에 대한 한국어 이름을 반환한다."""
+    for entry in _MACRO_SERIES:
+        if entry["id"] == series_id:
+            return entry["name"]
+    return series_id
 
 
 def set_macro_deps(system: InjectedSystem) -> None:
@@ -213,7 +225,7 @@ def set_macro_deps(system: InjectedSystem) -> None:
 
 
 @macro_router.get("/indicators", response_model=MacroIndicatorsResponse)
-async def get_macro_indicators() -> MacroIndicatorsResponse:
+async def get_macro_indicators(_auth: str = Depends(verify_api_key)) -> MacroIndicatorsResponse:
     """사용 가능한 거시 지표 목록을 반환한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -224,8 +236,9 @@ async def get_macro_indicators() -> MacroIndicatorsResponse:
 
 @macro_router.get("/history/{series_id}", response_model=MacroHistoryResponse)
 async def get_macro_history(
-    series_id: str,
-    limit: int = 30,
+    series_id: str = Path(..., pattern=r"^[A-Za-z0-9_]+$"),
+    limit: int = Query(default=30, ge=1, le=365),
+    _auth: str = Depends(verify_api_key),
 ) -> MacroHistoryResponse:
     """FRED 시리즈 이력 데이터를 반환한다."""
     if _system is None:
@@ -239,7 +252,11 @@ async def get_macro_history(
         data = sorted(data, key=lambda x: x.get("date", ""))
         # 최신 limit건만 반환한다 (정렬 후 뒤쪽이 최신이므로 뒤에서 자른다)
         data = data[-limit:] if len(data) > limit else data
-        return MacroHistoryResponse(series_id=series_id, data=data)
+        # Flutter FredHistoryData.fromJson이 name/frequency도 기대하므로 포함한다
+        series_name = _get_series_name(series_id)
+        return MacroHistoryResponse(
+            series_id=series_id, name=series_name, data=data,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -248,7 +265,7 @@ async def get_macro_history(
 
 
 @macro_router.get("/calendar", response_model=EconomicCalendarResponse)
-async def get_economic_calendar() -> EconomicCalendarResponse:
+async def get_economic_calendar(_auth: str = Depends(verify_api_key)) -> EconomicCalendarResponse:
     """경제 캘린더 이벤트를 반환한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -265,7 +282,7 @@ async def get_economic_calendar() -> EconomicCalendarResponse:
 
 
 @macro_router.get("/net-liquidity", response_model=NetLiquidityResponse)
-async def get_net_liquidity() -> NetLiquidityResponse:
+async def get_net_liquidity(_auth: str = Depends(verify_api_key)) -> NetLiquidityResponse:
     """Net Liquidity 현황을 반환한다. WALCL - TGA - RRP 수식이다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -293,7 +310,7 @@ async def get_net_liquidity() -> NetLiquidityResponse:
 
 
 @macro_router.get("/indicators/rich", response_model=RichMacroResponse)
-async def get_rich_macro_indicators() -> RichMacroResponse:
+async def get_rich_macro_indicators(_auth: str = Depends(verify_api_key)) -> RichMacroResponse:
     """Flutter 대시보드용 거시경제 지표 종합 데이터를 반환한다.
 
     VIX, Fear & Greed, 금리, CPI, 실업률, 국채 스프레드, 시장 레짐을
@@ -308,7 +325,7 @@ async def get_rich_macro_indicators() -> RichMacroResponse:
     # VIX 데이터 수집이다
     vix_data: dict[str, Any] = {}
     try:
-        vix_value: float = 20.0
+        vix_value: float = 19.0
         vix_fetcher = features.get("vix_fetcher")
         if vix_fetcher is not None:
             vix_value = await vix_fetcher.get_vix()  # type: ignore[union-attr]
@@ -321,8 +338,8 @@ async def get_rich_macro_indicators() -> RichMacroResponse:
                 prev_val = history[1].get("value") if isinstance(history[1], dict) else None
                 if prev_val is not None:
                     change_1d = round(vix_value - float(prev_val), 2)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("VIX 이전 값 캐시 조회 실패 (무시): %s", exc)
 
         vix_data = {
             "value": round(vix_value, 2),
@@ -347,8 +364,8 @@ async def get_rich_macro_indicators() -> RichMacroResponse:
             # 결과를 캐시에 저장한다
             try:
                 await cache.write_json(_FG_CACHE_KEY, fg_data, ttl=_FG_CACHE_TTL)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Fear & Greed 캐시 저장 실패 (무시): %s", exc)
     except Exception as exc:
         _logger.warning("Fear & Greed 데이터 수집 실패: %s", exc)
 
@@ -463,7 +480,7 @@ async def get_rich_macro_indicators() -> RichMacroResponse:
 
 
 @macro_router.get("/rate-outlook", response_model=RateOutlookResponse)
-async def get_rate_outlook() -> RateOutlookResponse:
+async def get_rate_outlook(_auth: str = Depends(verify_api_key)) -> RateOutlookResponse:
     """금리 전망 데이터를 반환한다.
 
     현재 금리를 캐시(macro:DFF)에서 조회하고,
@@ -520,7 +537,7 @@ async def get_rate_outlook() -> RateOutlookResponse:
 
 
 @macro_router.get("/cached-indicators", response_model=CachedIndicatorsResponse)
-async def get_cached_indicators() -> CachedIndicatorsResponse:
+async def get_cached_indicators(_auth: str = Depends(verify_api_key)) -> CachedIndicatorsResponse:
     """캐시에 저장된 거시 지표 원시 데이터를 반환한다.
 
     macro:* 키에 저장된 모든 FRED 시리즈의 최신 데이터를 조회한다.
@@ -561,8 +578,23 @@ async def get_cached_indicators() -> CachedIndicatorsResponse:
             if fg_cached is not None:
                 result["fear_greed"] = fg_cached
                 cached_keys.append("fear_greed")
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Fear & Greed 캐시 조회 실패 (무시): %s", exc)
+
+        # 외부 데이터 소스 캐시도 포함한다
+        external_keys = [
+            ("prediction:polymarket", "polymarket"),
+            ("macro:te:calendar", "te_calendar"),
+            ("macro:superinvestor", "superinvestor"),
+        ]
+        for cache_key, label in external_keys:
+            try:
+                ext = await cache.read_json(cache_key)
+                if ext is not None:
+                    result[label] = ext
+                    cached_keys.append(label)
+            except Exception:
+                _logger.debug("외부 캐시 조회 실패: %s", label)
 
         return CachedIndicatorsResponse(data=result, cached_keys=cached_keys)
     except HTTPException:

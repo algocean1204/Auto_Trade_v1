@@ -6,9 +6,10 @@ Pending adjustment 목록 및 승인/거절 기능도 포함한다.
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -135,15 +136,27 @@ async def _load_latest_feedback_from_db() -> tuple[dict[str, Any] | None, str]:
 def _dict_to_report(data: dict[str, Any], period: str) -> FeedbackReportResponse:
     """캐시된 딕셔너리를 FeedbackReportResponse로 변환한다."""
     raw_summary = data.get("summary", {})
+    # AI 피드백은 win_rate/total_trades만 제공하므로 win_count/loss_count를 파생한다
+    total_trades = raw_summary.get("total_trades", 0)
+    win_rate = raw_summary.get("win_rate", 0.0)
+    explicit_win = raw_summary.get("win_count", 0)
+    derived_win = round(win_rate / 100 * total_trades) if total_trades > 0 else 0
+    win_count = explicit_win if explicit_win > 0 else derived_win
+    loss_count = raw_summary.get("loss_count", 0)
+    if loss_count == 0 and total_trades > 0:
+        loss_count = total_trades - win_count
+    # AI는 best_trade/worst_trade 키를 사용하므로 fallback으로 읽는다
+    best_ticker = raw_summary.get("best_ticker") or raw_summary.get("best_trade")
+    worst_ticker = raw_summary.get("worst_ticker") or raw_summary.get("worst_trade")
     summary = FeedbackSummary(
-        total_trades=raw_summary.get("total_trades", 0),
-        win_count=raw_summary.get("win_count", 0),
-        loss_count=raw_summary.get("loss_count", 0),
-        win_rate=raw_summary.get("win_rate", 0.0),
+        total_trades=total_trades,
+        win_count=win_count,
+        loss_count=loss_count,
+        win_rate=win_rate,
         total_pnl_amount=raw_summary.get("total_pnl_amount", 0.0),
         total_pnl_pct=raw_summary.get("total_pnl_pct", 0.0),
-        best_ticker=raw_summary.get("best_ticker"),
-        worst_ticker=raw_summary.get("worst_ticker"),
+        best_ticker=best_ticker,
+        worst_ticker=worst_ticker,
     )
     return FeedbackReportResponse(
         period=data.get("period", period),
@@ -155,7 +168,10 @@ def _dict_to_report(data: dict[str, Any], period: str) -> FeedbackReportResponse
 
 
 @feedback_router.get("/daily/{date}", response_model=FeedbackReportResponse)
-async def get_daily_feedback(date: str) -> FeedbackReportResponse:
+async def get_daily_feedback(
+    date: str,
+    _auth: str = Depends(verify_api_key),
+) -> FeedbackReportResponse:
     """특정 날짜의 일별 피드백 리포트를 반환한다.
 
     캐시 키: feedback:{date} (EOD 시퀀스에서 저장)
@@ -163,6 +179,9 @@ async def get_daily_feedback(date: str) -> FeedbackReportResponse:
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
+    # 날짜 형식 검증: YYYY-MM-DD 패턴이어야 한다
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=422, detail="날짜 형식은 YYYY-MM-DD여야 한다")
     try:
         cache = _system.components.cache
         # EOD 시퀀스는 feedback:{date} 키에 저장한다
@@ -182,7 +201,10 @@ async def get_daily_feedback(date: str) -> FeedbackReportResponse:
 
 
 @feedback_router.get("/weekly/{week}", response_model=FeedbackReportResponse)
-async def get_weekly_feedback(week: str) -> FeedbackReportResponse:
+async def get_weekly_feedback(
+    week: str,
+    _auth: str = Depends(verify_api_key),
+) -> FeedbackReportResponse:
     """특정 주차 피드백 리포트를 반환한다.
 
     캐시 키: feedback:weekly:{week}
@@ -190,6 +212,9 @@ async def get_weekly_feedback(week: str) -> FeedbackReportResponse:
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
+    # 주차 형식 검증: YYYY-WNN 패턴이어야 한다
+    if not re.match(r"^\d{4}-W\d{2}$", week):
+        raise HTTPException(status_code=422, detail="주차 형식은 YYYY-WNN이어야 한다 (예: 2026-W09)")
     try:
         cache = _system.components.cache
         cached = await cache.read_json(f"feedback:weekly:{week}")
@@ -204,7 +229,9 @@ async def get_weekly_feedback(week: str) -> FeedbackReportResponse:
 
 
 @feedback_router.get("/latest", response_model=FeedbackReportResponse)
-async def get_latest_feedback() -> FeedbackReportResponse:
+async def get_latest_feedback(
+    _auth: str = Depends(verify_api_key),
+) -> FeedbackReportResponse:
     """가장 최근 피드백 리포트를 반환한다.
 
     캐시 키: feedback:latest (EOD 시퀀스에서 항상 최신으로 덮어씀)
@@ -229,7 +256,9 @@ async def get_latest_feedback() -> FeedbackReportResponse:
 
 
 @feedback_router.get("/pending-adjustments", response_model=PendingAdjustmentsResponse)
-async def get_pending_adjustments() -> PendingAdjustmentsResponse:
+async def get_pending_adjustments(
+    _auth: str = Depends(verify_api_key),
+) -> PendingAdjustmentsResponse:
     """승인 대기 중인 전략 조정 목록을 반환한다.
 
     캐시 키: feedback:pending_adjustments
@@ -254,7 +283,7 @@ async def get_pending_adjustments() -> PendingAdjustmentsResponse:
     response_model=AdjustmentActionResponse,
 )
 async def approve_adjustment(
-    adjustment_id: str,
+    adjustment_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
     _key: str = Depends(verify_api_key),
 ) -> AdjustmentActionResponse:
     """전략 조정 항목을 승인한다. 인증 필수.
@@ -265,13 +294,12 @@ async def approve_adjustment(
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         cache = _system.components.cache
-        cached = await cache.read_json("feedback:pending_adjustments")
-        adjustments: list = cached if isinstance(cached, list) else []
 
-        # ID 일치 항목 제거
-        remaining = [a for a in adjustments if str(a.get("id", "")) != adjustment_id]
-        approved = next(
-            (a for a in adjustments if str(a.get("id", "")) == adjustment_id), None
+        # 원자적으로 pending 목록에서 해당 ID 항목을 제거한다 (경합 조건 방지)
+        approved = await cache.atomic_list_remove(
+            "feedback:pending_adjustments",
+            predicate_key="id",
+            predicate_value=adjustment_id,
         )
 
         if approved is None:
@@ -280,15 +308,12 @@ async def approve_adjustment(
                 detail=f"조정 항목을 찾을 수 없다: {adjustment_id}",
             )
 
-        # pending 목록 갱신
-        await cache.write_json("feedback:pending_adjustments", remaining)
-
-        # applied 목록에 추가
-        applied_key = "feedback:applied_adjustments"
-        applied = await cache.read_json(applied_key)
-        applied_list = applied if isinstance(applied, list) else []
-        applied_list.append({**approved, "status": "approved"})
-        await cache.write_json(applied_key, applied_list)
+        # applied 목록에 원자적으로 추가한다
+        await cache.atomic_list_append(
+            "feedback:applied_adjustments",
+            [{**approved, "status": "approved"}],
+            max_size=1000,
+        )
 
         _logger.info("전략 조정 승인 완료: %s", adjustment_id)
         return AdjustmentActionResponse(status="approved", adjustment_id=adjustment_id)
@@ -304,7 +329,7 @@ async def approve_adjustment(
     response_model=AdjustmentActionResponse,
 )
 async def reject_adjustment(
-    adjustment_id: str,
+    adjustment_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
     _key: str = Depends(verify_api_key),
 ) -> AdjustmentActionResponse:
     """전략 조정 항목을 거절한다. 인증 필수."""
@@ -312,12 +337,12 @@ async def reject_adjustment(
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         cache = _system.components.cache
-        cached = await cache.read_json("feedback:pending_adjustments")
-        adjustments: list = cached if isinstance(cached, list) else []
 
-        remaining = [a for a in adjustments if str(a.get("id", "")) != adjustment_id]
-        rejected = next(
-            (a for a in adjustments if str(a.get("id", "")) == adjustment_id), None
+        # 원자적으로 pending 목록에서 해당 ID 항목을 제거한다 (경합 조건 방지)
+        rejected = await cache.atomic_list_remove(
+            "feedback:pending_adjustments",
+            predicate_key="id",
+            predicate_value=adjustment_id,
         )
 
         if rejected is None:
@@ -326,7 +351,6 @@ async def reject_adjustment(
                 detail=f"조정 항목을 찾을 수 없다: {adjustment_id}",
             )
 
-        await cache.write_json("feedback:pending_adjustments", remaining)
         _logger.info("전략 조정 거절 완료: %s", adjustment_id)
         return AdjustmentActionResponse(status="rejected", adjustment_id=adjustment_id)
     except HTTPException:

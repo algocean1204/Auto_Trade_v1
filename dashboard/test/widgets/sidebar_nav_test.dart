@@ -7,10 +7,12 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:ai_trading_dashboard/widgets/sidebar_nav.dart';
+import 'package:ai_trading_dashboard/providers/dashboard_provider.dart';
 import 'package:ai_trading_dashboard/providers/navigation_provider.dart';
 import 'package:ai_trading_dashboard/providers/settings_provider.dart';
 import 'package:ai_trading_dashboard/providers/locale_provider.dart';
 import 'package:ai_trading_dashboard/providers/theme_provider.dart';
+import 'package:ai_trading_dashboard/providers/trading_mode_provider.dart';
 import 'package:ai_trading_dashboard/services/api_service.dart';
 import 'package:ai_trading_dashboard/theme/app_theme.dart';
 
@@ -19,6 +21,7 @@ Widget _buildTestWidget({
   SettingsProvider? settingsProvider,
   LocaleProvider? localeProvider,
   ThemeProvider? themeProvider,
+  TradingModeProvider? tradingModeProvider,
 }) {
   final apiService = ApiService();
   return MultiProvider(
@@ -34,6 +37,12 @@ Widget _buildTestWidget({
       ),
       ChangeNotifierProvider<ThemeProvider>(
         create: (_) => themeProvider ?? ThemeProvider(),
+      ),
+      ChangeNotifierProvider<TradingModeProvider>(
+        create: (_) => tradingModeProvider ?? TradingModeProvider(),
+      ),
+      ChangeNotifierProvider<DashboardProvider>(
+        create: (_) => DashboardProvider(apiService),
       ),
     ],
     child: MaterialApp(

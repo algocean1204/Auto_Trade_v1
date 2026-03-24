@@ -45,17 +45,14 @@ def _neutral() -> NAVPremiumState:
 def _calc_premium_pct(etf_price: float, nav_price: float, leverage: float) -> float:
     """ETF 가격과 추정 NAV 간의 프리미엄 비율(%)을 계산한다.
 
-    간이 방식: 기초 자산 가격 × 레버리지 배수 대비 ETF 가격 괴리를 측정한다.
-    실제 NAV는 이전 종가 기준이므로 장중 추정치이다.
+    NOTE: 레버리지 ETF의 절대 가격은 기초자산 × 레버리지와 관계가 없다.
+    (예: SOXL ~$28 vs SOXX*3 ~$660) 절대가 비교는 항상 -90%~-95% 디스카운트를
+    반환하여 multiplier가 1.2x로 고정되므로, 정확한 일간 수익률 비교가
+    구현될 때까지 중립(0.0)을 반환한다.
     """
-    if nav_price <= 0 or etf_price <= 0:
-        return 0.0
-    # 정규화된 비율: ETF 일간 변화 vs 기초자산 일간 변화 * 레버리지
-    # 간이 프록시로 현재가 비율을 사용한다
-    expected = nav_price * abs(leverage)
-    if expected <= 0:
-        return 0.0
-    return ((etf_price / expected) - 1.0) * 100.0
+    # TODO: 일간 수익률 비교 방식으로 재구현 필요
+    # correct_formula: (etf_daily_return / (nav_daily_return * leverage) - 1) * 100
+    return 0.0
 
 
 def _calc_multiplier(premium_pct: float) -> float:

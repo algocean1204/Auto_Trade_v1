@@ -22,21 +22,24 @@ class ScalperTapeScreen extends StatefulWidget {
 }
 
 class _ScalperTapeScreenState extends State<ScalperTapeScreen> {
-  late ScalperTapeProvider _provider;
+  ScalperTapeProvider? _provider;
   Timer? _lockTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _provider = context.read<ScalperTapeProvider>();
-      _provider.connect();
+      _provider?.connect();
     });
   }
 
   @override
   void dispose() {
     _lockTimer?.cancel();
+    // WebSocket 연결을 해제하여 메모리 누수를 방지한다
+    _provider?.disconnect();
     super.dispose();
   }
 

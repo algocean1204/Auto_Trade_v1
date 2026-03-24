@@ -61,6 +61,7 @@ class SdkBackend:
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -99,14 +100,25 @@ class SdkBackend:
             )
             return AiBackendResponse(content=content, model=resolved, source="sdk")
 
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as timeout_exc:
+            # 타임아웃 시 서브프로세스를 확실히 종료하여 좀비 프로세스를 방지한다
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass  # 이미 종료된 프로세스이다
+                _logger.warning(
+                    "Claude CLI 타임아웃으로 서브프로세스 강제 종료 (PID=%s)",
+                    proc.pid,
+                )
             _logger.error("Claude CLI 타임아웃 (%ds 초과)", self._timeout)
             from src.common.token_tracker import record_error
             record_error(model=resolved, source="sdk")
             raise AiError(
                 message="Claude CLI 타임아웃",
                 detail=f"{self._timeout}초 초과",
-            ) from None
+            ) from timeout_exc
         except AiError:
             from src.common.token_tracker import record_error
             record_error(model=resolved, source="sdk")

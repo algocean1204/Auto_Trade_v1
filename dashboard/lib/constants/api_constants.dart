@@ -71,10 +71,8 @@ class ApiConstants {
 
   // ── Macro 엔드포인트 ──
 
-  static const macroIndicators = '/api/macro/indicators';
   static const macroCalendar = '/api/macro/calendar';
   static const macroRateOutlook = '/api/macro/rate-outlook';
-  static const macroCachedIndicators = '/api/macro/cached-indicators';
   static const macroRichIndicators = '/api/macro/indicators/rich';
   // /api/macro/history/{seriesId} 는 동적 경로이다.
 

@@ -10,6 +10,88 @@ import 'package:ai_trading_dashboard/services/api_service.dart';
 
 class MockApiService extends Mock implements ApiService {}
 
+/// loadDashboardData 성공 시 필요한 4개 API 모킹을 설정하는 헬퍼이다.
+void _stubAllApis(
+  MockApiService mockApi, {
+  required DashboardSummary summary,
+  required SystemStatus status,
+  Map<String, dynamic> accounts = const {},
+  List<Map<String, dynamic>> positions = const [],
+}) {
+  when(() => mockApi.getDashboardSummary(mode: any(named: 'mode')))
+      .thenAnswer((_) async => summary);
+  when(() => mockApi.getSystemStatus())
+      .thenAnswer((_) async => status);
+  when(() => mockApi.getAccountsSummary())
+      .thenAnswer((_) async => accounts);
+  when(() => mockApi.getPositions(mode: any(named: 'mode')))
+      .thenAnswer((_) async => positions);
+}
+
+/// 모든 API에서 에러를 발생시키는 모킹을 설정하는 헬퍼이다.
+/// Future.wait에서 첫 번째 에러가 throw된다.
+void _stubAllApisError(MockApiService mockApi, Exception error) {
+  when(() => mockApi.getDashboardSummary(mode: any(named: 'mode')))
+      .thenThrow(error);
+  when(() => mockApi.getSystemStatus())
+      .thenThrow(error);
+  when(() => mockApi.getAccountsSummary())
+      .thenThrow(error);
+  when(() => mockApi.getPositions(mode: any(named: 'mode')))
+      .thenThrow(error);
+}
+
+DashboardSummary _makeSummary({
+  double totalAsset = 10000.0,
+  double cash = 5000.0,
+  double todayPnl = 150.0,
+  double todayPnlPct = 1.5,
+  double cumulativeReturn = 10.0,
+  int activePositions = 2,
+  String systemStatus = 'RUNNING',
+  DateTime? timestamp,
+}) {
+  return DashboardSummary(
+    totalAsset: totalAsset,
+    cash: cash,
+    todayPnl: todayPnl,
+    todayPnlPct: todayPnlPct,
+    cumulativeReturn: cumulativeReturn,
+    activePositions: activePositions,
+    systemStatus: systemStatus,
+    timestamp: timestamp ?? DateTime(2026, 2, 19),
+  );
+}
+
+SystemStatus _makeStatus({
+  bool claude = true,
+  bool kis = true,
+  bool database = true,
+  bool cache = true,
+  bool fallback = false,
+  DateTime? timestamp,
+}) {
+  return SystemStatus(
+    claude: claude,
+    kis: kis,
+    database: database,
+    cache: cache,
+    fallback: fallback,
+    quota: QuotaInfo(
+      claudeCallsToday: 10,
+      claudeLimit: 100,
+      kisCallsToday: 50,
+      kisLimit: 1000,
+    ),
+    safety: SafetyInfo(
+      stopLossEnabled: true,
+      takeProfitEnabled: true,
+      maxDrawdownCheck: true,
+    ),
+    timestamp: timestamp ?? DateTime(2026, 2, 19),
+  );
+}
+
 void main() {
   late MockApiService mockApi;
   late DashboardProvider provider;
@@ -17,6 +99,10 @@ void main() {
   setUp(() {
     mockApi = MockApiService();
     provider = DashboardProvider(mockApi);
+  });
+
+  tearDown(() {
+    provider.dispose();
   });
 
   group('DashboardProvider - 초기 상태', () {
@@ -39,41 +125,10 @@ void main() {
 
   group('DashboardProvider - loadDashboardData 성공', () {
     test('로딩 후 summary와 systemStatus가 설정된다', () async {
-      final mockSummary = DashboardSummary(
-        totalAsset: 10000.0,
-        cash: 5000.0,
-        todayPnl: 150.0,
-        todayPnlPct: 1.5,
-        cumulativeReturn: 10.0,
-        activePositions: 2,
-        systemStatus: 'RUNNING',
-        timestamp: DateTime(2026, 2, 19),
-      );
+      final mockSummary = _makeSummary();
+      final mockStatus = _makeStatus();
 
-      final mockStatus = SystemStatus(
-        claude: true,
-        kis: true,
-        database: true,
-        redis: true,
-        fallback: false,
-        quota: QuotaInfo(
-          claudeCallsToday: 10,
-          claudeLimit: 100,
-          kisCallsToday: 50,
-          kisLimit: 1000,
-        ),
-        safety: SafetyInfo(
-          stopLossEnabled: true,
-          takeProfitEnabled: true,
-          maxDrawdownCheck: true,
-        ),
-        timestamp: DateTime(2026, 2, 19),
-      );
-
-      when(() => mockApi.getDashboardSummary())
-          .thenAnswer((_) async => mockSummary);
-      when(() => mockApi.getSystemStatus())
-          .thenAnswer((_) async => mockStatus);
+      _stubAllApis(mockApi, summary: mockSummary, status: mockStatus);
 
       await provider.loadDashboardData();
 
@@ -87,7 +142,7 @@ void main() {
     });
 
     test('로딩 중 isLoading이 true였다가 완료 후 false가 된다', () async {
-      final mockSummary = DashboardSummary(
+      final mockSummary = _makeSummary(
         totalAsset: 0,
         cash: 0,
         todayPnl: 0,
@@ -95,38 +150,15 @@ void main() {
         cumulativeReturn: 0,
         activePositions: 0,
         systemStatus: 'IDLE',
-        timestamp: DateTime.now(),
       );
+      final mockStatus = _makeStatus(claude: false, kis: false);
 
-      final mockStatus = SystemStatus(
-        claude: false,
-        kis: false,
-        database: true,
-        redis: true,
-        fallback: false,
-        quota: QuotaInfo(
-          claudeCallsToday: 0,
-          claudeLimit: 100,
-          kisCallsToday: 0,
-          kisLimit: 1000,
-        ),
-        safety: SafetyInfo(
-          stopLossEnabled: true,
-          takeProfitEnabled: true,
-          maxDrawdownCheck: true,
-        ),
-        timestamp: DateTime.now(),
-      );
+      _stubAllApis(mockApi, summary: mockSummary, status: mockStatus);
 
       bool wasLoading = false;
       provider.addListener(() {
         if (provider.isLoading) wasLoading = true;
       });
-
-      when(() => mockApi.getDashboardSummary())
-          .thenAnswer((_) async => mockSummary);
-      when(() => mockApi.getSystemStatus())
-          .thenAnswer((_) async => mockStatus);
 
       await provider.loadDashboardData();
 
@@ -137,8 +169,7 @@ void main() {
 
   group('DashboardProvider - loadDashboardData 실패', () {
     test('에러 발생 시 error 필드가 설정된다', () async {
-      when(() => mockApi.getDashboardSummary())
-          .thenThrow(Exception('Network error'));
+      _stubAllApisError(mockApi, Exception('Network error'));
 
       await provider.loadDashboardData();
 
@@ -148,8 +179,7 @@ void main() {
     });
 
     test('에러 발생 시 summary는 null을 유지한다', () async {
-      when(() => mockApi.getDashboardSummary())
-          .thenThrow(Exception('Timeout'));
+      _stubAllApisError(mockApi, Exception('Timeout'));
 
       await provider.loadDashboardData();
 
@@ -158,21 +188,23 @@ void main() {
     });
 
     test('getSystemStatus만 실패해도 error가 설정된다', () async {
-      final mockSummary = DashboardSummary(
+      final mockSummary = _makeSummary(
         totalAsset: 5000.0,
         cash: 2000.0,
         todayPnl: -50.0,
         todayPnlPct: -1.0,
         cumulativeReturn: 5.0,
         activePositions: 1,
-        systemStatus: 'RUNNING',
-        timestamp: DateTime.now(),
       );
 
-      when(() => mockApi.getDashboardSummary())
+      when(() => mockApi.getDashboardSummary(mode: any(named: 'mode')))
           .thenAnswer((_) async => mockSummary);
       when(() => mockApi.getSystemStatus())
           .thenThrow(Exception('System status unavailable'));
+      when(() => mockApi.getAccountsSummary())
+          .thenAnswer((_) async => <String, dynamic>{});
+      when(() => mockApi.getPositions(mode: any(named: 'mode')))
+          .thenAnswer((_) async => <Map<String, dynamic>>[]);
 
       await provider.loadDashboardData();
 
@@ -183,12 +215,11 @@ void main() {
 
   group('DashboardProvider - refresh', () {
     test('refresh는 loadDashboardData를 호출한다', () async {
-      when(() => mockApi.getDashboardSummary())
-          .thenThrow(Exception('test'));
+      _stubAllApisError(mockApi, Exception('test'));
 
       await provider.refresh();
 
-      verify(() => mockApi.getDashboardSummary()).called(1);
+      verify(() => mockApi.getDashboardSummary(mode: any(named: 'mode'))).called(1);
     });
   });
 
@@ -197,8 +228,7 @@ void main() {
       int notifyCount = 0;
       provider.addListener(() => notifyCount++);
 
-      when(() => mockApi.getDashboardSummary())
-          .thenThrow(Exception('fail'));
+      _stubAllApisError(mockApi, Exception('fail'));
 
       await provider.loadDashboardData();
 
@@ -208,13 +238,12 @@ void main() {
 
     test('성공 시 error가 null로 초기화된다', () async {
       // 먼저 에러를 발생시킨다.
-      when(() => mockApi.getDashboardSummary())
-          .thenThrow(Exception('first error'));
+      _stubAllApisError(mockApi, Exception('first error'));
       await provider.loadDashboardData();
       expect(provider.error, isNotNull);
 
       // 이제 성공시킨다.
-      final mockSummary = DashboardSummary(
+      final mockSummary = _makeSummary(
         totalAsset: 1000.0,
         cash: 500.0,
         todayPnl: 0,
@@ -222,32 +251,10 @@ void main() {
         cumulativeReturn: 0,
         activePositions: 0,
         systemStatus: 'OK',
-        timestamp: DateTime.now(),
       );
-      final mockStatus = SystemStatus(
-        claude: true,
-        kis: true,
-        database: true,
-        redis: true,
-        fallback: false,
-        quota: QuotaInfo(
-          claudeCallsToday: 0,
-          claudeLimit: 100,
-          kisCallsToday: 0,
-          kisLimit: 1000,
-        ),
-        safety: SafetyInfo(
-          stopLossEnabled: true,
-          takeProfitEnabled: true,
-          maxDrawdownCheck: true,
-        ),
-        timestamp: DateTime.now(),
-      );
+      final mockStatus = _makeStatus();
 
-      when(() => mockApi.getDashboardSummary())
-          .thenAnswer((_) async => mockSummary);
-      when(() => mockApi.getSystemStatus())
-          .thenAnswer((_) async => mockStatus);
+      _stubAllApis(mockApi, summary: mockSummary, status: mockStatus);
 
       await provider.loadDashboardData();
       expect(provider.error, isNull);

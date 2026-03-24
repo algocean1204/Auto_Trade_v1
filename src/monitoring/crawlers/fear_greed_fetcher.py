@@ -71,16 +71,21 @@ async def _tier1_cnn_api() -> dict | None:
     """CNN Fear & Greed 공식 API에서 데이터를 가져온다."""
     url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             headers = {"User-Agent": _BROWSER_UA}
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with session.get(url, headers=headers, timeout=timeout) as resp:
+            async with session.get(url, headers=headers) as resp:
                 if resp.status != 200:
                     logger.debug("CNN API HTTP %d", resp.status)
                     return None
                 data = await resp.json()
                 fg = data.get("fear_and_greed", {})
-                score = int(fg.get("score", 50))
+                raw_score = fg.get("score")
+                if raw_score is None:
+                    logger.debug("CNN API 응답에 score 필드 부재")
+                    return None
+                # 0~100 범위로 클램핑하여 비정상 값을 방지한다
+                score = max(0, min(100, int(raw_score)))
                 label = _score_to_label(score)
                 desc = fg.get("description", "") or _score_to_description(score, label)
                 logger.info("Tier 1 CNN API: score=%d, label=%s", score, label)
@@ -105,7 +110,8 @@ async def _tier2_cnn_scrape() -> dict | None:
                 # CNN 페이지에서 "score":XX 형태의 JSON 블록을 파싱한다
                 match = re.search(r'"score"\s*:\s*(\d+)', text)
                 if match:
-                    score = int(match.group(1))
+                    # 0~100 범위로 클램핑하여 비정상 값을 방지한다
+                    score = max(0, min(100, int(match.group(1))))
                     label = _score_to_label(score)
                     desc = _score_to_description(score, label)
                     logger.info("Tier 2 CNN scrape: score=%d, label=%s", score, label)

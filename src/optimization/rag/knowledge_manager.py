@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
+
+from typing import Any
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 from src.optimization.models import KnowledgeResult
 
 logger = get_logger(__name__)
@@ -29,8 +32,7 @@ def _get_chroma_client() -> object:
             "chromadb 설치 필요: pip install chromadb"
         ) from exc
 
-    from pathlib import Path
-    persist_dir = Path(__file__).resolve().parent.parent.parent.parent / "data" / "chromadb"
+    persist_dir = get_data_dir() / "chromadb"
     persist_dir.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(path=str(persist_dir))
 
@@ -52,7 +54,7 @@ def _get_embedding_fn() -> object:
     )
 
 
-def _get_collection(client: object, embed_fn: object) -> object:
+def _get_collection(client: Any, embed_fn: Any) -> Any:
     """ChromaDB 컬렉션을 가져오거나 생성한다."""
     return client.get_or_create_collection(
         name=_COLLECTION_NAME,
@@ -90,7 +92,7 @@ class KnowledgeManager:
         """
         doc_id = _generate_doc_id(content)
         meta = metadata or {}
-        meta["stored_at"] = datetime.now().isoformat()
+        meta["stored_at"] = datetime.now(tz=timezone.utc).isoformat()
 
         self._collection.upsert(
             ids=[doc_id],

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
+from typing import Any
+
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 from src.optimization.models import FeatureMatrix, LabelVector, TrainedModel
 
 logger = get_logger(__name__)
 
-# 모델 저장 경로이다
-_MODEL_DIR: Path = Path(__file__).resolve().parent.parent.parent.parent / "data" / "models"
+
+def _get_model_dir() -> Path:
+    """모델 저장 디렉토리를 반환한다. data/models/ 하위이다."""
+    return get_data_dir() / "models"
 
 # 기본 LightGBM 하이퍼파라미터이다
 _DEFAULT_PARAMS: dict = {
@@ -33,8 +37,9 @@ _NUM_BOOST_ROUND: int = 200
 
 def _ensure_model_dir() -> Path:
     """모델 저장 디렉토리를 생성한다."""
-    _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    return _MODEL_DIR
+    model_dir = _get_model_dir()
+    model_dir.mkdir(parents=True, exist_ok=True)
+    return model_dir
 
 
 def _train_with_cv(
@@ -78,9 +83,20 @@ def _train_with_cv(
         )
 
         preds = model.predict(x_val)
-        score = roc_auc_score(y_val, preds)
+        # 검증 세트가 단일 클래스만 포함하면 AUC 계산이 불가능하다
+        if len(set(y_val)) < 2:
+            logger.warning("Fold 검증 세트 단일 클래스 — AUC=0.5로 대체한다")
+            score = 0.5
+        else:
+            score = roc_auc_score(y_val, preds)
         fold_scores.append(score)
         best_model = model
+
+    # 데이터 부족으로 fold가 하나도 생성되지 않은 경우 빈 결과를 반환한다
+    if best_model is None:
+        logger.warning("TimeSeriesSplit fold 없음 — 데이터가 부족하다")
+        metrics = {"avg_auc": 0.0, "std_auc": 0.0, "fold_scores": []}
+        return None, metrics
 
     metrics = {
         "avg_auc": float(np.mean(fold_scores)),
@@ -92,7 +108,7 @@ def _train_with_cv(
 
 
 def _extract_importance(
-    model: object, feature_names: list[str],
+    model: Any, feature_names: list[str],
 ) -> dict[str, float]:
     """피처 중요도를 추출한다."""
     try:
@@ -102,11 +118,12 @@ def _extract_importance(
             name: float(val / total)
             for name, val in zip(feature_names, raw)
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("피처 중요도 추출 실패 (0.0 폴백): %s", exc)
         return {name: 0.0 for name in feature_names}
 
 
-def _save_model(model: object, version: str) -> str:
+def _save_model(model: Any, version: str) -> str:
     """모델을 파일로 저장한다."""
     model_dir = _ensure_model_dir()
     path = model_dir / f"lgbm_{version}.txt"
@@ -136,9 +153,19 @@ def train_model(
         params,
     )
 
+    # 데이터 부족으로 모델이 생성되지 않은 경우 빈 결과를 반환한다
+    if model is None:
+        logger.warning("모델 미생성 — 데이터 부족으로 학습을 건너뛴다")
+        return TrainedModel(
+            model_path="",
+            metrics=metrics,
+            feature_importance={n: 0.0 for n in feature_matrix.feature_names},
+            training_date=datetime.now(tz=timezone.utc),
+        )
+
     importance = _extract_importance(model, feature_matrix.feature_names)
 
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     version = now.strftime("%Y%m%d_%H%M%S")
     model_path = _save_model(model, version)
 

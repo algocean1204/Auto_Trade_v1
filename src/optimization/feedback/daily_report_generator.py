@@ -2,26 +2,31 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 from src.optimization.feedback.models import DailyReport
 
 logger = get_logger(__name__)
 
-# 보고서 저장 디렉토리이다
-_REPORT_DIR: Path = (
-    Path(__file__).resolve().parent.parent.parent.parent / "data" / "reports"
-)
+def _report_dir() -> Path:
+    """보고서 저장 디렉토리를 반환한다. 모듈 임포트 시점이 아닌 호출 시점에 평가한다."""
+    return get_data_dir() / "reports"
 
 
-def _safe_float(val: object, default: float = 0.0) -> float:
-    """안전하게 float 변환한다."""
+def _safe_float(val: float | str | None, default: float = 0.0) -> float:
+    """안전하게 float 변환한다. NaN/inf이면 기본값을 반환한다."""
     if val is None:
         return default
     try:
-        return float(val)
+        result = float(val)
+        if math.isnan(result) or math.isinf(result):
+            return default
+        return result
     except (ValueError, TypeError):
         return default
 
@@ -101,7 +106,7 @@ def _build_summary_dict(
     total = len(pnls) if pnls else 1
 
     return {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"),
         "total_trades": len(trades),
         "win_rate": wins / total if total > 0 else 0.0,
         "total_pnl": sum(pnls),
@@ -111,8 +116,9 @@ def _build_summary_dict(
 
 def _save_report(content: str, date_str: str) -> str:
     """보고서를 파일로 저장한다."""
-    _REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = _REPORT_DIR / f"daily_{date_str}.md"
+    report_dir = _report_dir()
+    report_dir.mkdir(parents=True, exist_ok=True)
+    path = report_dir / f"daily_{date_str}.md"
     path.write_text(content, encoding="utf-8")
     return str(path)
 
@@ -128,7 +134,7 @@ def generate_daily_report(
     거래 내역, 포트폴리오 현황, 시장 분석, 레짐 정보를
     종합하여 Markdown 보고서를 생성하고 파일로 저장한다.
     """
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = datetime.now(tz=ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
     logger.info("일일 보고서 생성 시작: %s", date_str)
 
     sections: list[str] = [

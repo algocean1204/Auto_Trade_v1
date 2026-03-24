@@ -13,6 +13,9 @@ class PrinciplesProvider with ChangeNotifier {
   /// 현재 선택된 카테고리 필터 ('all', 'survival', 'risk', 'strategy', 'execution')
   String _selectedCategory = 'all';
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   PrinciplesProvider(this._api);
 
   TradingPrinciples? get data => _data;
@@ -34,7 +37,7 @@ class PrinciplesProvider with ChangeNotifier {
   void setCategory(String category) {
     if (_selectedCategory != category) {
       _selectedCategory = category;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -42,7 +45,7 @@ class PrinciplesProvider with ChangeNotifier {
   Future<void> load() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _data = await _api.getPrinciples();
@@ -51,7 +54,7 @@ class PrinciplesProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -63,7 +66,7 @@ class PrinciplesProvider with ChangeNotifier {
       await load();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -85,7 +88,7 @@ class PrinciplesProvider with ChangeNotifier {
       await load();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -97,7 +100,7 @@ class PrinciplesProvider with ChangeNotifier {
       await load();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -109,7 +112,7 @@ class PrinciplesProvider with ChangeNotifier {
       await load();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -118,5 +121,16 @@ class PrinciplesProvider with ChangeNotifier {
   Future<void> refresh() async {
     _data = null;
     await load();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

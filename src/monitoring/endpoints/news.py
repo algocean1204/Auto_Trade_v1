@@ -5,11 +5,10 @@
 """
 from __future__ import annotations
 
-import asyncio
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 
@@ -88,11 +87,17 @@ class NewsCollectResponse(BaseModel):
 
 
 def _article_to_dict(row: Article) -> dict[str, Any]:
-    """Article ORM 모델을 Flutter 호환 dict로 변환한다."""
+    """Article ORM 모델을 Flutter 호환 dict로 변환한다.
+
+    Flutter NewsArticle.fromJson은 'headline' 키를 읽으므로
+    ORM의 title을 headline으로 매핑한다.
+    """
     pub_at = row.published_at
+    title_val = row.title or ""
     return {
         "id": row.id,
-        "title": row.title or "",
+        "headline": title_val,
+        "title": title_val,
         "content": row.content or "",
         "url": row.url or "",
         "source": row.source or "",
@@ -122,7 +127,7 @@ def set_news_deps(system: InjectedSystem) -> None:
 
 
 @news_router.get("/dates", response_model=NewsDatesResponse)
-async def get_news_dates(limit: int = 30) -> NewsDatesResponse:
+async def get_news_dates(limit: int = Query(default=30, ge=1, le=365), _auth: str = Depends(verify_api_key)) -> NewsDatesResponse:
     """뉴스가 존재하는 날짜 목록을 반환한다. limit로 최대 개수를 제한한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -153,7 +158,8 @@ async def get_news_dates(limit: int = 30) -> NewsDatesResponse:
                 ]
                 # 조회 결과를 캐시에 저장한다 (1시간 TTL)
                 if dates:
-                    await cache.write_json("news:dates", dates, ttl=3600)
+                    # news_pipeline.py가 _DAILY_CACHE_TTL(86400)로 기록하므로 DB 폴백도 동일 TTL을 사용한다
+                    await cache.write_json("news:dates", dates, ttl=86400)
 
         return NewsDatesResponse(dates=dates[:limit])
     except HTTPException:
@@ -166,10 +172,11 @@ async def get_news_dates(limit: int = 30) -> NewsDatesResponse:
 @news_router.get("/daily", response_model=DailyNewsResponse)
 async def get_daily_news(
     date: str = "",
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500),
     category: str | None = None,
     impact: str | None = None,
-    offset: int = 0,
+    offset: int = Query(default=0, ge=0),
+    _auth: str = Depends(verify_api_key),
 ) -> DailyNewsResponse:
     """일별 뉴스 목록을 반환한다. date 파라미터로 날짜를 지정한다.
 
@@ -178,11 +185,13 @@ async def get_daily_news(
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
 
         cache = _system.components.cache
         # 날짜 미지정 시 오늘 날짜의 Flutter 형식 데이터를 읽는다
-        target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # news_pipeline.py가 KST 기준으로 news:daily:{date}를 기록하므로 읽기도 KST를 사용한다
+        target_date = date or datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
         key = f"news:daily:{target_date}"
         cached = await cache.read_json(key)
         articles = cached if isinstance(cached, list) else []
@@ -195,7 +204,7 @@ async def get_daily_news(
             if isinstance(raw, list):
                 articles = [_to_flutter_article(a) for a in raw]
 
-        # 캐시에도 없으면 DB에서 조회한다
+        # 캐시에도 없으면 DB에서 조회한다 (limit으로 최대 건수를 제한한다)
         if not articles:
             db = _system.components.db
             async with db.get_session() as session:
@@ -203,6 +212,7 @@ async def get_daily_news(
                     select(Article)
                     .where(func.date(Article.published_at) == target_date)
                     .order_by(Article.published_at.desc())
+                    .limit(limit + offset)
                 )
                 result = await session.execute(stmt)
                 rows = result.scalars().all()
@@ -251,7 +261,7 @@ async def get_daily_news(
 
 
 @news_router.get("/summary", response_model=NewsSummaryResponse)
-async def get_news_summary(date: str | None = None) -> NewsSummaryResponse:
+async def get_news_summary(date: str | None = None, _auth: str = Depends(verify_api_key)) -> NewsSummaryResponse:
     """뉴스 요약을 반환한다. date 파라미터로 특정 날짜를 지정할 수 있다.
 
     Flutter NewsSummary.fromJson이 최상위 필드를 직접 읽으므로
@@ -270,11 +280,14 @@ async def get_news_summary(date: str | None = None) -> NewsSummaryResponse:
         # 캐시 미스 시 DB에서 집계하여 요약을 생성한다
         db = _system.components.db
         async with db.get_session() as session:
+            # 하루 기사 수가 극단적으로 많을 수 있으므로 1000건으로 제한한다
+            _MAX_SUMMARY_ARTICLES = 1000
             if date:
                 stmt = (
                     select(Article)
                     .where(func.date(Article.published_at) == date)
                     .order_by(Article.published_at.desc())
+                    .limit(_MAX_SUMMARY_ARTICLES)
                 )
             else:
                 # 최신 날짜를 먼저 찾는다
@@ -293,6 +306,7 @@ async def get_news_summary(date: str | None = None) -> NewsSummaryResponse:
                     select(Article)
                     .where(func.date(Article.published_at) == date)
                     .order_by(Article.published_at.desc())
+                    .limit(_MAX_SUMMARY_ARTICLES)
                 )
 
             result = await session.execute(stmt)
@@ -327,7 +341,7 @@ async def get_news_summary(date: str | None = None) -> NewsSummaryResponse:
 
 
 @news_router.get("/{article_id}", response_model=ArticleDetailResponse)
-async def get_article_detail(article_id: str) -> ArticleDetailResponse:
+async def get_article_detail(article_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"), _auth: str = Depends(verify_api_key)) -> ArticleDetailResponse:
     """기사 상세 정보를 반환한다.
 
     1차: news:article:{id} 개별 캐시에서 조회한다.
@@ -344,9 +358,10 @@ async def get_article_detail(article_id: str) -> ArticleDetailResponse:
             return ArticleDetailResponse(article=cached)
 
         # 2차: 오늘 날짜 daily 캐시에서 id 매칭 검색
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
         daily = await cache.read_json(f"news:daily:{today}")
         if isinstance(daily, list):
             for item in daily:
@@ -438,7 +453,7 @@ class ThemeListResponse(BaseModel):
 
 
 @news_router.get("/situations/list", response_model=SituationListResponse)
-async def get_situations() -> SituationListResponse:
+async def get_situations(_auth: str = Depends(verify_api_key)) -> SituationListResponse:
     """활성 상황 보고서 목록을 반환한다.
 
     캐시에 저장된 상황 보고서와 메타데이터를 조회한다.
@@ -481,7 +496,7 @@ async def get_situations() -> SituationListResponse:
 
 
 @news_router.get("/themes/list", response_model=ThemeListResponse)
-async def get_themes() -> ThemeListResponse:
+async def get_themes(_auth: str = Depends(verify_api_key)) -> ThemeListResponse:
     """뉴스 테마 목록을 반환한다.
 
     캐시에 저장된 반복 테마를 조회한다.

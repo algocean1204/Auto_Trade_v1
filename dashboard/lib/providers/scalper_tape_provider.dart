@@ -8,6 +8,9 @@ import '../services/websocket_service.dart';
 class ScalperTapeProvider extends ChangeNotifier {
   final WebSocketService _wsService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   StreamSubscription<ScalperTapeData>? _subscription;
 
   ScalperTapeData? _currentData;
@@ -64,7 +67,7 @@ class ScalperTapeProvider extends ChangeNotifier {
     _isConnected = false;
     _error = null;
 
-    notifyListeners();
+    _safeNotify();
     connect();
   }
 
@@ -86,11 +89,11 @@ class ScalperTapeProvider extends ChangeNotifier {
         onError: (Object error) {
           _isConnected = false;
           _error = error.toString();
-          notifyListeners();
+          _safeNotify();
         },
         onDone: () {
           _isConnected = false;
-          notifyListeners();
+          _safeNotify();
         },
         cancelOnError: false,
       );
@@ -98,11 +101,11 @@ class ScalperTapeProvider extends ChangeNotifier {
       // 연결 시작 직후에는 낙관적으로 connected 표시한다.
       // 실제 첫 데이터 수신 시 _onData에서 확정한다.
       _isConnected = true;
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       _isConnected = false;
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -112,7 +115,7 @@ class ScalperTapeProvider extends ChangeNotifier {
     _subscription = null;
     _wsService.disconnectEndpoint('/ws/orderflow');
     _isConnected = false;
-    notifyListeners();
+    _safeNotify();
   }
 
   // ── 데이터 처리 ──
@@ -138,7 +141,7 @@ class ScalperTapeProvider extends ChangeNotifier {
       _appendHistory(_vpinHistory, data.vpin!.value);
     }
 
-    notifyListeners();
+    _safeNotify();
   }
 
   void _appendHistory(List<double> history, double value) {
@@ -156,7 +159,16 @@ class ScalperTapeProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _subscription?.cancel();
+    _subscription = null;
+    // WebSocket 채널도 함께 정리하여 리소스 누수를 방지한다.
+    _wsService.disconnectEndpoint('/ws/orderflow');
     super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

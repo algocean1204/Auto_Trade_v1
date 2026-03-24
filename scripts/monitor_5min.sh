@@ -4,14 +4,14 @@
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT_FILE="$PROJECT_ROOT/data/server_port.txt"
-DEFAULT_PORT=9500
+DEFAULT_PORT=9501
 
 # 포트 파일에서 현재 서버 포트를 읽는다. 파일이 없으면 기본값을 반환한다.
 read_port() {
     if [ -f "$PORT_FILE" ]; then
         local port
         port=$(cat "$PORT_FILE" 2>/dev/null | tr -d '[:space:]')
-        if [ -n "$port" ] && [ "$port" -ge 9500 ] 2>/dev/null && [ "$port" -le 9505 ] 2>/dev/null; then
+        if [ -n "$port" ] && [ "$port" -ge 9501 ] 2>/dev/null && [ "$port" -le 9505 ] 2>/dev/null; then
             echo "$port"
             return
         fi
@@ -20,11 +20,21 @@ read_port() {
 }
 
 API_URL="http://localhost:$(read_port)"
-AUTH="Authorization: Bearer Ch8KAevCoBy_QR7rLKO_VSbX5x0jNb-PNA10Q1DjMx8"
-TG_TOKEN="7668117642:AAHammdMOjXwwrU9ksSsHTs-URTXlScCIvU"
-TG_CHAT="7482836107"
 LOG_DIR="$PROJECT_ROOT/logs"
 INTERVAL=300  # 5분
+
+# 로그 디렉토리를 확보한다
+mkdir -p "$LOG_DIR"
+
+# .env에서 인증 키와 텔레그램 설정을 읽는다
+ENV_FILE="$PROJECT_ROOT/.env"
+_read_env() {
+    grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d'=' -f2 | tr -d '"'"'"
+}
+API_KEY=$(_read_env "API_SECRET_KEY")
+TG_TOKEN=$(_read_env "TELEGRAM_BOT_TOKEN")
+TG_CHAT=$(_read_env "TELEGRAM_CHAT_ID")
+AUTH="Authorization: Bearer $API_KEY"
 
 send_telegram() {
     curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
@@ -34,28 +44,19 @@ send_telegram() {
 }
 
 check_and_restart() {
-    # 프로세스 확인
-    PID=$(pgrep -f "python.*-m src.main" | head -1)
+    # 프로세스 확인 (python3 또는 python으로 기동된 프로세스 모두 탐색)
+    PID=$(pgrep -f "python3? -m src\.main" | head -1)
     if [ -z "$PID" ]; then
-        send_telegram "🚨 [모니터링] 프로세스 죽음 감지! 재시작 시도..."
-        cd /Users/kimtaekyu/Documents/Develop_Fold/Secret_Project/Stock_Trading
-        source .venv/bin/activate
-        python -m src.main >> logs/trading_system.log 2>> logs/trading_stderr.log &
-        sleep 15
-        PID=$(pgrep -f "python.*-m src.main" | head -1)
-        if [ -z "$PID" ]; then
-            send_telegram "🚨 [모니터링] 프로세스 재시작 실패!"
-            return 1
-        fi
-        send_telegram "✅ [모니터링] 프로세스 재시작 성공 (PID: $PID)"
+        send_telegram "🚨 [모니터링] 프로세스 죽음 감지! LaunchAgent(KeepAlive)가 자동 재시작할 때까지 대기한다."
+        return 1
     fi
 
     # 포트 충돌 확인 (같은 포트에 2개 이상 바인딩)
-    PORT_COUNT=$(pgrep -f "python.*-m src.main" | wc -l | tr -d ' ')
+    PORT_COUNT=$(pgrep -f "python3? -m src\.main" | wc -l | tr -d ' ')
     if [ "$PORT_COUNT" -gt 1 ]; then
         # 가장 최근 프로세스만 남기고 나머지 종료
-        KEEP_PID=$(pgrep -f "python.*-m src.main" | tail -1)
-        for P in $(pgrep -f "python.*-m src.main"); do
+        KEEP_PID=$(pgrep -f "python3? -m src\.main" | tail -1)
+        for P in $(pgrep -f "python3? -m src\.main"); do
             if [ "$P" != "$KEEP_PID" ]; then
                 kill "$P" 2>/dev/null
             fi
@@ -79,7 +80,7 @@ check_and_restart() {
 
     # 매매 시간인데 매매가 안 돌고 있으면 시작
     if [ "$IS_WINDOW" = "True" ] && [ "$IS_TRADING" = "False" ]; then
-        curl -s -X POST -H "$AUTH" "${API_URL}/api/trading/start" > /dev/null 2>&1
+        curl -s -X POST -H "$AUTH" "${API_URL}/api/trading/start?force=true" > /dev/null 2>&1
         send_telegram "🔄 [모니터링] 매매 시간인데 미실행 → 자동 시작 요청"
         sleep 5
         STATUS=$(curl -s -m 10 -H "$AUTH" "${API_URL}/api/trading/status" 2>/dev/null)
@@ -95,12 +96,12 @@ check_and_restart() {
 import sys,json
 d=json.load(sys.stdin)
 for p in d.get('positions',[]):
-    print(f\"  {p['ticker']} {p['quantity']}주 {p['pnl_pct']:.2f}% (\${p['pnl_amount']:.2f})\")
+    print(f\"  {p['ticker']} {p['quantity']}주 {p.get('unrealized_pnl_pct',0):.2f}% (\${p.get('unrealized_pnl',0):.2f})\")
 " 2>/dev/null)
     fi
 
-    # 최근 에러 수 (최근 5분)
-    RECENT_ERRORS=$(grep -c "ERROR" "${LOG_DIR}/trading_system.log" 2>/dev/null || echo "0")
+    # 최근 에러 수 (로그 마지막 200줄 기준)
+    RECENT_ERRORS=$(tail -200 "${LOG_DIR}/trading_system.log" 2>/dev/null | grep -c "ERROR" || echo "0")
 
     # 최근 체결
     LAST_TRADE=$(grep "진입:" "${LOG_DIR}/trading_system.log" | tail -1 | sed 's/.*진입: //' 2>/dev/null)

@@ -35,10 +35,13 @@ class EventType(str, Enum):
     POSITION_CHANGED = "PositionChanged"
     EMERGENCY_LIQUIDATION = "EmergencyLiquidation"
     CRASH_DETECTED = "CrashDetected"
-    EOD_STARTED = "EODStarted"
+    EOD_STARTED = "EODStarted"  # deprecated: 실제 발행 시점은 EOD 완료 후이다
+    EOD_COMPLETED = "EODCompleted"
     BEAST_ENTRY = "BeastEntry"
     PYRAMID_TRIGGERED = "PyramidTriggered"
     TILT_DETECTED = "TiltDetected"
+    EMERGENCY_STOP = "EmergencyStop"
+    EMERGENCY_RESUME = "EmergencyResume"
     INFRA_HEALTH_CHANGED = "InfraHealthChanged"
     WEEKLY_REPORT_GENERATED = "WeeklyReportGenerated"
 

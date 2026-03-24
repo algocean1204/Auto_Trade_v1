@@ -46,7 +46,8 @@ def calc_rsi(closes: np.ndarray, period: int = 14) -> float:
         avg_gain = (avg_gain * (period - 1) + float(gains[i])) / period
         avg_loss = (avg_loss * (period - 1) + float(losses[i])) / period
     if avg_loss == 0:
-        return 100.0
+        # 가격 변동이 전혀 없으면 중립값(50.0)을 반환한다
+        return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
@@ -74,11 +75,11 @@ def calc_bollinger(
     """볼린저 밴드 (upper, middle, lower)를 계산한다."""
     if len(closes) < period:
         mid = float(np.mean(closes))
-        std = float(np.std(closes))
+        std = float(np.std(closes, ddof=1)) if len(closes) > 1 else 0.0
         return mid + std_dev * std, mid, mid - std_dev * std
     window = closes[-period:]
     mid = float(np.mean(window))
-    std = float(np.std(window))
+    std = float(np.std(window, ddof=1))
     return mid + std_dev * std, mid, mid - std_dev * std
 
 

@@ -13,6 +13,9 @@ class UniverseProvider with ChangeNotifier {
   bool _isSectorsLoading = false;
   String? _error;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   UniverseProvider(this._api);
 
   List<UniverseTickerEx>? get tickers => _tickers;
@@ -32,7 +35,7 @@ class UniverseProvider with ChangeNotifier {
   Future<void> loadAll() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final results = await Future.wait([
@@ -46,7 +49,7 @@ class UniverseProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -57,7 +60,7 @@ class UniverseProvider with ChangeNotifier {
       await loadAll();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -68,7 +71,7 @@ class UniverseProvider with ChangeNotifier {
       await loadAll();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -80,7 +83,7 @@ class UniverseProvider with ChangeNotifier {
       await loadAll();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -91,7 +94,7 @@ class UniverseProvider with ChangeNotifier {
       await loadAll();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -103,14 +106,14 @@ class UniverseProvider with ChangeNotifier {
       await loadAll();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   /// 섹터 데이터를 로드한다.
   Future<void> loadSectors() async {
     _isSectorsLoading = true;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final result = await _api.fetchSectors();
@@ -122,7 +125,7 @@ class UniverseProvider with ChangeNotifier {
       _sectors = [];
     } finally {
       _isSectorsLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -141,5 +144,16 @@ class UniverseProvider with ChangeNotifier {
     _mappings = null;
     _sectors = null;
     await loadAll();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

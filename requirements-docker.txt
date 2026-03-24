@@ -12,15 +12,14 @@ uvicorn==0.34.0
 pydantic==2.10.5
 pydantic-settings==2.7.1
 
-# --- Database ---
+# --- Database (SQLite + aiosqlite) ---
 sqlalchemy==2.0.36
-asyncpg==0.30.0
 alembic==1.14.1
-psycopg2-binary==2.9.10
-pgvector==0.4.2
-
-# --- Cache ---
-redis==5.2.1
+aiosqlite==0.20.0
+# asyncpg==0.30.0        -> PostgreSQL 전용 - SQLite 전환으로 불필요
+# psycopg2-binary==2.9.10 -> PostgreSQL 전용 - SQLite 전환으로 불필요
+# pgvector==0.4.2         -> PostgreSQL 전용 - SQLite 전환으로 불필요
+# redis==5.2.1            -> 인메모리 캐시로 대체
 
 # --- HTTP Clients ---
 aiohttp==3.11.11

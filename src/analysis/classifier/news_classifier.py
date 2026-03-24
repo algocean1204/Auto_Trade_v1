@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 
 from src.analysis.models import ClassifiedNews
 from src.common.ai_gateway import AiClient, AiResponse
@@ -73,13 +72,25 @@ def _build_classify_prompt(article: VerifiedArticle) -> str:
     )
 
 
+def _clamp_score(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    """AI가 반환한 점수를 유효 범위로 클램핑한다."""
+    return max(low, min(high, value))
+
+
 def _parse_claude_response(raw: str) -> dict | None:
     """Claude 응답에서 JSON을 파싱한다. 실패 시 None을 반환한다."""
     try:
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        # AI가 범위 밖 impact_score를 반환할 수 있으므로 0.0~1.0으로 클램핑한다
+        if isinstance(parsed, dict) and "impact_score" in parsed:
+            try:
+                parsed["impact_score"] = _clamp_score(float(parsed["impact_score"]))
+            except (TypeError, ValueError):
+                parsed["impact_score"] = 0.5
+        return parsed
     except (json.JSONDecodeError, IndexError):
         logger.warning("Claude 응답 JSON 파싱 실패 — 이번 분석 건너뜀: %s", raw[:200])
         return None
@@ -134,6 +145,21 @@ def _validate_tickers(tickers: list) -> list[str]:
     return valid if valid else ["QLD"]
 
 
+def _validate_direction(raw: object) -> str:
+    """AI가 반환한 direction을 검증한다. 유효하지 않으면 neutral을 반환한다."""
+    if isinstance(raw, str) and raw.lower() in ("bullish", "bearish", "neutral"):
+        return raw.lower()
+    return "neutral"
+
+
+def _validate_category(raw: object) -> str:
+    """AI가 반환한 category를 검증한다. 유효하지 않으면 macro를 반환한다."""
+    valid = {"macro", "earnings", "policy", "sector", "geopolitical"}
+    if isinstance(raw, str) and raw.lower() in valid:
+        return raw.lower()
+    return "macro"
+
+
 async def _refine_with_claude(
     news: ClassifiedNews,
     ai_client: AiClient,
@@ -155,8 +181,8 @@ async def _refine_with_claude(
 
     return news.model_copy(update={
         "impact_score": parsed.get("impact_score", news.impact_score),
-        "direction": parsed.get("direction", news.direction),
-        "category": parsed.get("category", news.category),
+        "direction": _validate_direction(parsed.get("direction", news.direction)),
+        "category": _validate_category(parsed.get("category", news.category)),
         "tickers_affected": _validate_tickers(parsed.get("tickers_affected", [])),
         "reasoning": parsed.get("reasoning", news.reasoning),
         "time_sensitivity": parsed.get("time_sensitivity", "analysis"),
@@ -317,8 +343,8 @@ class NewsClassifier:
             source=article.source,
             published_at=article.published_at,
             impact_score=parsed.get("impact_score", 0.5),
-            direction=parsed.get("direction", "neutral"),
-            category=parsed.get("category", "macro"),
+            direction=_validate_direction(parsed.get("direction", "neutral")),
+            category=_validate_category(parsed.get("category", "macro")),
             tickers_affected=_validate_tickers(parsed.get("tickers_affected", [])),
             reasoning=parsed.get("reasoning", ""),
             time_sensitivity=parsed.get("time_sensitivity", "analysis"),

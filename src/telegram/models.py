@@ -1,7 +1,7 @@
 """FT 텔레그램 봇 -- 공용 모델이다."""
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class BotResponse(BaseModel):
@@ -22,7 +22,7 @@ class TradeCommandResult(BaseModel):
     """수동 매매 명령 결과이다."""
 
     executed: bool
-    order_result: dict = {}
+    order_result: dict = Field(default_factory=dict)
     message: str = ""
 
 
@@ -37,7 +37,7 @@ class ParsedCommand(BaseModel):
     """파싱된 명령어이다."""
 
     command_type: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
 
 
 class PermissionResult(BaseModel):

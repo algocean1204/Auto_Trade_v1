@@ -81,12 +81,13 @@ dashboard/macos/Flutter/ephemeral/
 # Project scanner output (contains local paths)
 docs/project-context.md
 
-# Model files
+# ML 모델 바이너리 파일
 *.bin
 *.pt
 *.onnx
 *.safetensors
-models/
+# 루트 models/ 디렉토리만 무시한다 (dashboard/lib/models/ 등 하위 모듈은 추적)
+/models/
 
 # ChromaDB
 chroma_data/

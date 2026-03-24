@@ -5,10 +5,13 @@ InjectedSystem은 DI로 주입받는다.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.monitoring.server.auth import verify_api_key
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.logger import get_logger
@@ -121,7 +124,7 @@ def _build_initializing_response() -> DashboardSummaryResponse:
     """시스템 미초기화 상태의 기본 응답을 생성한다."""
     clock = get_market_clock()
     time_info = clock.get_time_info()
-    kst = timezone(timedelta(hours=9))
+    kst = ZoneInfo("Asia/Seoul")
     return DashboardSummaryResponse(
         system_status="initializing",
         session_type=time_info.session_type,
@@ -182,12 +185,12 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
             # 가용현금 0이면 매수가능금액 API(캐시)로 보완한다
             if cash <= 0:
                 try:
-                    cached_bp = await _system.components.cache.read("dashboard:buy_power")
+                    cached_bp = await system.components.cache.read("dashboard:buy_power")
                     if cached_bp is not None:
                         cash = float(cached_bp)
                     else:
                         cash = await fetch_buy_power(broker.virtual_auth, http)
-                        await _system.components.cache.write(
+                        await system.components.cache.write(
                             "dashboard:buy_power", str(cash), ttl=60,
                         )
                 except Exception:
@@ -232,7 +235,7 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
         (total_pnl / initial_capital * 100) if initial_capital > 0 else 0.0
     )
 
-    kst = timezone(timedelta(hours=9))
+    kst = ZoneInfo("Asia/Seoul")
     return DashboardSummaryResponse(
         system_status=status,
         session_type=time_info.session_type,
@@ -263,7 +266,7 @@ async def _build_summary_response(system: InjectedSystem) -> DashboardSummaryRes
 
 
 @dashboard_router.get("/summary", response_model=DashboardSummaryResponse)
-async def get_dashboard_summary() -> DashboardSummaryResponse:
+async def get_dashboard_summary(_auth: str = Depends(verify_api_key)) -> DashboardSummaryResponse:
     """대시보드 요약 데이터를 반환한다."""
     if _system is None:
         _logger.debug("시스템 미초기화 -- 기본 응답 반환")
@@ -273,7 +276,7 @@ async def get_dashboard_summary() -> DashboardSummaryResponse:
 
 
 @dashboard_router.get("/positions", response_model=PositionsResponse)
-async def get_positions(mode: str | None = None) -> PositionsResponse:
+async def get_positions(mode: str | None = None, _auth: str = Depends(verify_api_key)) -> PositionsResponse:
     """현재 보유 포지션 목록을 반환한다.
 
     1차: PositionMonitor(인메모리)에서 실시간 포지션을 가져온다.
@@ -371,7 +374,7 @@ async def _fetch_positions_from_broker() -> list[PositionItem]:
 
 
 @dashboard_router.get("/accounts", response_model=AccountsResponse)
-async def get_accounts_summary() -> AccountsResponse:
+async def get_accounts_summary(_auth: str = Depends(verify_api_key)) -> AccountsResponse:
     """모의투자와 실전투자 두 계좌의 잔고 요약을 반환한다.
 
     브로커의 virtual_auth / real_auth로 각각 잔고를 조회하여
@@ -464,7 +467,7 @@ async def get_accounts_summary() -> AccountsResponse:
 
 
 @dashboard_router.get("/trades/recent", response_model=RecentTradesResponse)
-async def get_recent_trades(limit: int = 10) -> RecentTradesResponse:
+async def get_recent_trades(limit: int = Query(default=10, ge=1, le=100), _auth: str = Depends(verify_api_key)) -> RecentTradesResponse:
     """최근 체결 거래 목록을 반환한다.
 
     trades:today에서 당일 거래를 읽어 Dart Trade.fromJson 호환 키로 변환한다.
@@ -491,13 +494,14 @@ async def get_recent_trades(limit: int = 10) -> RecentTradesResponse:
             if "side" in d and "action" not in d:
                 d["action"] = d.pop("side")
             d.setdefault("id", idx + 1)
-            # pnl_pct 계산
+            # pnl_pct 역산: avg = price - pnl/qty, pnl_pct = pnl/(avg*qty)*100
             if "pnl_pct" not in d:
                 pnl = d.get("pnl")
                 price = d.get("price", 0)
                 qty = d.get("quantity", 0)
                 if pnl is not None and price > 0 and qty > 0:
-                    d["pnl_pct"] = (pnl / (price * qty)) * 100.0
+                    cost_basis = price * qty - pnl
+                    d["pnl_pct"] = (pnl / cost_basis) * 100.0 if abs(cost_basis) > 1e-9 else 0.0
                 else:
                     d["pnl_pct"] = 0.0
             d.setdefault("pnl", 0.0)

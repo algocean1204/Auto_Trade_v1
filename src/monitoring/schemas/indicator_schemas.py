@@ -31,28 +31,28 @@ class IndicatorConfigUpdateRequest(BaseModel):
 class IndicatorWeightsResponse(BaseModel):
     """지표 가중치 조회 응답 모델이다."""
 
-    weights: dict[str, float]
+    weights: dict[str, float] = Field(default_factory=dict)
 
 
 class IndicatorWeightUpdateResponse(BaseModel):
     """지표 가중치 업데이트 응답 모델이다."""
 
-    status: str
-    weights: dict[str, float]
+    status: str = ""
+    weights: dict[str, float] = Field(default_factory=dict)
 
 
 class RsiDataResponse(BaseModel):
     """RSI 데이터 조회 응답 모델이다."""
 
-    rsi_data: dict[str, Any]
-    message: str | None
+    rsi_data: dict[str, Any] = Field(default_factory=dict)
+    message: str | None = None
 
 
 class IndicatorConfigResponse(BaseModel):
     """지표 설정 응답 모델이다."""
 
-    updated: bool
-    config: dict[str, Any]
+    updated: bool = False
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class MacdData(BaseModel):
@@ -100,9 +100,9 @@ class RealtimeIndicatorResponse(BaseModel):
     """실시간 기술 지표 응답 모델이다."""
 
     ticker: str
-    rsi: float | None
-    macd: MacdData | None
-    bollinger: BollingerData | None
-    atr: float | None
-    volume: float | None
-    timestamp: str
+    rsi: float | None = None
+    macd: MacdData | None = None
+    bollinger: BollingerData | None = None
+    atr: float | None = None
+    volume: float | None = None
+    timestamp: str = ""

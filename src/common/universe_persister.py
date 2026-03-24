@@ -5,6 +5,8 @@ API에서 add/toggle/delete 시 즉시 DB에 반영한다.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import select, update, delete
 
 from src.common.database_gateway import SessionFactory
@@ -56,7 +58,7 @@ class UniversePersister:
             logger.exception("유니버스 로드/시드 실패 -- 빈 목록을 반환한다")
             return []
 
-    async def _seed_from_hardcoded(self, session: object) -> list[dict]:
+    async def _seed_from_hardcoded(self, session: Any) -> list[dict]:
         """하드코딩 _ETF_RAW 데이터를 DB에 삽입하고 반환한다."""
         from src.common.ticker_registry import _ETF_FIELDS, _ETF_RAW
         from src.db.models import UniverseConfig
@@ -181,7 +183,7 @@ class UniversePersister:
             return False
 
     @staticmethod
-    def _row_to_dict(row: object) -> dict:
+    def _row_to_dict(row: Any) -> dict[str, Any]:
         """ORM 레코드를 딕셔너리로 변환한다."""
         return {
             "ticker": row.ticker,  # type: ignore[attr-defined]

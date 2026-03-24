@@ -7,9 +7,9 @@ import 'package:ai_trading_dashboard/services/api_service.dart';
 
 void main() {
   group('ApiService - URL 생성', () {
-    test('기본 baseUrl은 localhost:9500이다', () {
+    test('기본 baseUrl은 localhost:9501이다', () {
       final api = ApiService();
-      expect(api.baseUrl, 'http://localhost:9500');
+      expect(api.baseUrl, 'http://localhost:9501');
     });
 
     test('커스텀 baseUrl을 설정할 수 있다', () {
@@ -209,7 +209,7 @@ void main() {
 
   group('ApiService - endpoint URL 패턴', () {
     test('getDailyReturns URL에 days 쿼리가 포함된다', () {
-      const baseUrl = 'http://localhost:9500';
+      const baseUrl = 'http://localhost:9501';
       const days = 30;
       final url = Uri.parse('$baseUrl/dashboard/charts/daily-returns?days=$days');
       expect(url.queryParameters['days'], '30');
@@ -217,7 +217,7 @@ void main() {
     });
 
     test('getTripleRsi URL에 ticker와 days가 포함된다', () {
-      const baseUrl = 'http://localhost:9500';
+      const baseUrl = 'http://localhost:9501';
       const ticker = 'SOXL';
       const days = 100;
       final url = Uri.parse('$baseUrl/api/indicators/rsi/$ticker?days=$days');
@@ -226,7 +226,7 @@ void main() {
     });
 
     test('getStockAnalysis URL에 ticker가 포함된다', () {
-      const baseUrl = 'http://localhost:9500';
+      const baseUrl = 'http://localhost:9501';
       const ticker = 'QLD';
       final url = Uri.parse('$baseUrl/api/analysis/comprehensive/$ticker');
       expect(url.path, '/api/analysis/comprehensive/QLD');

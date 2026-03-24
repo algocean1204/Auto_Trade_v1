@@ -13,11 +13,10 @@ FROM python:3.12-slim AS deps
 
 WORKDIR /app
 
-# 시스템 의존성 설치 (psycopg2-binary 빌드에 필요)
+# 시스템 의존성 설치 (빌드 도구)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         gcc \
-        libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-docker.txt .
@@ -30,10 +29,9 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-# 런타임 시스템 의존성 (libpq for psycopg2)
+# 런타임 시스템 의존성 (curl for healthcheck)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libpq5 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -45,10 +43,16 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY db/ ./db/
-COPY strategy_params.json ./strategy_params.json
-
-# data 디렉토리 생성 (런타임에 볼륨 마운트됨)
+# data 디렉토리 생성 후 설정 파일을 복사한다 (strategy_params.json은 data/ 내부에 위치한다)
 RUN mkdir -p /app/data
+COPY data/strategy_params.json ./data/strategy_params.json
+COPY data/ticker_params.json ./data/ticker_params.json
+COPY data/trading_principles.json ./data/trading_principles.json
+
+# 비-root 사용자를 생성한다 (보안 강화)
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+USER appuser
 
 # Docker 전용 환경변수
 ENV DOCKER_MODE=1
@@ -56,10 +60,10 @@ ENV MLX_ENABLED=0
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# 헬스체크
+# 헬스체크 경로는 /api/system/health이다 (system_router prefix="/api/system")
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:9500/health || exit 1
+    CMD curl -f http://localhost:9501/api/system/health || exit 1
 
-EXPOSE 9500
+EXPOSE 9501
 
 CMD ["python", "scripts/start_dashboard.py"]

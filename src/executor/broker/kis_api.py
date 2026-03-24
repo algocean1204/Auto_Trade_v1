@@ -99,10 +99,30 @@ def _get_tr_id(auth: KisAuth, operation: str) -> str:
     tr_map = _TR_ID_MAP.get(operation)
     if tr_map is None:
         raise ValueError(f"알 수 없는 TR_ID 오퍼레이션: {operation}")
-    mode = "real" if auth._is_real else "virtual"
+    mode = "real" if auth.is_real else "virtual"
     tr_id = tr_map[mode]
     logger.debug("TR_ID 선택: %s → %s (%s)", operation, tr_id, mode)
     return tr_id
+
+# 시세 조회 EXCD(NAS/AMS/NYS)와 거래 OVRS_EXCG_CD(NASD/AMEX/NYSE)는 코드 체계가 다르다
+_EXCD_TO_EXCG: dict[str, str] = {
+    "NAS": "NASD",
+    "AMS": "AMEX",
+    "NYS": "NYSE",
+    "NASD": "NASD",
+    "AMEX": "AMEX",
+    "NYSE": "NYSE",
+}
+
+
+def _to_order_exchange(excd: str) -> str:
+    """시세용 거래소 코드(NAS/AMS/NYS)를 주문용 코드(NASD/AMEX/NYSE)로 변환한다.
+
+    KIS OpenAPI에서 시세 조회(EXCD)와 주문(OVRS_EXCG_CD)은 거래소 코드 체계가 다르다.
+    변환 실패 시 원본을 그대로 반환한다.
+    """
+    return _EXCD_TO_EXCG.get(excd, excd)
+
 
 # 가상 거래에서 시장가 불가 -- 지정가 변환 시 슬리피지 비율
 _MARKET_TO_LIMIT_SLIPPAGE = 0.005
@@ -128,6 +148,7 @@ async def fetch_price(
         price=safe_float(output.get("last")),
         change_pct=safe_float(output.get("rate")),
         volume=safe_int(output.get("tvol")),
+        avg_volume=safe_int(output.get("d250_vavg_clam")),
         timestamp=datetime.now(tz=timezone.utc),
     )
 
@@ -327,7 +348,7 @@ async def submit_order(
     ord_unpr = _resolve_order_price(order)
     body = {
         "CANO": cano, "ACNT_PRDT_CD": acnt_cd,
-        "OVRS_EXCG_CD": order.exchange, "PDNO": order.ticker,
+        "OVRS_EXCG_CD": _to_order_exchange(order.exchange), "PDNO": order.ticker,
         "ORD_QTY": str(order.quantity), "OVRS_ORD_UNPR": ord_unpr,
         "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": "00",
     }
@@ -342,7 +363,16 @@ async def submit_order(
     data = await _with_token_retry(auth, _call, f"주문 {order.ticker}")
     output = data.get("output", {})
     odno = output.get("ODNO", "") or output.get("odno", "")
-    return OrderResult(order_id=odno, status="filled", message="주문 접수 완료")
+    # KIS API rt_cd=0은 "주문 접수 완료"를 의미하며, "체결 완료"가 아니다.
+    # 가상투자(모의투자)는 즉시 체결되므로 filled로 간주한다.
+    # 실전 전환 시 주문 체결 조회 API(inquire-ccnl)를 추가하여
+    # 실제 체결 상태를 확인하도록 개선해야 한다.
+    status = "filled" if not auth.is_real else "pending"
+    logger.info(
+        "주문 접수 완료: %s %s %d주 @%s (order_id=%s, status=%s)",
+        order.side, order.ticker, order.quantity, ord_unpr, odno, status,
+    )
+    return OrderResult(order_id=odno, status=status, message="주문 접수 완료")
 
 
 def _resolve_order_price(order: OrderRequest) -> str:
@@ -394,36 +424,51 @@ async def fetch_exchange_rate(
 
     KIS OpenAPI에 독립 환율 조회 경로가 없으므로
     inquire-present-balance 응답에서 환율을 가져온다.
-    범위 검증(900~2000)을 통과해야만 반환한다.
+    범위 검증(950~1500)을 통과해야만 반환한다.
     """
     result = await _fetch_present_balance(auth, http)
     rate = result.usd_rate
 
-    if not (950 < rate < 1500):
+    # 시스템 전체에서 통일된 범위(900~2000)를 사용한다
+    if not (900 < rate < 2000):
         raise BrokerError(
             message="KIS 환율 범위 이탈",
-            detail=f"rate={rate} (기대: 950-1500)",
+            detail=f"rate={rate} (기대: 900-2000)",
         )
 
     logger.info("KIS 환율 조회: %.2f 원/달러 (체결기준잔고)", rate)
     return rate
 
 
+class CancelResult:
+    """주문 취소 API 결과를 담는다.
+
+    success: 취소 성공 여부
+    raw_output: KIS API 원본 output (체결 수량 등 추출용)
+    """
+    __slots__ = ("success", "raw_output")
+
+    def __init__(self, success: bool, raw_output: dict | None = None) -> None:
+        self.success = success
+        self.raw_output = raw_output or {}
+
+
 async def cancel_order(
     auth: KisAuth, order_id: str, exchange: str,
     http: AsyncHttpClient,
-) -> bool:
+) -> CancelResult:
     """KIS 미체결 주문 취소 API를 호출한다.
 
     정정/취소 TR_ID: 가상 VTTT1004U, 실전 TTTT1004U.
-    성공 시 True를 반환한다.
+    성공 시 CancelResult(success=True)를 반환한다.
+    raw_output에 KIS 원본 응답을 포함하여 부분 체결 정보를 추출할 수 있다.
     """
     tr_id = _get_tr_id(auth, "cancel")
     cano, acnt_cd = account_parts(auth)
     body = {
         "CANO": cano,
         "ACNT_PRDT_CD": acnt_cd,
-        "OVRS_EXCG_CD": exchange,
+        "OVRS_EXCG_CD": _to_order_exchange(exchange),
         "ORGN_ODNO": order_id,
         "RVSE_CNCL_DVSN_CD": "02",  # 02 = 취소
         "ORD_QTY": "0",  # 전량 취소
@@ -439,5 +484,6 @@ async def cancel_order(
         return check_response(resp, f"주문 취소 {order_id}")
 
     data = await _with_token_retry(auth, _call, f"취소 {order_id}")
+    output = data.get("output", {})
     logger.info("주문 취소 완료: order_id=%s", order_id)
-    return True
+    return CancelResult(success=True, raw_output=output)

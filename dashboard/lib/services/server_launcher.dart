@@ -22,6 +22,10 @@ class ServerLauncher {
   /// 이 앱이 서버를 시작했는지 여부이다.
   bool _launchedByUs = false;
 
+  /// ensureRunning() 동시 호출 방지 Completer이다.
+  /// null이면 현재 실행 중인 ensureRunning이 없다.
+  Completer<ServerLaunchResult>? _ensureRunningCompleter;
+
   /// 캐시된 프로젝트 루트 경로이다.
   String? _projectRoot;
 
@@ -46,7 +50,7 @@ class ServerLauncher {
   static const _stopTimeoutSec = 20;
 
   /// 허용 포트 범위이다.
-  static const _allowedPorts = [9500, 9501, 9502, 9503, 9504, 9505];
+  static const _allowedPorts = [9501, 9502, 9503, 9504, 9505];
 
   /// 서버가 기록하는 포트 파일 경로이다.
   static const _portFileName = 'data/server_port.txt';
@@ -56,8 +60,11 @@ class ServerLauncher {
   /// 이 앱이 서버를 시작했는지 여부이다.
   bool get launchedByUs => _launchedByUs;
 
-  /// 캐시된 프로젝트 루트 경로이다.
-  String? get projectRoot => _projectRoot;
+  /// 프로젝트 루트 경로이다. 아직 탐색하지 않았으면 자동으로 탐색한다.
+  String? get projectRoot {
+    _projectRoot ??= _findProjectRoot();
+    return _projectRoot;
+  }
 
   /// 서버 프로세스의 최근 로그이다.
   List<String> get serverLogs => List.unmodifiable(_serverLogs);
@@ -65,11 +72,46 @@ class ServerLauncher {
   /// 현재 서버가 실행 중인 포트이다. 감지 전에는 null이다.
   int? get activePort => _activePort;
 
-  /// 현재 서버의 base URL이다. 포트가 감지되지 않으면 허용 범위의 첫 번째 포트(9500)를 사용한다.
-  String get baseUrl => 'http://localhost:${_activePort ?? 9500}';
+  /// 현재 서버의 base URL이다. 포트가 감지되지 않으면 허용 범위의 첫 번째 포트(9501)를 사용한다.
+  String get baseUrl => 'http://localhost:${_activePort ?? 9501}';
 
   /// 현재 서버의 WebSocket base URL이다.
-  String get wsBaseUrl => 'ws://localhost:${_activePort ?? 9500}';
+  String get wsBaseUrl => 'ws://localhost:${_activePort ?? 9501}';
+
+  /// 번들 모드인지 여부를 외부에 공개한다.
+  bool get isBundledApp => _isBundledApp;
+
+  /// 현재 모드에 맞는 데이터 디렉토리 경로를 반환한다.
+  ///
+  /// 번들 모드: ~/Library/Application Support/com.stocktrader.ai/data/
+  /// 개발 모드: {projectRoot}/data/
+  String? get dataDirectory {
+    if (_isBundledApp) {
+      return '$_bundledWorkingDirectory/data';
+    }
+    // projectRoot가 아직 초기화되지 않았으면 탐색을 시도한다.
+    _projectRoot ??= _findProjectRoot();
+    final root = _projectRoot;
+    if (root == null) return null;
+    return '$root/data';
+  }
+
+  /// 현재 모드에 맞는 .env 파일 경로를 반환한다.
+  ///
+  /// 번들 모드: ~/Library/Application Support/com.stocktrader.ai/.env
+  /// 개발 모드: {projectRoot}/.env
+  String? get envFilePath {
+    if (_isBundledApp) {
+      return '$_bundledWorkingDirectory/.env';
+    }
+    _projectRoot ??= _findProjectRoot();
+    final root = _projectRoot;
+    if (root == null) return null;
+    return '$root/.env';
+  }
+
+  /// 번들 모드에서의 작업 디렉토리를 외부에 공개한다.
+  String get bundledWorkingDir => _bundledWorkingDirectory;
 
   // ── Public methods ──
 
@@ -86,7 +128,34 @@ class ServerLauncher {
   ///
   /// [onLog] 콜백을 제공하면 서버 시작 과정의 단계별 로그를 수신한다.
   /// 반환값의 [success]가 true이면 서버가 정상 가동 중이다.
+  /// 동시 호출 시 첫 번째 호출의 결과를 공유한다 (서버 2개 시작 방지).
   Future<ServerLaunchResult> ensureRunning({
+    void Function(String)? onLog,
+  }) async {
+    // 이미 ensureRunning이 진행 중이면 해당 결과를 대기하여 반환한다.
+    if (_ensureRunningCompleter != null) {
+      onLog?.call('서버 시작이 이미 진행 중입니다. 대기합니다...');
+      return _ensureRunningCompleter!.future;
+    }
+    _ensureRunningCompleter = Completer<ServerLaunchResult>();
+    try {
+      final result = await _doEnsureRunning(onLog: onLog);
+      _ensureRunningCompleter!.complete(result);
+      return result;
+    } catch (e) {
+      final errorResult = ServerLaunchResult(
+        success: false,
+        message: '서버 시작 중 오류: $e',
+      );
+      _ensureRunningCompleter!.complete(errorResult);
+      return errorResult;
+    } finally {
+      _ensureRunningCompleter = null;
+    }
+  }
+
+  /// ensureRunning의 실제 구현이다.
+  Future<ServerLaunchResult> _doEnsureRunning({
     void Function(String)? onLog,
   }) async {
     // 1) 이미 실행 중인 서버가 있는지 확인한다 (수동 기동 포함).
@@ -106,18 +175,39 @@ class ServerLauncher {
       return const ServerLaunchResult(
         success: false,
         message: '프로젝트 루트를 찾을 수 없습니다. '
-            '.env와 src/main.py가 있는 디렉토리를 확인하세요.',
+            'src/main.py가 있는 디렉토리를 확인하세요.',
       );
     }
     onLog?.call('프로젝트 루트: $_projectRoot');
 
-    // 3) Python 가상환경 존재 여부를 확인한다.
-    final venvPython = '$_projectRoot/.venv/bin/python';
-    if (!File(venvPython).existsSync()) {
-      return const ServerLaunchResult(
-        success: false,
-        message: 'Python 가상환경을 찾을 수 없습니다.',
-      );
+    // 3) 번들 모드 또는 개발 모드에 따라 실행 경로를 결정한다.
+    final String executable;
+    final List<String> arguments;
+    final String workingDir;
+
+    // 번들 모드: 내장 바이너리가 실제로 존재할 때만 사용한다.
+    // flutter run 디버그 빌드도 .app 구조를 사용하므로 바이너리 존재 여부로 확인한다.
+    final bundledExe = '$_projectRoot/trading_server';
+    if (_isBundledApp && File(bundledExe).existsSync()) {
+      executable = bundledExe;
+      arguments = [];
+      workingDir = _bundledWorkingDirectory;
+      final workDir = Directory(workingDir);
+      if (!workDir.existsSync()) {
+        workDir.createSync(recursive: true);
+      }
+    } else {
+      // 개발 모드: Python 가상환경을 사용한다.
+      final venvPython = '$_projectRoot/.venv/bin/python';
+      if (!File(venvPython).existsSync()) {
+        return const ServerLaunchResult(
+          success: false,
+          message: 'Python 가상환경을 찾을 수 없습니다.',
+        );
+      }
+      executable = venvPython;
+      arguments = ['-u', '-m', 'src.main'];
+      workingDir = _projectRoot!;
     }
 
     // 4) Python 서버 프로세스를 시작한다. (Docker 단계는 별도 관리)
@@ -129,9 +219,9 @@ class ServerLauncher {
       env.remove('CLAUDE_CODE');
 
       _serverProcess = await Process.start(
-        venvPython,
-        ['-u', '-m', 'src.main'],
-        workingDirectory: _projectRoot!,
+        executable,
+        arguments,
+        workingDirectory: workingDir,
         environment: env,
       );
 
@@ -206,13 +296,33 @@ class ServerLauncher {
   // ── Private helpers ──
 
   /// 포트 파일에서 서버 포트를 읽는다. 파일이 없거나 유효하지 않으면 null이다.
+  ///
+  /// 번들 모드에서는 Application Support 하위에서도 탐색한다.
+  /// 서버가 작업 디렉토리를 Application Support로 사용하므로
+  /// 포트 파일도 해당 경로에 생성된다.
   int? _readPortFile() {
+    // 번들 모드: Application Support 경로를 우선 탐색한다.
+    if (_isBundledApp) {
+      final port = _tryReadPort('$_bundledWorkingDirectory/$_portFileName');
+      if (port != null) return port;
+    }
+    // 프로젝트 루트 경로에서 탐색한다.
     if (_projectRoot == null) return null;
+    return _tryReadPort('$_projectRoot/$_portFileName');
+  }
+
+  /// 지정 경로에서 포트 번호를 읽는 헬퍼이다.
+  ///
+  /// 비숫자, 범위 초과(1~65535 밖), 빈 파일 등 무효한 값은 null을 반환한다.
+  int? _tryReadPort(String path) {
     try {
-      final file = File('$_projectRoot/$_portFileName');
+      final file = File(path);
       if (!file.existsSync()) return null;
       final content = file.readAsStringSync().trim();
-      return int.tryParse(content);
+      if (content.isEmpty) return null;
+      final port = int.tryParse(content);
+      if (port == null || port < 1 || port > 65535) return null;
+      return port;
     } catch (_) {
       return null;
     }
@@ -220,18 +330,19 @@ class ServerLauncher {
 
   /// 특정 포트에 대해 헬스 체크를 수행한다.
   Future<bool> _healthCheckPort(int port) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 2);
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 2);
       final request = await client
           .getUrl(Uri.parse('http://localhost:$port/api/system/health'));
       final response = await request.close().timeout(
             const Duration(seconds: 3),
           );
-      client.close(force: true);
       return response.statusCode == 200;
     } catch (_) {
       return false;
+    } finally {
+      client.close(force: true);
     }
   }
 
@@ -280,11 +391,47 @@ class ServerLauncher {
     return false;
   }
 
+  /// .app 번들 내에서 실행 중인지 감지한다.
+  bool get _isBundledApp {
+    try {
+      final exePath = Platform.resolvedExecutable;
+      return exePath.contains('.app/Contents/MacOS/');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 번들 모드에서 사용할 작업 디렉토리를 반환한다.
+  /// ~/Library/Application Support/com.stocktrader.ai/ 하위에 생성한다.
+  String get _bundledWorkingDirectory {
+    final home = Platform.environment['HOME'] ?? '';
+    return '$home/Library/Application Support/com.stocktrader.ai';
+  }
+
+  /// 번들 모드에서 내장된 Python 백엔드 경로를 반환한다.
+  /// .app/Contents/Resources/python_backend/ 에 위치한다.
+  String? _findBundledBackend() {
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent;
+      // MacOS/ → Contents/ → Resources/python_backend/
+      final resourcesDir = exeDir.parent;
+      final backendPath = '${resourcesDir.path}/Resources/python_backend';
+      if (Directory(backendPath).existsSync()) return backendPath;
+    } catch (_) {}
+    return null;
+  }
+
   /// 프로젝트 루트 경로를 탐색한다.
   ///
-  /// 실행 파일 기준 상위 12단계, 현재 작업 디렉토리 기준 8단계를 탐색하여
-  /// .env와 src/main.py가 모두 존재하는 디렉토리를 반환한다.
+  /// 번들 모드에서는 내장 백엔드 경로를 사용하고,
+  /// 개발 모드에서는 실행 파일 기준 상위 12단계, 작업 디렉토리 기준 8단계를 탐색한다.
   String? _findProjectRoot() {
+    // 번들 모드: 내장 백엔드 경로를 사용한다.
+    if (_isBundledApp) {
+      final bundled = _findBundledBackend();
+      if (bundled != null) return bundled;
+    }
+
     // 실행 파일 기준 상위 디렉토리를 탐색한다.
     try {
       var dir = File(Platform.resolvedExecutable).parent;
@@ -307,9 +454,9 @@ class ServerLauncher {
   }
 
   /// 주어진 경로가 프로젝트 루트인지 확인한다.
+  /// .env 없이도 src/main.py만 있으면 프로젝트 루트로 인정한다 (setup_mode 지원).
   bool _isProjectRoot(String path) {
-    return File('$path/.env').existsSync() &&
-        File('$path/src/main.py').existsSync();
+    return File('$path/src/main.py').existsSync();
   }
 
   // ── LaunchAgent 제어 (launchctl) ──

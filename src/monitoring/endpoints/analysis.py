@@ -9,7 +9,9 @@ import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+
+from src.monitoring.server.auth import verify_api_key
 
 from src.common.logger import get_logger
 from src.monitoring.schemas.analysis_schemas import (
@@ -111,7 +113,8 @@ async def _trigger_realtime_analysis(ticker: str) -> dict[str, Any] | None:
       2. 미등록이면 → IndicatorBundleBuilder로 기술 지표 기반 기본 분석 생성
       3. 둘 다 불가하면 → KIS API로 최소한의 시장 데이터를 조회
     """
-    assert _system is not None
+    if _system is None:
+        return None
 
     # 1. ComprehensiveTeam AI 분석 시도
     analysis_data = await _try_comprehensive_team_analysis(ticker)
@@ -132,7 +135,8 @@ async def _try_comprehensive_team_analysis(ticker: str) -> dict[str, Any] | None
 
     Feature 미등록 또는 분석 실패 시 None을 반환한다.
     """
-    assert _system is not None
+    if _system is None:
+        return None
     team = _system.features.get("comprehensive_team")
     if team is None:
         _logger.debug("comprehensive_team 미등록 -- AI 분석 스킵")
@@ -182,7 +186,8 @@ async def _try_indicator_based_analysis(ticker: str) -> dict[str, Any] | None:
 
     AI 분석 없이 기술 지표 데이터만으로 응답을 구성한다.
     """
-    assert _system is not None
+    if _system is None:
+        return None
     builder = _system.features.get("indicator_bundle_builder")
     if builder is None:
         _logger.debug("indicator_bundle_builder 미등록 -- 지표 기반 분석 스킵")
@@ -230,7 +235,8 @@ async def _try_kis_fallback(ticker: str) -> dict[str, Any] | None:
     AI와 IndicatorBundleBuilder 모두 불가할 때의 최종 폴백이다.
     BrokerClient.get_price()와 get_daily_candles()를 사용한다.
     """
-    assert _system is not None
+    if _system is None:
+        return None
 
     try:
         broker = _system.components.broker
@@ -306,26 +312,27 @@ async def _build_ticker_context(ticker: str) -> object:
     """
     from src.analysis.models import AnalysisContext
 
-    assert _system is not None
+    if _system is None:
+        return None
     cache = _system.components.cache
 
     # VIX → 레짐 판별
-    vix = 20.0
+    vix = 19.0
     regime_str = "sideways"
     try:
         vf = _system.features.get("vix_fetcher")
         if vf is not None:
             vix = await vf.get_vix()  # type: ignore[union-attr]
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("VIX 조회 실패 — 기본값 사용 (무시): %s", exc)
 
     detector = _system.features.get("regime_detector")
     if detector is not None:
         try:
             regime = detector.detect(vix_value=vix)  # type: ignore[union-attr]
             regime_str = regime.regime_type  # type: ignore[union-attr]
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("레짐 탐지 실패 — 기본값 사용 (무시): %s", exc)
 
     # 포지션 조회
     positions_list: list[dict] = []
@@ -334,15 +341,15 @@ async def _build_ticker_context(ticker: str) -> object:
         try:
             pos_map = monitor.get_all_positions()  # type: ignore[union-attr]
             positions_list = [p.model_dump() for p in pos_map.values()]
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("포지션 조회 실패 (무시): %s", exc)
 
     # 뉴스 / 지표 캐시
     news_summary = f"{ticker} 분석 요청"
     indicators: dict = {}
     try:
         # 티커별 뉴스를 JSON으로 읽어 요약 텍스트를 구성한다
-        ticker_news = await cache.read_json(f"news:{ticker}")
+        ticker_news = await cache.read_json(f"news:{ticker.upper()}")
         if ticker_news:
             news_summary = _extract_news_summary(ticker_news, ticker)
         else:
@@ -354,8 +361,8 @@ async def _build_ticker_context(ticker: str) -> object:
         raw_ind = await cache.read_json("indicators:latest")
         if raw_ind and isinstance(raw_ind, dict):
             indicators = raw_ind
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("뉴스/지표 캐시 조회 실패 (무시): %s", exc)
 
     return AnalysisContext(
         news_summary=news_summary,
@@ -374,7 +381,8 @@ async def _enrich_analysis_data(
     analysis_timestamp 등 Flutter 대시보드 모델이 기대하는 필드를 추가한다.
     이미 존재하는 필드는 덮어쓰지 않는다.
     """
-    assert _system is not None
+    if _system is None:
+        return data
     ticker_upper = ticker.upper()
 
     # analysis_timestamp 보강 (timestamp → analysis_timestamp 매핑)
@@ -581,7 +589,7 @@ def _extract_action_from_signals(signals: list[dict]) -> str:
 
 
 @analysis_router.get("/tickers", response_model=AnalysisTickersResponse)
-async def get_analysis_tickers() -> AnalysisTickersResponse:
+async def get_analysis_tickers(_auth: str = Depends(verify_api_key)) -> AnalysisTickersResponse:
     """분석 가능한 티커 목록을 반환한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -605,8 +613,9 @@ async def get_analysis_tickers() -> AnalysisTickersResponse:
     response_model=ComprehensiveAnalysisResponse,
 )
 async def get_comprehensive_analysis(
-    ticker: str,
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
     ai: bool = Query(default=True, description="AI 분석 활성화 여부"),
+    _auth: str = Depends(verify_api_key),
 ) -> ComprehensiveAnalysisResponse:
     """티커 종합 분석 결과를 반환한다.
 
@@ -689,15 +698,16 @@ async def get_comprehensive_analysis(
     "/ticker-news/{ticker}",
     response_model=TickerNewsResponse,
 )
-async def get_ticker_news(ticker: str, limit: int = 20) -> TickerNewsResponse:
+async def get_ticker_news(ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"), limit: int = Query(default=20, ge=1, le=100), _auth: str = Depends(verify_api_key)) -> TickerNewsResponse:
     """티커별 관련 뉴스를 반환한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         cache = _system.components.cache
-        cached = await cache.read_json(f"news:{ticker}")
+        ticker_upper = ticker.upper()
+        cached = await cache.read_json(f"news:{ticker_upper}")
         articles = cached if isinstance(cached, list) else []
-        return TickerNewsResponse(ticker=ticker, articles=articles[:limit])
+        return TickerNewsResponse(ticker=ticker_upper, articles=articles[:limit])
     except HTTPException:
         raise
     except Exception:

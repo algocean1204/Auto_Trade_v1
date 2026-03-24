@@ -143,13 +143,21 @@ async def opus_team_judgment(
     return report
 
 
+def _safe_confidence(raw: object) -> float:
+    """AI가 반환한 confidence 값을 안전하게 float로 변환하고 0.0~1.0 범위로 클램핑한다."""
+    try:
+        return max(0.0, min(1.0, float(raw)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _enforce_confidence_thresholds(opinions: list[dict]) -> list[dict]:
     """CR-1: 분석가별 confidence가 임계값 미달이면 action을 hold로 강제한다."""
     enforced = []
     for o in opinions:
         name = o.get("analyst", "?")
         action = o.get("action", "hold")
-        confidence = float(o.get("confidence", 0))
+        confidence = _safe_confidence(o.get("confidence", 0))
         threshold = _CONFIDENCE_THRESHOLDS.get(name, 0.7)
 
         if action != "hold" and confidence < threshold:
@@ -198,11 +206,13 @@ def _apply_voting_rules(opinions: list[dict]) -> dict | None:
 
     # 만장일치 → 리더에게 높은 confidence 힌트 전달
     if len(unique_actions) == 1:
-        avg_conf = sum(float(o.get("confidence", 0)) for o in opinions) / 3
+        avg_conf = sum(_safe_confidence(o.get("confidence", 0)) for o in opinions) / 3
         return {
             "force_hold": False,
             "unanimous_action": actions[0],
+            "confidence": min(avg_conf + 0.1, 1.0),
             "confidence_hint": min(avg_conf + 0.1, 1.0),
+            "risk_level": "low" if actions[0] == "hold" else "medium",
             "reason": f"만장일치 {actions[0]} (평균 confidence={avg_conf:.2f})",
         }
 
@@ -210,9 +220,15 @@ def _apply_voting_rules(opinions: list[dict]) -> dict | None:
     majority_action, majority_count = action_counts.most_common(1)[0]
     if majority_count == 2:
         minority = next(o for o in opinions if o.get("action") != majority_action)
+        majority_conf = sum(
+            _safe_confidence(o.get("confidence", 0))
+            for o in opinions if o.get("action") == majority_action
+        ) / 2
         return {
             "force_hold": False,
             "majority_action": majority_action,
+            "confidence": majority_conf,
+            "risk_level": minority.get("risk_assessment", "medium"),
             "minority_risk": minority.get("key_risk", ""),
             "reason": f"2:1 다수결 {majority_action} (소수 의견: {minority.get('analyst', '?')})",
         }
@@ -307,7 +323,7 @@ async def _leader_synthesis(
         f"[원본 Sonnet 분석 + 시장 데이터]\n{base_input}\n\n"
         "반드시 아래 JSON만 출력하라:\n"
         "{\n"
-        '  "signals": [{"action": "buy/sell/hold", "ticker": "종목코드", "reason": "한국어"}],\n'
+        '  "signals": [{"action": "buy/sell/hold", "ticker": "종목코드", "direction": "bull/bear", "reason": "한국어"}],\n'
         '  "confidence": 0.0~1.0,\n'
         '  "recommendations": ["한국어 구체적 행동 지시"],\n'
         '  "regime_assessment": "현재 시장 상태 평가 (한국어)",\n'
@@ -320,7 +336,7 @@ async def _leader_synthesis(
         parsed = _parse_json(response.content)
 
         if parsed is None:
-            logger.error("Opus 리더 응답 파싱 실패 — hold 기본값 반환")
+            logger.warning("Opus 리더 응답 파싱 실패 — hold 기본값 반환")
             return ComprehensiveReport(
                 signals=[{"action": "hold", "ticker": "", "reason": "리더 JSON 파싱 실패"}],
                 confidence=0.3,
@@ -330,19 +346,29 @@ async def _leader_synthesis(
                 timestamp=datetime.now(tz=timezone.utc),
             )
 
+        # AI가 confidence를 범위 밖으로 반환할 수 있으므로 클램핑한다
+        raw_conf = parsed.get("confidence", 0.4)
+        try:
+            clamped_conf = max(0.0, min(1.0, float(raw_conf)))
+        except (TypeError, ValueError):
+            clamped_conf = 0.4
+        # risk_level이 유효 값이 아닐 경우 medium으로 보정한다
+        raw_risk = parsed.get("risk_level", "medium")
+        valid_risks = {"low", "medium", "high", "critical"}
+        safe_risk = raw_risk if raw_risk in valid_risks else "medium"
         return ComprehensiveReport(
             signals=parsed.get(
                 "signals",
                 [{"action": "hold", "ticker": "", "reason": "판단 불가"}],
             ),
-            confidence=parsed.get("confidence", 0.4),
+            confidence=clamped_conf,
             recommendations=parsed.get("recommendations", ["포지션 유지"]),
             regime_assessment=parsed.get("regime_assessment", ""),
-            risk_level=parsed.get("risk_level", "medium"),
+            risk_level=safe_risk,
             timestamp=datetime.now(tz=timezone.utc),
         )
     except Exception as exc:
-        logger.error("Opus 리더 판단 실패: %s", exc)
+        logger.error("Opus 리더 판단 실패: %s", exc, exc_info=True)
         return ComprehensiveReport(
             signals=[{
                 "action": "hold", "ticker": "",

@@ -71,7 +71,7 @@ def _detect_signals(
 ) -> list[str]:
     """볼륨 프로파일 기반 신호를 생성한다."""
     signals: list[str] = []
-    if abs(current_price - poc) / poc < _PROXIMITY_PCT:
+    if poc > 0 and abs(current_price - poc) / poc < _PROXIMITY_PCT:
         signals.append("near_poc")
     if current_price > va_high:
         signals.append("above_value_area")

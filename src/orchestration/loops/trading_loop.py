@@ -9,6 +9,7 @@ import asyncio
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -16,10 +17,21 @@ from src.common.logger import get_logger
 from src.common.market_clock import SessionType, TimeInfo
 from src.orchestration.init.dependency_injector import InjectedSystem
 
+# TYPE_CHECKING 블록에서 CacheClient를 임포트하여 타입 힌트에 사용한다
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.common.cache_gateway import CacheClient
+
 logger = get_logger(__name__)
 _AUTO_STOP_MINUTES: int = 420  # 07:00 KST (분 단위)
 _WINDING_DOWN_MINUTES: int = 330  # 05:30 KST — 매매 마무리 모드 진입 시각
 _REGULAR_SESSIONS: frozenset[str] = frozenset({"power_open", "mid_day", "power_hour"})
+
+# 캐시 TTL 상수 (초) — 인라인 매직넘버 방지
+_TTL_1DAY: int = 86400         # 일일 데이터 (alerts, trades, pnl 등)
+_TTL_2DAY: int = 172800        # 48시간 안전 TTL (beast/pyramid 포지션 플래그)
+_TTL_WS_STATUS: int = 300      # WebSocket 상태 캐시 (루프 주기 60~180s보다 충분히 긴 TTL)
+_TTL_INDICATORS: int = 300     # 지표 스냅샷 캐시 (5분)
 
 # M-6: 티커 섹터 → 섹터 로테이션 섹터 매핑
 _SECTOR_TO_ROTATION: dict[str, str] = {
@@ -74,7 +86,7 @@ def _extract_ticker_metrics(item: dict) -> dict:
 
 
 async def _accumulate_orderflow_history(
-    cache: object,
+    cache: CacheClient,
     snapshots: list[dict],
 ) -> None:
     """오더플로우 스냅샷을 슬라이딩 윈도우 히스토리에 누적한다.
@@ -128,7 +140,11 @@ def _pct_to_shares(pct: float, total_equity: float, price: float) -> int:
     if dollar_amount < _MIN_ORDER_DOLLAR_AMOUNT:
         return 0
     shares = int(dollar_amount / price)
-    return max(1, min(shares, 9999))
+    if shares <= 0:
+        # 할당 금액으로 1주도 살 수 없으면 0을 반환하여
+        # 의도한 포지션 크기를 초과하는 매수를 방지한다
+        return 0
+    return min(shares, 9999)
 
 
 async def _get_broker_price(
@@ -140,7 +156,7 @@ async def _get_broker_price(
         if price_data.price > 0:
             return price_data.price
     except Exception as exc:
-        logger.debug("브로커 현재가 조회 실패 (%s): %s", ticker, exc)
+        logger.warning("브로커 현재가 조회 실패 (%s): %s", ticker, exc)
     return 0.0
 
 
@@ -192,7 +208,7 @@ async def _check_iteration_safety(system: InjectedSystem) -> bool:
     """반복 시작 전 안전 조건을 검사한다.
 
     EmergencyProtocol 중단 상태 또는 CapitalGuard 손실 한도 도달 시 False를 반환한다.
-    안전 모듈 자체에서 예외 발생 시 경고만 기록하고 True(fail-open)를 반환한다.
+    안전 모듈 자체에서 예외 발생 시 False를 반환하여 매매를 차단한다(fail-closed).
     """
     try:
         ep = system.features.get("emergency_protocol")
@@ -205,7 +221,8 @@ async def _check_iteration_safety(system: InjectedSystem) -> bool:
             )
             return False
     except Exception as exc:
-        logger.warning("[반복안전] EmergencyProtocol 검사 실패 (통과 처리): %s", exc)
+        logger.warning("[반복안전] EmergencyProtocol 검사 실패 (차단 처리): %s", exc)
+        return False
 
     try:
         cg = system.features.get("capital_guard")
@@ -227,7 +244,8 @@ async def _check_iteration_safety(system: InjectedSystem) -> bool:
                 )
                 return False
     except Exception as exc:
-        logger.warning("[반복안전] CapitalGuard 검사 실패 (통과 처리): %s", exc)
+        logger.warning("[반복안전] CapitalGuard 검사 실패 (차단 처리): %s", exc)
+        return False
 
     return True
 
@@ -239,13 +257,17 @@ def _check_buy_safety(
     regime_type: str,
     vix_val: float,
     balance: object,
+    order_price: float = 0.0,
 ) -> bool:
     """매수 주문 전 SafetyChecker + HardSafety를 순차 검증한다.
 
     SafetyChecker: VIX 극단치, 3x 레버리지 제한, 거래 시간 외 차단을 검사한다.
     HardSafety: 단일 종목 비중, 하락장 bull ETF 차단, 동시 포지션 수 제한을 검사한다.
     두 모듈 중 하나라도 실패하면 False를 반환한다.
-    모듈 자체에서 예외 발생 시 경고만 기록하고 True(fail-open)를 반환한다.
+    모듈 자체에서 예외 발생 시 False를 반환하여 매매를 차단한다(fail-closed).
+
+    Args:
+        order_price: 매수 예정 단가이다. 신규 종목 비중 검사에 사용한다.
     """
     # 1단계: SafetyChecker -- 레짐/VIX/거래시간 검증
     try:
@@ -259,13 +281,14 @@ def _check_buy_safety(
                 )
                 return False
     except Exception as exc:
-        logger.warning("[매수안전] SafetyChecker 검사 실패 (통과 처리): %s %s", ticker, exc)
+        logger.warning("[매수안전] SafetyChecker 검사 실패 (차단 처리): %s %s", ticker, exc)
+        return False
 
     # 2단계: HardSafety -- 비중/레짐/포지션 수 검증
     try:
         hs = system.features.get("hard_safety")
         if hs is not None:
-            result = hs.check(ticker, "buy", quantity, balance, regime_type)  # type: ignore[union-attr]
+            result = hs.check(ticker, "buy", quantity, balance, regime_type, order_price=order_price)  # type: ignore[union-attr]
             if not result.passed:
                 logger.warning(
                     "[매수안전] HardSafety 차단: %s -- %s",
@@ -273,7 +296,8 @@ def _check_buy_safety(
                 )
                 return False
     except Exception as exc:
-        logger.warning("[매수안전] HardSafety 검사 실패 (통과 처리): %s %s", ticker, exc)
+        logger.warning("[매수안전] HardSafety 검사 실패 (차단 처리): %s %s", ticker, exc)
+        return False
 
     return True
 
@@ -337,7 +361,7 @@ async def _sync_positions_only(system: InjectedSystem) -> None:
         positions = await pos_monitor.sync_positions()  # type: ignore[union-attr]
         logger.info("포지션 동기화 완료: %d개 종목", len(positions))
     except Exception as exc:
-        logger.error("포지션 동기화 실패: %s", exc)
+        logger.error("포지션 동기화 실패: %s", exc, exc_info=True)
 
 async def _record_alert(
     system: InjectedSystem,
@@ -369,13 +393,11 @@ async def _record_alert(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": None,
         }
-        # 기존 알림 목록을 읽고 새 알림을 추가한다
-        existing: list[dict] = await cache.read_json("alerts:list") or []
-        existing.append(alert_entry)
-        # 최대 100건 유지 (오래된 항목부터 제거)
-        if len(existing) > 100:
-            existing = existing[-100:]
-        await cache.write_json("alerts:list", existing, ttl=86400)
+        # atomic_list_append로 read→append→write를 원자적으로 수행한다.
+        # 동시에 여러 코루틴이 알림을 추가해도 유실이 발생하지 않는다.
+        await cache.atomic_list_append(
+            "alerts:list", [alert_entry], max_size=100, ttl=_TTL_1DAY,
+        )
     except Exception as exc:
         logger.debug("알림 기록 실패 (무시): %s", exc)
 
@@ -396,12 +418,13 @@ async def _notify_trade_telegram(
             return
         emoji = "🟢 매수" if side == "buy" else "🔴 매도"
         total = price * quantity
+        import html as _html
         lines = [
-            f"{emoji} <b>{ticker}</b>",
+            f"{emoji} <b>{_html.escape(ticker)}</b>",
             f"수량: {quantity}주 | 가격: ${price:,.2f} | 금액: ${total:,.2f}",
         ]
         if reason:
-            lines.append(f"📝 사유: {reason}")
+            lines.append(f"📝 사유: {_html.escape(reason)}")
         if pnl_pct is not None:
             pnl_emoji = "📈" if pnl_pct >= 0 else "📉"
             lines.append(f"{pnl_emoji} 수익률: {pnl_pct:+.2f}%")
@@ -426,30 +449,110 @@ async def _record_trade(
     EOD 피드백/최적화 시스템이 trades:today를 읽어 분석에 활용한다.
     트레이딩 루프에 영향을 주지 않도록 모든 예외를 흡수한다.
     """
-    try:
-        cache = system.components.cache
-        record: dict = {
-            "ticker": ticker,
-            "side": side,
-            "quantity": quantity,
-            "price": price,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "exit_type": exit_type,
-            "pnl": (pnl_pct * quantity * price / 100.0) if pnl_pct is not None and price > 0 else None,
-            "reason": reason,
-        }
-        trades_list: list[dict] = await cache.read_json("trades:today") or []
-        trades_list.append(record)
-        await cache.write_json("trades:today", trades_list, ttl=86400)
-        logger.debug("거래 기록 완료: %s %s %s %d주", side, ticker, exit_type or "", quantity)
+    # 캐시 기록과 pnl:daily 갱신을 분리하여 하나의 실패가 다른 쪽에 영향 주지 않게 한다
+    cache = system.components.cache
+    record: dict = {
+        "ticker": ticker,
+        "side": side,
+        "quantity": quantity,
+        "price": price,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "exit_type": exit_type,
+        # pnl_pct = (current - avg) / avg * 100 이므로
+        # 실제 PnL = (current - avg) * qty = avg * pnl_pct/100 * qty
+        # avg = current / (1 + pnl_pct/100) 를 역산하여 정확한 금액을 계산한다
+        "pnl": (
+            price * pnl_pct / (100.0 + pnl_pct) * quantity
+            if abs(100.0 + pnl_pct) > 1e-9
+            else 0.0
+        ) if pnl_pct is not None and price > 0 else None,
+        "reason": reason,
+    }
 
-        # pnl:daily 캐시를 갱신한다 -- EOD 시퀀스가 읽어 DB 저장/차트 데이터에 활용한다
-        await _update_pnl_daily_cache(system, trades_list)
+    # 1단계: trades:today 캐시에 기록한다 (EOD PnL/피드백/최적화의 원천 데이터)
+    cache_ok = False
+    try:
+        await cache.atomic_list_append(
+            "trades:today", [record], max_size=500, ttl=_TTL_1DAY,
+        )
+        cache_ok = True
+        logger.debug("거래 기록 완료: %s %s %s %d주", side, ticker, exit_type or "", quantity)
     except Exception as exc:
-        logger.warning("거래 기록 실패 (무시): %s", exc)
+        # 인메모리 캐시 실패는 극히 드물지만, 발생 시 EOD 분석 데이터가 누락된다
+        logger.critical(
+            "거래 캐시 기록 실패 — 수동 복구 필요: ticker=%s side=%s qty=%d price=%.2f pnl_pct=%s reason=%s err=%s",
+            ticker, side, quantity, price, pnl_pct, reason, exc,
+        )
+
+    # 2단계: pnl:daily 캐시를 갱신한다 (캐시 기록 성공 시에만 의미 있다)
+    if cache_ok:
+        try:
+            trades_list: list[dict] = await cache.read_json("trades:today") or []
+            await _update_pnl_daily_cache(system, trades_list)
+        except Exception as exc:
+            logger.error("pnl:daily 캐시 갱신 실패 (trades:today 기록은 성공 — EOD에서 재계산 가능): %s", exc)
+
+    # 3단계: trades DB 테이블에 영구 저장한다 (tax_writer, trade_reasoning이 조회)
+    #         1회 재시도하여 SQLite 일시적 busy/locked 오류에 대응한다
+    for _attempt in range(2):
+        try:
+            await _persist_trade_to_db(system, ticker, side, quantity, price, reason, pnl_pct)
+            break
+        except Exception as exc:
+            if _attempt == 0:
+                logger.warning("거래 DB 저장 1차 실패 (재시도): %s", exc)
+                await asyncio.sleep(0.5)
+            else:
+                logger.critical(
+                    "거래 DB 저장 최종 실패 — 수동 복구 필요: ticker=%s side=%s qty=%d price=%.2f pnl_pct=%s err=%s",
+                    ticker, side, quantity, price, pnl_pct, exc,
+                )
 
     # 텔레그램 알림 발송 (기록 실패와 독립적으로 실행)
-    await _notify_trade_telegram(system, ticker, side, quantity, price, reason, pnl_pct)
+    try:
+        await _notify_trade_telegram(system, ticker, side, quantity, price, reason, pnl_pct)
+    except Exception as exc:
+        logger.warning("텔레그램 매매 알림 발송 실패 (무시): %s", exc)
+
+
+async def _persist_trade_to_db(
+    system: InjectedSystem,
+    ticker: str,
+    side: str,
+    quantity: int,
+    price: float,
+    reason: str,
+    pnl_pct: float | None,
+) -> None:
+    """거래를 trades DB 테이블에 영구 저장한다.
+
+    tax_writer, trade_reasoning 엔드포인트가 DB에서 거래 이력을 조회한다.
+    reason 필드에 PnL을 JSON으로 포함하여 세금 계산 시 추출할 수 있게 한다.
+    """
+    import json as _json
+
+    from src.db.models import Trade
+
+    # reason에 PnL 정보를 JSON으로 포함한다 (tax_writer._extract_pnl_from_trade가 파싱)
+    pnl_value = None
+    if pnl_pct is not None and price > 0 and abs(100.0 + pnl_pct) > 1e-9:
+        pnl_value = round(price * pnl_pct / (100.0 + pnl_pct) * quantity, 2)
+    reason_json = _json.dumps(
+        {"text": reason, "pnl": pnl_value, "pnl_pct": pnl_pct},
+        ensure_ascii=False,
+    )
+
+    db = system.components.db
+    async with db.get_session() as session:
+        trade = Trade(
+            ticker=ticker,
+            side=side,
+            quantity=quantity,
+            price=price,
+            reason=reason_json,
+        )
+        session.add(trade)
+    logger.debug("거래 DB 저장: %s %s %d주 @%.2f", side, ticker, quantity, price)
 
 
 async def _update_pnl_daily_cache(
@@ -489,8 +592,8 @@ async def _update_pnl_daily_cache(
             pm = system.features.get("position_monitor")
             if pm is not None:
                 equity = pm.get_total_value()  # type: ignore[union-attr]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("equity 조회 실패 (0.0 사용 — pnl:daily 수치 부정확): %s", exc)
 
         # PnL % 계산: 매수 총액 대비 실현 PnL
         total_pnl_pct: float = 0.0
@@ -503,9 +606,9 @@ async def _update_pnl_daily_cache(
             "trades_count": len(trades_list),
             "equity": round(equity, 2),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }, ttl=86400)
+        }, ttl=_TTL_1DAY)
     except Exception as exc:
-        logger.debug("pnl:daily 캐시 갱신 실패 (무시): %s", exc)
+        logger.warning("pnl:daily 캐시 갱신 실패 (EOD PnL 데이터에 영향): %s", exc)
 
 
 async def _run_beast_entry(
@@ -574,8 +677,8 @@ async def _run_beast_entry(
             lf_raw = await cache.read("beast:last_failure_time")
             if lf_raw is not None:
                 last_failure_time_val = float(lf_raw)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("beast 캐시 상태 복원 실패 (무시): %s", exc)
 
         bd = beast.evaluate(  # type: ignore[union-attr]
             confidence=confidence,
@@ -601,18 +704,22 @@ async def _run_beast_entry(
             logger.warning("Beast 진입차단: %s 현재가 미확보", ticker)
             return 0
         # H-15: bd.position_size_pct에 conviction이 이미 적용되어 있다.
-        # combined_mult를 중복 적용하지 않고 base * conviction만 사용한다.
+        # base * conviction * 레짐 배수를 사용하여 crash/bear 레짐에서 포지션을 축소한다.
+        regime_mult = getattr(getattr(regime, "params", None), "position_multiplier", 1.0)
+        if regime_mult <= 0:
+            regime_mult = 1.0
         beast_pct = min(
-            params.default_position_size_pct * bd.conviction_multiplier,
+            params.default_position_size_pct * bd.conviction_multiplier * regime_mult,
             params.max_position_pct,
         )
         q = _pct_to_shares(beast_pct, balance.total_equity, price)  # type: ignore[union-attr]
         if q <= 0:
             return 0
 
-        # SafetyChecker → HardSafety 안전 검사
+        # SafetyChecker → HardSafety 안전 검사 (order_price=price로 비중 검사를 정확히 수행한다)
         if not _check_buy_safety(
             system, ticker, q, regime.regime_type, vix_val, balance,  # type: ignore[union-attr]
+            order_price=price,
         ):
             logger.info("Beast 진입차단(안전): %s", ticker)
             await _record_alert(
@@ -633,17 +740,17 @@ async def _run_beast_entry(
                 reason=f"Beast Mode 진입 (확신도 {bd.conviction_multiplier:.1f}x, 종합점수 {bd.composite_score:.3f})",
             )
 
-            # Beast 진입 성공 시 일일 카운트를 증가시킨다
+            # Beast 진입 성공 시 일일 카운트를 원자적으로 증가시킨다
             try:
-                await cache.write("beast:daily_count", str(daily_beast_count + 1), ttl=86400)
-            except Exception:
-                pass
+                await cache.atomic_increment("beast:daily_count", amount=1, ttl=_TTL_1DAY)
+            except Exception as exc:
+                logger.debug("beast:daily_count 캐시 기록 실패 (무시): %s", exc)
 
             # C-11: Beast 포지션 플래그를 캐시에 기록한다 (48h 안전 TTL)
             try:
-                await cache.write(f"beast_positions:{ticker}", "1", ttl=172800)
-            except Exception:
-                pass
+                await cache.write(f"beast_positions:{ticker}", "1", ttl=_TTL_2DAY)
+            except Exception as exc:
+                logger.debug("beast_positions 캐시 기록 실패 (%s, 무시): %s", ticker, exc)
 
             # Beast 진입 이벤트를 발행한다
             from src.analysis.models import TradingDecision
@@ -668,11 +775,11 @@ async def _run_beast_entry(
         )
         try:
             import time as _time
-            await cache.write("beast:last_failure_time", str(_time.time()), ttl=86400)
-        except Exception:
-            pass
+            await cache.write("beast:last_failure_time", str(_time.time()), ttl=_TTL_1DAY)
+        except Exception as exc2:
+            logger.debug("beast:last_failure_time 캐시 기록 실패 (무시): %s", exc2)
     except Exception as exc:
-        logger.error("Beast 진입E (%s): %s", ticker, exc)
+        logger.error("Beast 진입E (%s): %s", ticker, exc, exc_info=True)
     return 0
 
 
@@ -696,11 +803,12 @@ async def _run_pyramiding(
         pyramiding = system.features.get("pyramiding")
         if pyramiding is None:
             return 0
-        from src.strategy.models import Position as _Pos, StrategyParams as _SP
+        from src.strategy.models import StrategyParams as _SP
         params: _SP = sp  # type: ignore[assignment]
         if not params.pyramiding_enabled:
             return 0
-    except Exception:
+    except Exception as exc:
+        logger.warning("피라미딩 초기화 실패 (건너뜀): %s", exc)
         return 0
 
     for p in pos_items:
@@ -717,8 +825,8 @@ async def _run_pyramiding(
                 if total_eq > 0:
                     pos_val = getattr(p, "quantity", 0) * getattr(p, "current_price", 0.0)
                     ticker_concentration_pct = (pos_val / total_eq) * 100.0
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("피라미딩 종목 집중도 계산 실패 (무시): %s", exc)
             market_state = {
                 "regime_type": regime.regime_type,  # type: ignore[union-attr]
                 "vix": vix_val,
@@ -735,6 +843,20 @@ async def _run_pyramiding(
             q = _pct_to_shares(pd_decision.add_size_pct, pyr_equity, pyr_price)
             if q <= 0:
                 continue
+
+            # 피라미딩도 SafetyChecker + HardSafety 검증을 수행한다
+            if not _check_buy_safety(
+                system, p.ticker, q, regime.regime_type, vix_val, balance,  # type: ignore[union-attr]
+                order_price=pyr_price,
+            ):
+                logger.info("피라미딩 진입차단(안전): %s level=%d", p.ticker, pd_decision.level)  # type: ignore[union-attr]
+                await _record_alert(
+                    system, "safety", "피라미딩 매수 차단",
+                    f"안전 검사에 의해 {p.ticker} 피라미딩 {pd_decision.level}단계 매수가 차단되었습니다.",  # type: ignore[union-attr]
+                    severity="warning",
+                )
+                continue
+
             exchange = reg.get_exchange_code(p.ticker) if reg.has_ticker(p.ticker) else "NAS"  # type: ignore[union-attr]
             r = await om.execute_buy(p.ticker, q, exchange, expected_price=pyr_price)  # type: ignore[union-attr]
             if r.status == "filled":
@@ -755,10 +877,10 @@ async def _run_pyramiding(
                     await cache.write(
                         f"pyramid_level:{p.ticker}",  # type: ignore[union-attr]
                         str(pd_decision.level),
-                        ttl=172800,
+                        ttl=_TTL_2DAY,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("pyramid_level 캐시 기록 실패 (무시): %s", exc)
 
                 # 피라미딩 이벤트를 발행한다
                 from src.analysis.models import TradingDecision
@@ -781,7 +903,7 @@ async def _run_pyramiding(
                     severity="error",
                 )
         except Exception as exc:
-            logger.error("피라미딩E (%s): %s", getattr(p, "ticker", "?"), exc)
+            logger.error("피라미딩E (%s): %s", getattr(p, "ticker", "?"), exc, exc_info=True)
     return trades
 
 
@@ -816,8 +938,8 @@ async def _run_decision_maker(
             # 사용 후 삭제하여 중복 처리 방지
             try:
                 await cache.delete("analysis:emergency_report")  # type: ignore[union-attr]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("emergency_report 캐시 삭제 실패 (무시): %s", exc)
         else:
             report_data = await cache.read_json("analysis:comprehensive_report")  # type: ignore[union-attr]
         if not report_data:
@@ -922,8 +1044,9 @@ async def _run_micro_regime_gate(
             )
             return False, "quiet", 0.5
     except Exception as exc:
-        logger.warning("MicroRegime 평가 실패 (통과 처리): %s %s", ticker, exc)
-        return True, "unknown", 1.0
+        logger.warning("MicroRegime 평가 실패 (차단 처리): %s %s", ticker, exc)
+        # 차단 판정과 일관된 보수적 배수를 반환한다 (1.0은 비차단 배수와 동일하여 부정합)
+        return False, "unknown", 0.5
 
 
 async def _run_wick_catcher(
@@ -978,6 +1101,7 @@ async def _run_wick_catcher(
             return 0
         if not _check_buy_safety(
             system, ticker, q, regime.regime_type, vix_val, balance,  # type: ignore[union-attr]
+            order_price=wick_price,
         ):
             logger.info("Wick 진입차단(안전): %s", ticker)
             await _record_alert(
@@ -1003,7 +1127,7 @@ async def _run_wick_catcher(
             severity="error",
         )
     except Exception as exc:
-        logger.error("WickCatcher E (%s): %s", ticker, exc)
+        logger.error("WickCatcher E (%s): %s", ticker, exc, exc_info=True)
     return 0
 
 
@@ -1034,21 +1158,22 @@ async def _fetch_stat_arb_signals(system: InjectedSystem) -> list | None:
             m = system.features.get("strategy_params")
             if m:
                 sp = m.load()  # type: ignore[union-attr]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("전략 파라미터 로드 실패 — 기본값 사용 (무시): %s", exc)
         if not sp.stat_arb_enabled:
             return None
 
-        # 페어 가격을 캐시에서 읽는다 (가격 업데이트 모듈이 별도 저장한다)
+        # 페어 가격을 캐시에서 읽는다 — 현재 pair_prices 기록 모듈 미구현 상태이다
         pair_prices: dict[str, float] = {}
         try:
             cached = await system.components.cache.read_json("market:pair_prices")
             if cached and isinstance(cached, dict):
                 pair_prices = cached
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("페어 가격 캐시 조회 실패 (무시): %s", exc)
 
         if not pair_prices:
+            logger.debug("StatArb 스킵: market:pair_prices 캐시 없음 (기록 모듈 미구현)")
             return None
 
         signals = await stat_arb.evaluate(pair_prices, system.components.cache)  # type: ignore[union-attr]
@@ -1073,7 +1198,8 @@ async def _fetch_news_context(system: InjectedSystem) -> list[dict] | None:
         # 두 캐시 형식을 모두 지원한다
         items = cached.get("high_impact_articles") or cached.get("items") or []
         return items if items else None
-    except Exception:
+    except Exception as exc:
+        logger.debug("고영향 뉴스 캐시 조회 실패 (무시): %s", exc)
         return None
 
 
@@ -1108,7 +1234,8 @@ def _estimate_price_spike(position: object) -> dict | None:
                 "current_price": cur,
             }
         return None
-    except Exception:
+    except Exception as exc:
+        logger.debug("가격 스파이크 추정 실패 (무시): %s", exc)
         return None
 
 
@@ -1134,17 +1261,18 @@ def _estimate_price_spike_from_bundle(bundle: object) -> dict | None:
                 "current_price": ema20,
             }
         return None
-    except Exception:
+    except Exception as exc:
+        logger.debug("번들 가격 스파이크 추정 실패 (무시): %s", exc)
         return None
 
 
 async def _prepare_session_context(
     system: InjectedSystem,
-) -> tuple[dict, object, float, object, object, bool] | None:
+) -> tuple[dict, object, float, object, object, bool, bool] | None:
     """세션 컨텍스트를 준비한다: 포지션 동기화, 레짐 감지, 전략 파라미터, 잔고 조회.
 
     Returns:
-        (pos, regime, vix_val, sp, balance, winding_down) 튜플.
+        (pos, regime, vix_val, sp, balance, winding_down, near_close) 튜플.
         준비 실패 시(PositionMonitor 미등록, 동기화 실패, 레짐 미확보) None을 반환한다.
     """
     from src.common.broker_gateway import BalanceData
@@ -1158,6 +1286,11 @@ async def _prepare_session_context(
     if winding_down:
         logger.info("[마무리모드] 05:30 KST 이후 — 청산만 허용, 신규 진입/피라미딩 차단")
 
+    # ET 15:30~16:00 (장 마감 직전 30분) — 유동성 악화 구간에서 신규 진입을 차단한다
+    near_close = time_info.is_near_close
+    if near_close:
+        logger.info("[장마감직전] ET 15:30~16:00 — 신규 진입/피라미딩 차단 (유동성 부족)")
+
     pm = f.get("position_monitor")
     if not pm:
         logger.warning("PositionMonitor 미등록")
@@ -1165,12 +1298,12 @@ async def _prepare_session_context(
     try:
         pos = await pm.sync_positions()  # type: ignore[union-attr]
     except Exception as e:
-        logger.error("동기화 실패: %s", e)
+        logger.error("포지션 동기화 실패: %s", e, exc_info=True)
         return None
 
     # 레짐 감지 + VIX 조회
     regime = None
-    vix_val = 20.0
+    vix_val = 19.0
     try:
         d = f.get("regime_detector")
         if d:
@@ -1178,11 +1311,11 @@ async def _prepare_session_context(
                 vf = f.get("vix_fetcher")
                 if vf is not None:
                     vix_val = await vf.get_vix()  # type: ignore[union-attr]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("VIX 조회 실패 (폴백 19.0 사용 — 레짐 판단 부정확 가능): %s", exc)
             regime = d.detect(vix_val)  # type: ignore[union-attr]
     except Exception as e:
-        logger.error("레짐 실패: %s", e)
+        logger.error("레짐 감지 실패: %s", e, exc_info=True)
     if not regime:
         logger.warning("레짐 미확보")
         return None
@@ -1210,14 +1343,23 @@ async def _prepare_session_context(
     except Exception as e:
         logger.warning("파라미터 실패: %s", e)
 
-    # HardSafety.check()에 잔고 데이터가 필요하므로 브로커에서 1회 조회한다
+    # 잔고 조회: total_equity=0.0 폴백 시 _pct_to_shares()가 0을 반환하여 모든 매수가 차단된다
     balance: BalanceData = BalanceData(total_equity=0.0, available_cash=0.0, positions=[])
     try:
         balance = await system.components.broker.get_balance()
     except Exception as exc:
-        logger.warning("잔고 조회 실패 -- HardSafety 비중 검사 불가 (폴백 사용): %s", exc)
+        logger.error(
+            "잔고 조회 실패 -- total_equity=0 폴백으로 이번 반복 모든 매수 차단: %s",
+            exc, exc_info=True,
+        )
+        # 대시보드에 알림을 노출하여 운영자가 인지할 수 있도록 한다
+        await _record_alert(
+            system, "broker", "잔고 조회 실패",
+            f"브로커 잔고 조회 실패로 이번 반복 매수가 차단되었습니다: {exc}",
+            severity="error",
+        )
 
-    return pos, regime, vix_val, sp, balance, winding_down
+    return pos, regime, vix_val, sp, balance, winding_down, near_close
 
 
 async def _compute_position_multipliers(
@@ -1274,22 +1416,36 @@ async def _compute_position_multipliers(
                     severity="warning",
                 )
     except Exception as exc:
-        logger.warning("[틸트] 감지 실패 (통과 처리): %s", exc)
+        logger.warning("[틸트] 감지 실패 (차단 처리): %s", exc)
+        tilt_blocked = True
+
+    # --- trades:today 캐시를 1회만 조회하여 DailyLossLimit, HouseMoney, LosingStreak에서 재사용한다 ---
+    # _trades_today_loaded: 캐시 조회 성공 여부 (False=실패 시 DailyLossLimit 이전 상태 보존)
+    _trades_today: list[dict] = []
+    _trades_today_loaded: bool = False
+    try:
+        _trades_today_raw = await _cache.read_json("trades:today")
+        if isinstance(_trades_today_raw, list):
+            _trades_today = _trades_today_raw
+        _trades_today_loaded = True
+    except Exception as exc:
+        logger.warning("[승수계산] trades:today 캐시 조회 실패 (손실한도·하우스머니 재구축 불가): %s", exc)
 
     # --- H-4: DailyLossLimit 기존 거래 이력 반영 (C-2: 인스턴스는 루프 밖에서 생성) ---
     # C-2: 매 반복마다 리셋 후 trades:today에서 재구축한다.
-    # 인스턴스가 루프 밖에 있으므로 캐시 조회 실패 시에도 이전 반복의 상태가 보존된다.
-    daily_loss_limiter.reset()  # type: ignore[union-attr]
-    try:
-        _prev_trades = await _cache.read_json("trades:today") or []
-        for _pt in _prev_trades:
-            if isinstance(_pt, dict) and _pt.get("side") == "sell":
-                _realized = _pt.get("pnl")
-                if _realized is not None and isinstance(_realized, (int, float)):
-                    if balance.total_equity > 0:  # type: ignore[union-attr]
-                        daily_loss_limiter.record_trade((_realized / balance.total_equity) * 100.0)  # type: ignore[union-attr]
-    except Exception as exc:
-        logger.debug("[일일손실한도] 기존 거래 반영 실패 (이전 반복 상태 유지): %s", exc)
+    # 캐시 조회 실패 시 reset하면 손실 한도 보호가 해제되므로(P1 방어),
+    # 캐시 조회 성공 시에만 리셋+재구축한다. 실패 시 이전 반복 상태를 보존한다.
+    if _trades_today_loaded:
+        try:
+            daily_loss_limiter.reset()  # type: ignore[union-attr]
+            for _pt in _trades_today:
+                if isinstance(_pt, dict) and _pt.get("side") == "sell":
+                    _realized = _pt.get("pnl")
+                    if _realized is not None and isinstance(_realized, (int, float)):
+                        if balance.total_equity > 0:  # type: ignore[union-attr]
+                            daily_loss_limiter.record_trade((_realized / balance.total_equity) * 100.0)  # type: ignore[union-attr]
+        except Exception as exc:
+            logger.warning("[일일손실한도] 기존 거래 반영 실패 (이전 반복 상태 유지 — 한도 보호 부정확 가능): %s", exc)
 
     # --- HouseMoney: 일일 PnL 기반 포지션 배수 조회 ---
     house_money_mult: float = 1.0
@@ -1297,14 +1453,15 @@ async def _compute_position_multipliers(
     try:
         from src.risk.house_money.house_money import calculate_multiplier as _calc_hm
         # H-2: 미실현 PnL + 오늘 실현 PnL을 합산하여 정확한 일일 PnL을 계산한다
-        # 1) 보유 포지션의 미실현 PnL 합산 (PositionData.pnl_pct 사용)
-        if pos:
+        # 1) 보유 포지션의 미실현 PnL 합산 — 포트폴리오 가중 방식으로 계산한다
+        if pos and balance.total_equity > 0:  # type: ignore[union-attr]
             for _pd in pos.values():
-                daily_pnl_pct += getattr(_pd, "pnl_pct", 0.0)
-        # 2) 오늘 완료된 거래의 실현 PnL 합산 (trades:today에서 조회)
+                _pos_value = getattr(_pd, "avg_price", 0.0) * getattr(_pd, "quantity", 0)
+                _weight = _pos_value / balance.total_equity  # type: ignore[union-attr]
+                daily_pnl_pct += getattr(_pd, "pnl_pct", 0.0) * _weight
+        # 2) 오늘 완료된 거래의 실현 PnL 합산 (위에서 조회한 _trades_today를 재사용)
         try:
-            trades_today = await _cache.read_json("trades:today") or []
-            for _tr in trades_today:
+            for _tr in _trades_today:
                 if isinstance(_tr, dict) and _tr.get("side") == "sell":
                     realized = _tr.get("pnl")
                     if realized is not None and isinstance(realized, (int, float)):
@@ -1319,15 +1476,12 @@ async def _compute_position_multipliers(
     except Exception as exc:
         logger.warning("[하우스머니] 평가 실패 (무시): %s", exc)
 
-    # --- LosingStreak: 연속 손절 감지 시 포지션 축소 ---
+    # --- LosingStreak: 연속 손절 감지 시 포지션 축소 --- (위에서 조회한 _trades_today를 재사용)
     streak_mult: float = 1.0
     try:
         ls = f.get("losing_streak")
         if ls is not None:
-            cache = system.components.cache
-            trades_raw = await cache.read_json("trades:today") if cache else None
-            trade_list = trades_raw if isinstance(trades_raw, list) else []
-            ls_result = ls.update(trade_list)  # type: ignore[union-attr]
+            ls_result = ls.update(_trades_today)  # type: ignore[union-attr]
             if ls_result.risk_level == "critical":
                 streak_mult = 0.3
             elif ls_result.risk_level == "high":
@@ -1421,9 +1575,18 @@ async def _run_exit_stage(
                 )
                 if not dec.should_exit:
                     continue
-                q = p.quantity if dec.exit_pct >= 100.0 else max(1, int(p.quantity * dec.exit_pct / 100.0))
+                # 수수료 대비 실익을 위해 부분 청산은 최소 수량 이상으로 제한한다
+                if dec.exit_pct >= 100.0:
+                    q = p.quantity
+                else:
+                    q = max(1, int(p.quantity * dec.exit_pct / 100.0))
+                    if q < sp.min_exit_qty and p.quantity > q:
+                        q = min(sp.min_exit_qty, p.quantity)
                 ex = reg.get_exchange_code(tk) if reg.has_ticker(tk) else "NAS"
-                r = await om.execute_sell(tk, q, ex, expected_price=p.current_price)  # type: ignore[union-attr]
+                # 슬리피지가 중요한 청산 유형에서 스나이퍼 엑스큐션을 사용한다
+                _sniper_exit_types = {"take_profit", "scaled_exit", "beast_trailing", "trailing_stop"}
+                _use_sniper = dec.exit_type in _sniper_exit_types
+                r = await om.execute_sell(tk, q, ex, sniper=_use_sniper, expected_price=p.current_price)  # type: ignore[union-attr]
                 if r.status == "filled":
                     trades += 1
                     logger.info("청산: %s %d주 (%s)", tk, q, dec.exit_type)
@@ -1432,11 +1595,34 @@ async def _run_exit_stage(
                         reason=dec.reason or dec.exit_type,
                     )
 
-                    # H-4: 매도 체결 PnL을 DailyLossLimit에 기록한다
+                    # H-4: 매도 체결 PnL을 DailyLossLimit + CapitalGuard에 기록한다 (자산 대비 % 단위)
                     try:
-                        daily_loss_limiter.record_trade(p.unrealized_pnl_pct)  # type: ignore[union-attr]
-                    except Exception:
-                        pass
+                        # 포지션 가치를 자산 대비 비율로 변환하여 재구축 경로(line 1358)와 단위를 일치시킨다
+                        _total_eq = getattr(balance, "total_equity", 0.0)
+                        if _total_eq > 0:
+                            _pos_value = p.avg_price * q
+                            _realized_dollars = _pos_value * p.unrealized_pnl_pct / 100.0
+                            _equity_pnl_pct = (_realized_dollars / _total_eq) * 100.0
+                        else:
+                            _equity_pnl_pct = p.unrealized_pnl_pct
+                        daily_loss_limiter.record_trade(_equity_pnl_pct)  # type: ignore[union-attr]
+                        # CapitalGuard에도 동일 PnL을 기록하여 일일/주간 한도 추적을 유지한다
+                        _cg = f.get("capital_guard")
+                        if _cg is not None:
+                            _cg.record_pnl(_equity_pnl_pct)  # type: ignore[union-attr]
+                    except Exception as exc:
+                        # 손실 한도 추적 실패 시 unrealized_pnl_pct를 직접 사용하여 보수적으로 기록한다
+                        logger.error(
+                            "DailyLossLimiter/CapitalGuard 기록 실패 — 폴백 기록 시도: ticker=%s pnl_pct=%s err=%s",
+                            tk, p.unrealized_pnl_pct, exc,
+                        )
+                        try:
+                            daily_loss_limiter.record_trade(p.unrealized_pnl_pct)  # type: ignore[union-attr]
+                        except Exception:
+                            logger.critical(
+                                "DailyLossLimiter 폴백 기록도 실패 — 손실 한도 보호 무력화 위험: ticker=%s",
+                                tk,
+                            )
 
                     # 분할 청산 단계를 실행 완료로 표시한다
                     if dec.exit_type == "scaled_exit" and dec.exit_level is not None:
@@ -1450,15 +1636,15 @@ async def _run_exit_stage(
                             await _cache.delete(f"beast_positions:{tk}")  # type: ignore[union-attr]
                             await _cache.delete(f"pyramid_level:{tk}")  # type: ignore[union-attr]
                         except Exception as exc:
-                            logger.error("캐시 상태 삭제 실패 (세션 종료 시 재정리 필요): %s %s", tk, exc)
+                            logger.warning("캐시 상태 삭제 실패 (세션 종료 시 재정리 필요): %s %s", tk, exc)
 
                     # TiltDetector에 청산 PnL을 기록한다 (연속 손절 추적용)
                     try:
                         tilt = f.get("tilt_detector")
                         if tilt is not None:
                             tilt.record_trade_result(p.unrealized_pnl_pct)  # type: ignore[union-attr]
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("TiltDetector 청산 PnL 기록 실패 (틸트 추적 부정확): %s", exc)
 
                     # LosingStreak는 trades:today에서 이력을 읽으므로
                     # 다음 루프 반복에서 자동으로 갱신된다
@@ -1470,7 +1656,7 @@ async def _run_exit_stage(
                         severity="error",
                     )
             except Exception as e:
-                logger.error("청산E (%s): %s", tk, e)
+                logger.error("청산E (%s): %s", tk, e, exc_info=True)
 
     return trades, pos
 
@@ -1485,6 +1671,7 @@ async def _run_entry_stage(
     daily_loss_limiter: object,
     tilt_blocked: bool,
     winding_down: bool,
+    near_close: bool,
     news_context: list[dict] | None,
     en: object,
     om: object,
@@ -1496,7 +1683,7 @@ async def _run_entry_stage(
     """진입 단계: 유니버스를 순회하며 진입 평가 및 매수 주문을 실행한다.
 
     Beast Mode, MicroRegime, WickCatcher, 일반 진입을 순차 평가한다.
-    마무리 모드, 일일 손실 한도, 틸트 차단 시 진입을 건너뛴다.
+    마무리 모드, 장마감 직전, 일일 손실 한도, 틸트 차단 시 진입을 건너뛴다.
 
     Returns:
         체결 건수.
@@ -1524,6 +1711,15 @@ async def _run_entry_stage(
     if winding_down:
         logger.debug("[마무리모드] 신규 진입 건너뜀")
         return 0
+    # P0: 장 마감 직전 30분(ET 15:30~16:00) — 유동성 악화 구간에서 신규 진입을 차단한다
+    if near_close:
+        logger.info("[위험구간] 장마감 직전 30분 — 신규 진입 전체 건너뜀 (유동성 부족 리스크)")
+        await _record_alert(
+            system, "safety", "장마감 직전 진입 차단",
+            "ET 15:30~16:00 유동성 악화 구간이므로 신규 진입이 차단되었습니다.",
+            severity="info",
+        )
+        return 0
     if daily_loss_blocked:
         logger.info("[일일손실한도] 진입 단계 전체 건너뜀")
         return 0
@@ -1548,6 +1744,18 @@ async def _run_entry_stage(
     house_money_mult = float(multipliers["house_money"])
     streak_mult = float(multipliers["streak"])
     var_mult = float(multipliers["var"])
+
+    # Kelly Criterion용 trades:today를 루프 밖에서 1회만 조회한다 (N+1 방지)
+    _kelly_sell_trades: list[dict] = []
+    try:
+        _kelly_raw = await _cache.read_json("trades:today")  # type: ignore[union-attr]
+        if isinstance(_kelly_raw, list):
+            _kelly_sell_trades = [
+                t for t in _kelly_raw
+                if isinstance(t, dict) and t.get("side") == "sell"
+            ]
+    except Exception as exc:
+        logger.debug("[Kelly] trades:today 사전 조회 실패 (무시): %s", exc)
 
     for mt in reg.get_universe():
         if mt.ticker in held:
@@ -1582,8 +1790,8 @@ async def _run_entry_stage(
                         )
                         if cached_close is not None:
                             pre_close = float(cached_close)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("pre_close 캐시 조회 실패 (무시): %s", exc)
                     if pre_close > 0 and cur_price > 0:
                         gap_result = grp.evaluate(pre_close, cur_price, ticker=mt.ticker)  # type: ignore[union-attr]
                         gap_size_mult = gap_result.size_multiplier
@@ -1594,7 +1802,8 @@ async def _run_entry_stage(
                             )
                             continue
             except Exception as exc:
-                logger.warning("[갭리스크] 평가 실패 (통과 처리): %s %s", mt.ticker, exc)
+                logger.warning("[갭리스크] 평가 실패 (차단 처리): %s %s", mt.ticker, exc)
+                continue
 
             # Beast Mode 먼저 평가한다 (A+ 셋업, 일반 게이트와 독립)
             beast_count = await _run_beast_entry(
@@ -1638,7 +1847,7 @@ async def _run_entry_stage(
                     spike = _estimate_price_spike_from_bundle(bun)
                     _top_news = _pick_highest_impact(news_context) if news_context else None
                     if spike is not None and _top_news is not None:
-                        fade_signal = nf.evaluate(spike, _top_news)  # type: ignore[union-attr]
+                        fade_signal = nf.evaluate(spike, _top_news, impact_threshold=sp.news_fade_impact_threshold)  # type: ignore[union-attr]
                         if fade_signal.should_fade:
                             fade_dir = fade_signal.direction
                             # H-7: 인버스 ETF는 방향을 반전한다
@@ -1709,10 +1918,10 @@ async def _run_entry_stage(
             final_pct = ed.position_size_pct * combined_mult
 
             # M-3: Kelly Criterion 어드바이저리 캡 -- 최적 비율을 초과하면 축소한다
+            # _kelly_sell_trades는 루프 밖에서 1회 조회한 데이터를 재사용한다
             try:
                 from src.risk.gates.risk_budget import calculate_position_size as _kelly_calc
-                _t_today = await _cache.read_json("trades:today") or []  # type: ignore[union-attr]
-                _sell_trades = [t for t in _t_today if isinstance(t, dict) and t.get("side") == "sell"]
+                _sell_trades = _kelly_sell_trades
                 if len(_sell_trades) >= 3:
                     _wins = [t for t in _sell_trades if (t.get("pnl") or 0) > 0]
                     _losses = [t for t in _sell_trades if (t.get("pnl") or 0) <= 0]
@@ -1751,6 +1960,7 @@ async def _run_entry_stage(
             # SafetyChecker → HardSafety 순서로 매수 전 안전 검사를 실행한다
             if not _check_buy_safety(
                 system, mt.ticker, q, regime.regime_type, vix_val, balance,  # type: ignore[union-attr]
+                order_price=entry_price,
             ):
                 logger.info("진입차단(안전): %s", mt.ticker)
                 await _record_alert(
@@ -1774,6 +1984,18 @@ async def _run_entry_stage(
                 )
                 await _record_trade(system, mt.ticker, "buy", q, entry_price, None, None, reason=_entry_reason)
                 held.add(mt.ticker)
+                # 매수 체결 후 잔고/포지션을 갱신하여 다음 종목 평가 시
+                # 오래된 데이터로 한도를 초과하는 진입을 방지한다
+                try:
+                    pm = system.features.get("position_monitor")
+                    if pm is not None:
+                        pos = await pm.sync_positions()  # type: ignore[union-attr]
+                    balance = await system.components.broker.get_balance()
+                except Exception as _refresh_exc:
+                    logger.warning(
+                        "진입 후 잔고/포지션 갱신 실패 (기존 데이터 사용): %s",
+                        _refresh_exc,
+                    )
             else:
                 logger.warning("진입X: %s %s", mt.ticker, r.message)
                 await _record_alert(
@@ -1782,7 +2004,7 @@ async def _run_entry_stage(
                     severity="error",
                 )
         except Exception as e:
-            logger.error("진입E (%s): %s", mt.ticker, e)
+            logger.error("진입E (%s): %s", mt.ticker, e, exc_info=True)
 
     return trades
 
@@ -1800,7 +2022,7 @@ async def _run_regular_session(system: InjectedSystem, daily_loss_limiter: objec
     ctx = await _prepare_session_context(system)
     if ctx is None:
         return 0
-    pos, regime, vix_val, sp, balance, winding_down = ctx
+    pos, regime, vix_val, sp, balance, winding_down, near_close = ctx
 
     # C-2/C-3: 캐시에서 beast 플래그와 pyramid 레벨을 읽어 Position을 생성한다
     _cache = system.components.cache
@@ -1815,14 +2037,14 @@ async def _run_regular_session(system: InjectedSystem, daily_loss_limiter: objec
             beast_flag = await _cache.read(f"beast_positions:{ticker}")
             if beast_flag is not None:
                 is_beast = True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("beast_positions 캐시 조회 실패 (무시): %s %s", ticker, exc)
         try:
             pyr_raw = await _cache.read(f"pyramid_level:{ticker}")
             if pyr_raw is not None:
                 pyramid_level = int(pyr_raw)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pyramid_level 캐시 조회 실패 (무시): %s %s", ticker, exc)
         return Position(
             ticker=ticker,
             quantity=d.quantity,  # type: ignore[union-attr]
@@ -1841,7 +2063,7 @@ async def _run_regular_session(system: InjectedSystem, daily_loss_limiter: objec
     await _run_decision_maker(system, regime, pos, _cache, balance)
 
     es, en, om = f.get("exit_strategy"), f.get("entry_strategy"), f.get("order_manager")
-    builder = f.get("indicator_bundle_builder") or f.get("indicator_builder")
+    builder = f.get("indicator_bundle_builder")
 
     # StatArb 신호를 한 번만 조회하여 모든 포지션에 재사용한다 (API 절약)
     stat_arb_signals = await _fetch_stat_arb_signals(system)
@@ -1857,8 +2079,8 @@ async def _run_regular_session(system: InjectedSystem, daily_loss_limiter: objec
     )
     trades += exit_trades
 
-    # 4단계: 피라미딩 (마무리 모드 제외)
-    if pos and om and not winding_down:
+    # 4단계: 피라미딩 (마무리 모드, 장마감 직전 제외)
+    if pos and om and not winding_down and not near_close:
         pos_list = [await _P(v) for v in pos.values()]
         pyr_trades = await _run_pyramiding(system, pos_list, regime, vix_val, balance, sp, om, reg)
         trades += pyr_trades
@@ -1866,13 +2088,25 @@ async def _run_regular_session(system: InjectedSystem, daily_loss_limiter: objec
     # 5단계: 진입
     entry_trades = await _run_entry_stage(
         system, pos, regime, vix_val, sp, balance, daily_loss_limiter,
-        tilt_blocked, winding_down, news_context,
+        tilt_blocked, winding_down, near_close, news_context,
         en, om, builder, _cache, _P, multipliers,
     )
     trades += entry_trades
 
     logger.info("정규 세션: %d건 체결", trades)
     return trades
+
+def _get_masked_account(system: InjectedSystem) -> str:
+    """브로커의 가상계좌 번호를 마스킹하여 반환한다."""
+    try:
+        acct = getattr(
+            getattr(system.components.broker, "virtual_auth", None),
+            "_account", "",
+        )
+        return f"****{acct[4:]}" if len(acct) > 4 else acct
+    except Exception:
+        return ""
+
 
 async def _update_ws_cache(
     system: InjectedSystem,
@@ -1915,20 +2149,59 @@ async def _update_ws_cache(
             "channel": "positions",
             "data": position_list,
             "count": len(position_list),
-        }, ttl=30)
+        }, ttl=_TTL_WS_STATUS)
 
-        # ws:dashboard -- 대시보드 요약
+        # ws:dashboard -- 대시보드 요약 (Flutter DashboardSummary.fromJson 호환)
         total_value: float = pos_monitor.get_total_value()
+        # 미실현 손익 합산
+        daily_pnl: float = sum(
+            (p.current_price - p.avg_price) * p.quantity
+            for p in all_positions.values()
+        )
+        # 현금 잔고 조회 (캐시에서 읽기, 없으면 0)
+        cached_cash_str = await cache.read("dashboard:buy_power")
+        ws_cash: float = 0.0
+        if cached_cash_str:
+            try:
+                ws_cash = float(cached_cash_str)
+            except (ValueError, TypeError):
+                logger.debug("dashboard:buy_power 파싱 실패 (0.0 사용): %r", cached_cash_str)
+        # today_pnl_pct: 총 자산 대비 일일 수익률
+        ws_today_pnl_pct: float = 0.0
+        if total_value > 0 and daily_pnl != 0:
+            base = total_value - daily_pnl
+            if base > 0:
+                ws_today_pnl_pct = round((daily_pnl / base) * 100, 4)
+        # positions_value: 포지션 평가금액
+        ws_positions_value: float = total_value - ws_cash if ws_cash > 0 else total_value
+        # 초기 자본 추정
+        ws_initial_capital: float = max(total_value - daily_pnl, 0.0)
+        ws_total_pnl_pct: float = round(
+            (daily_pnl / ws_initial_capital * 100) if ws_initial_capital > 0 else 0.0, 4,
+        )
+        kst = ZoneInfo("Asia/Seoul")
         await cache.write_json("ws:dashboard", {
             "channel": "dashboard",
             "data": {
-                "status": "running" if system.running else "stopped",
-                "session_type": session_type,
-                "positions_count": len(all_positions),
-                "total_value": total_value,
-                "trades_executed": trades_executed,
+                "system_status": "running" if system.running else "stopped",
+                "total_asset": round(total_value, 2),
+                "cash": round(ws_cash, 2),
+                "today_pnl": round(daily_pnl, 2),
+                "today_pnl_pct": ws_today_pnl_pct,
+                "cumulative_return": 0.0,
+                "active_positions": len(all_positions),
+                "timestamp": datetime.now(kst).isoformat(),
+                "unrealized_pnl": round(daily_pnl, 2),
+                "unrealized_pnl_pct": ws_today_pnl_pct,
+                "total_pnl": round(daily_pnl, 2),
+                "total_pnl_pct": ws_total_pnl_pct,
+                "initial_capital": round(ws_initial_capital, 2),
+                "positions_value": round(ws_positions_value, 2),
+                "buying_power": round(ws_cash, 2),
+                "currency": "USD",
+                "account_number": _get_masked_account(system),
             },
-        }, ttl=30)
+        }, ttl=_TTL_WS_STATUS)
 
         # ws:trades -- 오늘의 거래 기록 (Dart Trade.fromJson 호환 키로 변환)
         raw_trades: list[dict] = await cache.read_json("trades:today") or []
@@ -1942,13 +2215,18 @@ async def _update_ws_cache(
                 converted["action"] = converted.pop("side")
             # id 필드 보충 (Dart에서 int 기대)
             converted.setdefault("id", idx + 1)
-            # pnl_pct 계산 (없으면 pnl / (price * quantity) * 100)
+            # pnl_pct 역산: pnl = (cur - avg) * qty 이므로
+            # avg = cur - pnl/qty, pnl_pct = pnl / (avg * qty) * 100
             if "pnl_pct" not in converted:
                 pnl = converted.get("pnl")
                 price = converted.get("price", 0)
                 qty = converted.get("quantity", 0)
                 if pnl is not None and price > 0 and qty > 0:
-                    converted["pnl_pct"] = (pnl / (price * qty)) * 100.0
+                    cost_basis = price * qty - pnl
+                    if abs(cost_basis) > 1e-9:
+                        converted["pnl_pct"] = (pnl / cost_basis) * 100.0
+                    else:
+                        converted["pnl_pct"] = 0.0
                 else:
                     converted["pnl_pct"] = 0.0
             # pnl 기본값 보충
@@ -1959,7 +2237,7 @@ async def _update_ws_cache(
             "channel": "trades",
             "data": trades_data,
             "count": len(trades_data),
-        }, ttl=30)
+        }, ttl=_TTL_WS_STATUS)
 
         # ws:alerts -- 알림 목록 (alerts:list → 프론트엔드 AlertNotification 형식으로 변환)
         try:
@@ -1995,15 +2273,15 @@ async def _update_ws_cache(
                     "channel": "alerts",
                     "data": alert_items,
                     "count": len(alert_items),
-                }, ttl=30)
+                }, ttl=_TTL_WS_STATUS)
             else:
                 await cache.write_json("ws:alerts", {
                     "channel": "alerts",
                     "data": [],
                     "count": 0,
-                }, ttl=30)
-        except Exception:
-            pass  # alerts 갱신 실패는 무시한다
+                }, ttl=_TTL_WS_STATUS)
+        except Exception as exc:
+            logger.debug("ws:alerts 캐시 갱신 실패 (무시): %s", exc)
 
         # ws:orderflow -- 스캘퍼 테이프용 오더플로우 데이터 (분석 지표 포함)
         try:
@@ -2062,9 +2340,9 @@ async def _update_ws_cache(
                 })
             await cache.write_json("ws:orderflow", {
                 "channel": "orderflow",
-                "data": of_snapshots if of_snapshots else None,
+                "data": of_snapshots if of_snapshots else [],
                 "count": len(of_snapshots),
-            }, ttl=30)
+            }, ttl=_TTL_WS_STATUS)
 
             # orderflow REST 엔드포인트용 스냅샷을 저장한다
             # order_flow.py의 get_orderflow_snapshot()이 이 캐시를 1차 조회한다
@@ -2074,7 +2352,7 @@ async def _update_ws_cache(
                     "tickers": tickers_dict,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "message": "실시간 주문 흐름 데이터",
-                }, ttl=30)
+                }, ttl=_TTL_WS_STATUS)
 
                 # 슬라이딩 윈도우 히스토리 누적 (6시간 = 360개 1분 스냅샷)
                 await _accumulate_orderflow_history(cache, of_snapshots)
@@ -2082,13 +2360,13 @@ async def _update_ws_cache(
                 # 고래 활동 탐지 → orderflow:whale 캐시에 기록한다
                 from src.indicators.misc.whale_detector import detect_whale_events
                 await detect_whale_events(cache, of_snapshots)
-        except Exception:
-            pass  # orderflow 갱신 실패는 무시한다
+        except Exception as exc:
+            logger.debug("ws:orderflow 캐시 갱신 실패 (무시): %s", exc)
 
         # indicators:latest — 보유 종목의 지표 스냅샷을 집약 캐시한다
         # continuous_analysis.py와 analysis.py의 엔드포인트가 조회한다
         try:
-            builder = system.features.get("indicator_bundle_builder") or system.features.get("indicator_builder")
+            builder = system.features.get("indicator_bundle_builder")
             if builder is not None and all_positions:
                 ind_snapshot: dict[str, dict] = {}
                 for ticker in list(all_positions.keys()):
@@ -2098,21 +2376,21 @@ async def _update_ws_cache(
                         # 핵심 지표만 추출하여 간결한 스냅샷을 구성한다
                         tech = bun_dict.get("technical") or {}
                         ind_snapshot[ticker] = {
-                            "rsi": tech.get("rsi_14"),
+                            "rsi": tech.get("rsi"),
                             "macd": tech.get("macd"),
                             "macd_signal": tech.get("macd_signal"),
                             "ema_20": tech.get("ema_20"),
                             "ema_50": tech.get("ema_50"),
-                            "atr": tech.get("atr_14"),
+                            "atr": tech.get("atr"),
                             "bb_upper": tech.get("bb_upper"),
                             "bb_lower": tech.get("bb_lower"),
                         }
-                    except Exception:
-                        pass  # 개별 종목 실패는 무시한다
+                    except Exception as exc:
+                        logger.debug("개별 종목 지표 빌드 실패 (무시): %s %s", ticker, exc)
                 if ind_snapshot:
-                    await cache.write_json("indicators:latest", ind_snapshot, ttl=300)
-        except Exception:
-            pass  # indicators 캐시 갱신 실패는 무시한다
+                    await cache.write_json("indicators:latest", ind_snapshot, ttl=_TTL_INDICATORS)
+        except Exception as exc:
+            logger.debug("indicators:latest 캐시 갱신 실패 (무시): %s", exc)
     except Exception as exc:
         logger.debug("WS 캐시 갱신 실패 (무시): %s", exc)
 
@@ -2125,7 +2403,9 @@ async def _execute_iteration(
 ) -> LoopIterationResult:
     """매매 루프 1회 반복을 실행한다."""
     interval = calculate_interval(session_type)
-    is_regular = should_run_monitor_all(session_type)
+    # ET 기반 정규장 판별: KST session_type은 EDT 기간에 1시간 어긋나므로
+    # is_regular_session(ET 기반)을 사용하여 실제 시장 개장 시간에 매매한다
+    is_regular = time_info.is_regular_session
     mode = "regular" if is_regular else "sync_only"
     logger.info("[%s] 매매 반복 실행 (mode=%s, interval=%ds)", session_type, mode, interval)
     trades = 0
@@ -2151,7 +2431,7 @@ async def _execute_iteration(
             await _sync_positions_only(system)
     except Exception as exc:
         msg = f"반복 실행 오류: {exc}"
-        logger.error(msg)
+        logger.error(msg, exc_info=True)
         errors.append(msg)
 
     # WebSocket 채널 캐시 갱신 (실패해도 루프에 영향 없음)

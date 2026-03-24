@@ -45,8 +45,8 @@ async def evaluate_anomaly(
                         f"PnL {p.pnl_pct:+.2f}%, 진입 {entry_str}"
                     )
                 positions_text = "\n".join(lines)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("에스컬레이션 포지션 수집 실패 (무시): %s", exc)
 
     # VIX 현재값 수집
     vix_text = "VIX: 조회 불가"
@@ -55,8 +55,8 @@ async def evaluate_anomaly(
         try:
             vix_val = await vf.get_vix()
             vix_text = f"VIX: {vix_val:.2f}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("에스컬레이션 VIX 조회 실패 (무시): %s", exc)
 
     signals_text = "\n".join(
         f"- [{s.level}] {s.rule}: {s.detail} (값={s.value:.2f}, 임계={s.threshold:.2f})"
@@ -113,9 +113,13 @@ async def evaluate_anomaly(
                 reasoning="Sonnet 응답 파싱 실패, 안전하게 다음 정기 분석에 반영",
             )
 
+        # AI가 유효하지 않은 urgency를 반환할 수 있으므로 검증한다
+        raw_urgency = parsed.get("urgency", "next_cycle")
+        valid_urgencies = {"emergency", "next_cycle", "ignore"}
+        safe_urgency = raw_urgency if raw_urgency in valid_urgencies else "next_cycle"
         result = EscalationResult(
             action_needed=parsed.get("action_needed", False),
-            urgency=parsed.get("urgency", "next_cycle"),
+            urgency=safe_urgency,
             reasoning=parsed.get("reasoning", ""),
             suggested_action=parsed.get("suggested_action", ""),
             ticker=parsed.get("ticker", ""),
@@ -164,7 +168,7 @@ async def emergency_opus_judgment(
         return report
 
     except Exception as exc:
-        logger.error("긴급 Opus 3+1 팀 판단 실패: %s", exc)
+        logger.error("긴급 Opus 3+1 팀 판단 실패: %s", exc, exc_info=True)
         # 전체 팀 호출 실패 시 보수적 hold 판단을 반환한다
         return ComprehensiveReport(
             signals=[{"action": "hold", "ticker": "", "reason": f"Opus 팀 호출 실패: {exc}"}],
@@ -236,7 +240,8 @@ async def _gather_emergency_context(
                 }
                 for t, p in positions.items()
             ]
-        except Exception:
+        except Exception as exc:
+            logger.debug("긴급 컨텍스트 포지션 수집 실패 (무시): %s", exc)
             context["positions"] = []
 
     # 레짐 정보
@@ -244,12 +249,13 @@ async def _gather_emergency_context(
     if detector is not None:
         try:
             vf = system.features.get("vix_fetcher")
-            vix = 20.0
+            vix = 19.0
             if vf is not None:
                 vix = await vf.get_vix()
             regime = detector.detect(vix_value=vix)
             context["regime"] = regime.regime_type
-        except Exception:
+        except Exception as exc:
+            logger.debug("긴급 컨텍스트 레짐 감지 실패 (무시): %s", exc)
             context["regime"] = "unknown"
 
     # 캐시에서 최근 뉴스 요약 읽기
@@ -275,8 +281,8 @@ async def _gather_emergency_context(
             context["news_summary"] = " | ".join(summary_parts[:3]) + (
                 "\n" + "\n".join(summary_parts[3:]) if len(summary_parts) > 3 else ""
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("긴급 컨텍스트 수집 실패 (무시): %s", exc)
 
     return context
 

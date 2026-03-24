@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TechnicalIndicators(BaseModel):
@@ -62,7 +62,7 @@ class VolumeProfileResult(BaseModel):
     is_above_poc: bool
     support_level: float | None = None
     resistance_level: float | None = None
-    signals: list[str] = []
+    signals: list[str] = Field(default_factory=list)
 
 
 class WhaleSignal(BaseModel):

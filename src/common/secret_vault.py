@@ -1,16 +1,21 @@
-"""
-SecretVault (C0.1) -- .env 파일에서 시크릿을 로드하고 타입 안전한 접근을 제공한다.
+"""SecretVault (C0.1) -- .env 파일에서 시크릿을 로드하고 타입 안전한 접근을 제공한다.
 
 모든 민감 정보의 유일한 접근 경로이다. 다른 모듈은 os.environ/os.getenv 대신
 반드시 SecretProvider를 통해 시크릿에 접근해야 한다.
+setup_mode=True이면 .env 없이도 빈 vault로 부팅한다 (소비자용 첫 설치 대응).
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import ClassVar
 
 from dotenv import dotenv_values
+
+from src.common.logger import get_logger
+
+logger: logging.Logger = get_logger(__name__)
 
 _instance: SecretProvider | None = None
 
@@ -34,9 +39,13 @@ _MANAGED_KEYS: list[str] = [
     "ANTHROPIC_API_KEY", "CLAUDE_MODE",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "TELEGRAM_BOT_TOKEN_2", "TELEGRAM_CHAT_ID_2",
+    "TELEGRAM_BOT_TOKEN_3", "TELEGRAM_CHAT_ID_3",
+    "TELEGRAM_BOT_TOKEN_4", "TELEGRAM_CHAT_ID_4",
+    "TELEGRAM_BOT_TOKEN_5", "TELEGRAM_CHAT_ID_5",
     "FINNHUB_API_KEY", "ALPHAVANTAGE_API_KEY", "FRED_API_KEY",
     "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET",
     "API_SECRET_KEY", "DART_API_KEY", "SEC_USER_AGENT", "TRADING_MODE",
+    "STOCKTWITS_ACCESS_TOKEN", "UPDATE_CHECK_URL",
 ]
 
 
@@ -50,11 +59,14 @@ def _mask_value(value: str) -> str:
 def _build_composite_secrets(raw: dict[str, str | None]) -> dict[str, str | None]:
     """DATABASE_URL 기본값 부여를 수행한다.
 
-    DATABASE_URL이 미설정이면 로컬 SQLite 경로를 기본값으로 설정한다.
+    DATABASE_URL이 미설정이면 로컬 SQLite 절대 경로를 기본값으로 설정한다.
+    번들 모드에서도 올바른 경로를 사용하도록 get_data_dir()로 절대 경로를 생성한다.
     """
-    # DATABASE_URL 미설정 시 SQLite 기본값을 사용한다
+    # DATABASE_URL 미설정 시 SQLite 기본값을 사용한다 (절대 경로 필수)
     if not raw.get("DATABASE_URL"):
-        raw["DATABASE_URL"] = "sqlite+aiosqlite:///data/trading.db"
+        from src.common.paths import get_data_dir  # 순환 참조 방지를 위해 지연 임포트한다
+        db_path = get_data_dir() / "trading.db"
+        raw["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
 
     return raw
 
@@ -125,34 +137,80 @@ def _validate_required(secrets: dict[str, str]) -> None:
         )
 
 
-def _load_secrets(env_file_path: str) -> dict[str, str]:
-    """dotenv 파일을 파싱하여 유효한 시크릿 딕셔너리를 반환한다."""
-    path = Path(env_file_path)
-    if not path.exists():
-        raise FileNotFoundError(f".env 파일을 찾을 수 없다: {env_file_path}")
-    raw = dotenv_values(str(path))
+def _load_secrets(env_file_path: str | None) -> dict[str, str]:
+    """dotenv 파일을 파싱하여 유효한 시크릿 딕셔너리를 반환한다.
+
+    env_file_path가 None이면 (첫 설치 시 .env 없음) 빈 dict로 시작하되
+    환경변수 병합은 수행한다.
+    """
+    if env_file_path is None:
+        # .env 파일 없이 환경변수만으로 진행한다 (셋업 모드용)
+        logger.info(".env 파일 경로가 없다. 환경변수만으로 시크릿을 로드한다")
+        raw: dict[str, str | None] = {}
+    else:
+        path = Path(env_file_path)
+        if not path.exists():
+            raise FileNotFoundError(f".env 파일을 찾을 수 없다: {env_file_path}")
+        raw = dotenv_values(str(path))
     merged = _merge_with_env(raw)
     composited = _build_composite_secrets(merged)
     # None 값과 빈 문자열을 제거한다
     return {k: v for k, v in composited.items() if v is not None and v.strip()}
 
 
-def get_vault(env_file_path: str | None = None) -> SecretProvider:
+def get_vault(
+    env_file_path: str | None = None,
+    *,
+    setup_mode: bool = False,
+) -> SecretProvider:
     """SecretProvider 싱글톤을 반환한다.
 
     최초 호출 시 .env 파일을 로드하고, 이후에는 캐싱된 인스턴스를 반환한다.
+
+    Args:
+        env_file_path: .env 파일 경로. None이면 paths.get_env_path()로 자동 탐색한다.
+        setup_mode: True이면 .env 없이도 빈 vault로 부팅한다 (첫 설치 위저드용).
+                    _validate_required() 검증을 건너뛴다.
     """
     global _instance
     if _instance is not None:
         return _instance
+
+    # paths.py를 통해 .env 경로를 탐색한다 (App Support → 프로젝트 루트 순서)
     if env_file_path is None:
-        env_file_path = str(
-            Path(__file__).resolve().parent.parent.parent / ".env"
-        )
-    secrets = _load_secrets(env_file_path)
-    _validate_required(secrets)
+        from src.common.paths import get_env_path  # 순환 참조 방지를 위해 지연 임포트한다
+        resolved = get_env_path()
+        env_path_str: str | None = str(resolved) if resolved is not None else None
+    else:
+        env_path_str = env_file_path
+
+    if setup_mode and env_path_str is None:
+        # 셋업 모드: .env 없이 환경변수만으로 빈 vault를 생성한다
+        logger.warning("셋업 모드로 vault를 초기화한다 (.env 없음, 필수 키 검증 생략)")
+        secrets = _load_secrets(None)
+    else:
+        secrets = _load_secrets(env_path_str)
+        if not setup_mode:
+            # 일반 모드: 필수 키 검증을 수행한다
+            _validate_required(secrets)
+
     _instance = SecretProvider(secrets)
     return _instance
+
+
+def reload_vault(*, setup_mode: bool = False) -> SecretProvider:
+    """위저드에서 .env 저장 후 vault를 리로드한다.
+
+    싱글톤을 초기화하고 get_vault()를 재호출하여 새 인스턴스를 반환한다.
+
+    Args:
+        setup_mode: True이면 필수 키 검증을 건너뛴다 (위저드에서 선택 항목을
+                    건너뛴 경우에도 정상 리로드를 보장한다).
+    """
+    global _instance
+    logger.info("vault를 리로드한다 (기존 인스턴스 폐기, setup_mode=%s)", setup_mode)
+    _instance = None
+    return get_vault(setup_mode=setup_mode)
 
 
 def reset_vault() -> None:

@@ -15,6 +15,7 @@ import '../widgets/status_bar.dart';
 import '../widgets/alert_panel.dart';
 import '../widgets/emergency_button.dart';
 import '../widgets/confirmation_dialog.dart';
+import '../widgets/setup/update_banner.dart';
 import 'overview_screen.dart';
 import 'trading_screen.dart';
 import 'risk_center_screen.dart';
@@ -40,22 +41,31 @@ class ShellScreen extends StatefulWidget {
 }
 
 class _ShellScreenState extends State<ShellScreen> {
+  // dispose 시 context.read가 안전하지 않으므로 참조를 캐시한다
+  DashboardProvider? _dashboardProvider;
+  TradingControlProvider? _tradingControlProvider;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _dashboardProvider = context.read<DashboardProvider>();
+      _tradingControlProvider = context.read<TradingControlProvider>();
       context.read<SettingsProvider>().refreshUnreadCount();
       // AppBar 버튼에서 매매 상태를 표시하기 위해 폴링을 시작한다.
-      context.read<TradingControlProvider>().startPolling();
+      _tradingControlProvider?.startPolling();
       // 대시보드 데이터를 1초마다 자동 새로고침한다.
-      context.read<DashboardProvider>().startAutoRefresh();
+      _dashboardProvider?.startAutoRefresh();
     });
   }
 
   @override
   void dispose() {
-    // ShellScreen이 파괴될 때 자동 새로고침을 중지한다.
-    // (앱 종료 시에만 호출되므로 실질적 안전장치 역할이다.)
+    // ShellScreen이 파괴될 때 initState에서 시작한 타이머를 정리한다.
+    // SetupWizard로 돌아가는 경우 등 재빌드 시 타이머 누수를 방지한다.
+    // 캐시된 참조를 사용하여 dispose 후 context.read 호출을 방지한다.
+    _dashboardProvider?.stopAutoRefresh();
+    _tradingControlProvider?.stopPolling();
     super.dispose();
   }
 
@@ -118,6 +128,8 @@ class _ShellScreenState extends State<ShellScreen> {
                 appBar: _buildAppBar(context),
                 body: Column(
                   children: [
+                    // 업데이트 알림 배너
+                    const UpdateBanner(),
                     // 긴급 정지 배너
                     if (isEmergency) const _EmergencyBanner(),
                     // 메인 컨텐츠

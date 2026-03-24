@@ -26,6 +26,9 @@ class CrawlProgressProvider with ChangeNotifier {
   Timer? _pollingTimer;
   StreamSubscription<CrawlProgress>? _wsSub;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   CrawlProgressProvider(this._api, this._ws);
 
   // ── Getters ──
@@ -52,7 +55,7 @@ class CrawlProgressProvider with ChangeNotifier {
     _summary = null;
     _progress = 0.0;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final result = await _api.startManualCrawl();
@@ -66,7 +69,7 @@ class CrawlProgressProvider with ChangeNotifier {
     } catch (e) {
       _isCrawling = false;
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -80,7 +83,7 @@ class CrawlProgressProvider with ChangeNotifier {
     _summary = null;
     _progress = 0.0;
     _error = null;
-    notifyListeners();
+    _safeNotify();
   }
 
   // ── 폴링 ──
@@ -143,11 +146,11 @@ class CrawlProgressProvider with ChangeNotifier {
       _error = status.data?['error'] as String? ?? 'Crawl failed';
       _stopPolling();
       _stopWebSocket();
-      notifyListeners();
+      _safeNotify();
       return;
     }
 
-    notifyListeners();
+    _safeNotify();
   }
 
   // ── WebSocket ──
@@ -207,7 +210,7 @@ class CrawlProgressProvider with ChangeNotifier {
     }
 
     _recalcProgress(event.totalCrawlers);
-    notifyListeners();
+    _safeNotify();
   }
 
   // ── 헬퍼 ──
@@ -258,7 +261,7 @@ class CrawlProgressProvider with ChangeNotifier {
     // 진행률을 100%로 설정한다
     _progress = 1.0;
 
-    notifyListeners();
+    _safeNotify();
   }
 
   /// CrawlProgress를 요약용 JSON으로 변환한다.
@@ -272,8 +275,14 @@ class CrawlProgressProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _stopPolling();
     _stopWebSocket();
     super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

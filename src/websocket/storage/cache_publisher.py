@@ -121,49 +121,51 @@ class CachePublisher:
             return PublishResult(published=False, channel=channel)
 
     async def _append_trade_to_kv(self, event: TradeEvent) -> None:
-        """체결 이벤트를 KV 스토어의 슬라이딩 윈도우에 추가한다.
+        """체결 이벤트를 KV 스토어의 슬라이딩 윈도우에 원자적으로 추가한다.
 
-        기존 데이터를 읽어 trades 리스트에 새 체결을 추가하고,
-        최대 _MAX_TRADE_WINDOW 건만 유지한 뒤 다시 저장한다.
+        atomic_dict_update로 읽기-수정-쓰기를 Lock 내에서 수행하여
+        동시 체결 이벤트 간 데이터 유실을 방지한다.
         """
         key = _ORDER_FLOW_KEY.format(ticker=event.ticker)
+        trade_dict = _trade_to_dict(event)
+        max_window = _MAX_TRADE_WINDOW
+
+        def _updater(data: dict) -> dict:
+            trades: list = data.get("trades", [])
+            trades.append(trade_dict)
+            if len(trades) > max_window:
+                trades = trades[-max_window:]
+            data["trades"] = trades
+            return data
+
         try:
-            existing: dict = await self._cache.read_json(key) or {
-                "trades": [],
-                "bids": [],
-                "asks": [],
-            }
-            trades: list = existing.get("trades", [])
-            trades.append(_trade_to_dict(event))
-            # 슬라이딩 윈도우: 오래된 체결부터 제거하여 최대 건수를 유지한다
-            if len(trades) > _MAX_TRADE_WINDOW:
-                trades = trades[-_MAX_TRADE_WINDOW:]
-            existing["trades"] = trades
-            await self._cache.write_json(key, existing, ttl=_ORDER_FLOW_TTL_SECONDS)
-        except Exception as exc:
-            # KV 기록 실패는 Pub/Sub 발행에 영향을 주지 않으므로 경고만 출력한다
-            _logger.warning(
-                "Trade KV 적재 실패 (%s): %s", event.ticker, exc
+            await self._cache.atomic_dict_update(
+                key, _updater,
+                default={"trades": [], "bids": [], "asks": []},
+                ttl=_ORDER_FLOW_TTL_SECONDS,
             )
+        except Exception as exc:
+            _logger.warning("Trade KV 적재 실패 (%s): %s", event.ticker, exc)
 
     async def _update_orderbook_in_kv(self, snapshot: OrderbookSnapshot) -> None:
-        """호가창 스냅샷을 KV 스토어에 갱신한다.
+        """호가창 스냅샷을 KV 스토어에 원자적으로 갱신한다.
 
-        기존 데이터의 trades는 유지하고 bids/asks만 최신 스냅샷으로 교체한다.
+        atomic_dict_update로 trades를 유지하면서 bids/asks만 교체한다.
         """
         key = _ORDER_FLOW_KEY.format(ticker=snapshot.ticker)
+        bids = snapshot.bids
+        asks = snapshot.asks
+
+        def _updater(data: dict) -> dict:
+            data["bids"] = bids
+            data["asks"] = asks
+            return data
+
         try:
-            existing: dict = await self._cache.read_json(key) or {
-                "trades": [],
-                "bids": [],
-                "asks": [],
-            }
-            # 호가는 최신 스냅샷으로 전체 교체한다 (누적이 아닌 현재 상태이다)
-            existing["bids"] = snapshot.bids
-            existing["asks"] = snapshot.asks
-            await self._cache.write_json(key, existing, ttl=_ORDER_FLOW_TTL_SECONDS)
-        except Exception as exc:
-            # KV 기록 실패는 Pub/Sub 발행에 영향을 주지 않으므로 경고만 출력한다
-            _logger.warning(
-                "Orderbook KV 갱신 실패 (%s): %s", snapshot.ticker, exc
+            await self._cache.atomic_dict_update(
+                key, _updater,
+                default={"trades": [], "bids": [], "asks": []},
+                ttl=_ORDER_FLOW_TTL_SECONDS,
             )
+        except Exception as exc:
+            _logger.warning("Orderbook KV 갱신 실패 (%s): %s", snapshot.ticker, exc)

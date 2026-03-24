@@ -15,15 +15,35 @@ from pathlib import Path
 from typing import Any
 
 from src.common.logger import get_logger
+from src.common.paths import get_models_dir
 
 logger: logging.Logger = get_logger(__name__)
 
-# 프로젝트 루트 기준 모델 경로
-_BASE: Path = Path(__file__).resolve().parents[2] / "models"
-_BLLOSSOM_PATH: Path = _BASE / "llama-3-Korean-Bllossom-8B.Q8_0.gguf"
-_QWEN_PATH: Path = _BASE / "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-_LLAMA_PATH: Path = _BASE / "Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf"
-_DEEPSEEK_PATH: Path = _BASE / "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
+# 모델 파일명 상수이다 (경로는 호출 시점에 get_models_dir()로 결합한다)
+_BLLOSSOM_FILENAME: str = "llama-3-Korean-Bllossom-8B.Q8_0.gguf"
+_QWEN_FILENAME: str = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+_LLAMA_FILENAME: str = "Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf"
+_DEEPSEEK_FILENAME: str = "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
+
+
+def _bllossom_path() -> Path:
+    """Bllossom 모델 경로를 반환한다."""
+    return get_models_dir() / _BLLOSSOM_FILENAME
+
+
+def _qwen_path() -> Path:
+    """Qwen 모델 경로를 반환한다."""
+    return get_models_dir() / _QWEN_FILENAME
+
+
+def _llama_path() -> Path:
+    """Llama 모델 경로를 반환한다."""
+    return get_models_dir() / _LLAMA_FILENAME
+
+
+def _deepseek_path() -> Path:
+    """DeepSeek 모델 경로를 반환한다."""
+    return get_models_dir() / _DEEPSEEK_FILENAME
 
 # 모델 캐시 — 전용 스레드 내에서만 접근한다
 _bllossom: Any | None = None
@@ -46,9 +66,10 @@ def _load_bllossom() -> Any:
         return _bllossom
     from llama_cpp import Llama  # type: ignore[import-untyped]
 
-    logger.info("Bllossom-8B 번역 모델 로딩 시작: %s", _BLLOSSOM_PATH.name)
+    bp = _bllossom_path()
+    logger.info("Bllossom-8B 번역 모델 로딩 시작: %s", bp.name)
     _bllossom = Llama(
-        model_path=str(_BLLOSSOM_PATH),
+        model_path=str(bp),
         n_gpu_layers=-1,  # Metal GPU 전체 오프로드
         n_ctx=2048,
         verbose=False,
@@ -64,9 +85,9 @@ def _load_classifiers() -> dict[str, Any]:
     from llama_cpp import Llama  # type: ignore[import-untyped]
 
     configs: list[tuple[str, Path, str]] = [
-        ("qwen", _QWEN_PATH, "Qwen2.5-7B"),
-        ("llama", _LLAMA_PATH, "Llama-3.1-8B"),
-        ("deepseek", _DEEPSEEK_PATH, "DeepSeek-R1-8B"),
+        ("qwen", _qwen_path(), "Qwen2.5-7B"),
+        ("llama", _llama_path(), "Llama-3.1-8B"),
+        ("deepseek", _deepseek_path(), "DeepSeek-R1-8B"),
     ]
     for name, path, label in configs:
         logger.info("%s 분류 모델 로딩 시작: %s", label, path.name)

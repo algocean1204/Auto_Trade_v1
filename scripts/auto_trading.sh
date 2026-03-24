@@ -15,10 +15,15 @@ set -euo pipefail
 # 설정
 # ============================================
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_DIR="$HOME/Library/Logs/trading"
+# macOS: ~/Library/Logs/trading, Linux: 프로젝트 루트 하위 logs/ 를 사용한다
+if [ -d "$HOME/Library" ]; then
+    LOG_DIR="$HOME/Library/Logs/trading"
+else
+    LOG_DIR="$PROJECT_ROOT/logs"
+fi
 ENV_FILE="$PROJECT_ROOT/.env"
 PORT_FILE="$PROJECT_ROOT/data/server_port.txt"
-DEFAULT_PORT=9500
+DEFAULT_PORT=9501
 STOP_HOUR=6
 STOP_MINUTE=30
 
@@ -27,7 +32,7 @@ read_port() {
     if [ -f "$PORT_FILE" ]; then
         local port
         port=$(cat "$PORT_FILE" 2>/dev/null | tr -d '[:space:]')
-        if [ -n "$port" ] && [ "$port" -ge 9500 ] 2>/dev/null && [ "$port" -le 9505 ] 2>/dev/null; then
+        if [ -n "$port" ] && [ "$port" -ge 9501 ] 2>/dev/null && [ "$port" -le 9505 ] 2>/dev/null; then
             echo "$port"
             return
         fi
@@ -51,6 +56,29 @@ fi
 # 로그 디렉토리 생성
 mkdir -p "$LOG_DIR"
 
+# 로그 로테이션 -- 지정 파일이 10MB 초과 시 .1 → .2 → .3으로 이동한다 (최대 3개 보관)
+rotate_log() {
+    local log_file="$1"
+    local max_size=$((10 * 1024 * 1024))  # 10MB
+
+    if [ ! -f "$log_file" ]; then
+        return 0
+    fi
+
+    local file_size
+    # macOS: stat -f%z, Linux: stat -c%s -- 양쪽 모두 지원한다
+    file_size=$(stat -f%z "$log_file" 2>/dev/null || stat -c%s "$log_file" 2>/dev/null || echo "0")
+
+    if [ "$file_size" -gt "$max_size" ]; then
+        [ -f "${log_file}.2" ] && mv -f "${log_file}.2" "${log_file}.3"
+        [ -f "${log_file}.1" ] && mv -f "${log_file}.1" "${log_file}.2"
+        mv -f "$log_file" "${log_file}.1"
+    fi
+}
+
+# 스크립트 시작 시 로그 로테이션을 수행한다
+rotate_log "$LOG_DIR/auto_trading.log"
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [TRADER] $1" | tee -a "$LOG_DIR/auto_trading.log"
 }
@@ -65,6 +93,9 @@ api_call() {
     local max_retries="${3:-3}"
     local retry=0
     local response
+
+    # 포트 파일이 갱신될 수 있으므로 호출 시마다 최신 포트를 반영한다
+    SERVER_URL="http://localhost:$(read_port)"
 
     while [ $retry -lt $max_retries ]; do
         response=$(curl -s -w "\n%{http_code}" \
@@ -106,9 +137,8 @@ wait_for_server() {
         # 포트 파일이 갱신될 수 있으므로 매번 다시 읽는다
         SERVER_URL="http://localhost:$(read_port)"
 
-        # status 엔드포인트는 인증 불필요하다
         local response
-        response=$(curl -s --max-time 5 "${SERVER_URL}/api/trading/status" 2>/dev/null) || true
+        response=$(curl -s --max-time 5 -H "Authorization: Bearer $API_KEY" "${SERVER_URL}/api/trading/status" 2>/dev/null) || true
 
         if [ -n "$response" ] && echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
             log "서버 응답 확인 완료 (${SERVER_URL})"
@@ -150,20 +180,30 @@ should_stop() {
 # 매매 상태 확인
 # ============================================
 check_trading_status() {
+    # 포트 파일이 갱신될 수 있으므로 매번 다시 읽는다
+    SERVER_URL="http://localhost:$(read_port)"
     local response
-    response=$(curl -s --max-time 10 "${SERVER_URL}/api/trading/status" 2>/dev/null) || true
+    response=$(curl -s --max-time 10 -H "Authorization: Bearer $API_KEY" "${SERVER_URL}/api/trading/status" 2>/dev/null) || true
 
     if [ -z "$response" ]; then
         echo "unknown"
         return 1
     fi
 
-    # is_trading 필드를 추출한다
-    local is_trading
+    # is_trading, user_stopped, eod_running 필드를 추출한다
+    local is_trading user_stopped eod_running
     is_trading=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('is_trading', False))" 2>/dev/null) || true
+    user_stopped=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('user_stopped', False))" 2>/dev/null) || true
+    eod_running=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('eod_running', False))" 2>/dev/null) || true
 
     if [ "$is_trading" = "True" ]; then
         echo "running"
+        return 0
+    elif [ "$eod_running" = "True" ]; then
+        echo "eod_running"
+        return 0
+    elif [ "$user_stopped" = "True" ]; then
+        echo "user_stopped"
         return 0
     else
         echo "stopped"
@@ -234,7 +274,15 @@ stop_trading() {
 # ============================================
 # 클린업 (SIGTERM/SIGINT 수신 시)
 # ============================================
+# 중복 실행 방지 플래그이다. SIGTERM→cleanup→EXIT→cleanup 이중 호출을 차단한다.
+_CLEANUP_DONE=0
+
 cleanup() {
+    if [ "$_CLEANUP_DONE" -eq 1 ]; then
+        return
+    fi
+    _CLEANUP_DONE=1
+
     log "트레이딩 스케줄러 종료 신호 수신"
 
     # 매매가 진행 중이면 EOD와 함께 종료한다
@@ -258,9 +306,13 @@ main() {
     log "AI Auto-Trading System V2 - Night Session"
     log "=========================================="
 
-    # 슬립 방지 (매매 세션 동안만 caffeinate 활성화)
-    caffeinate -i -w $$ &
-    log "caffeinate 활성화 (PID: $!, 부모 PID: $$)"
+    # 슬립 방지 (매매 세션 동안만 caffeinate 활성화, macOS 전용)
+    if command -v caffeinate >/dev/null 2>&1; then
+        caffeinate -i -w $$ &
+        log "caffeinate 활성화 (PID: $!, 부모 PID: $$)"
+    else
+        log "caffeinate 미설치 (macOS 이외 환경) -- 슬립 방지 건너뜀"
+    fi
 
     # 이미 종료 시간이면 바로 종료한다
     if should_stop; then
@@ -298,9 +350,17 @@ main() {
             running)
                 # 정상 -- 계속 감시한다
                 ;;
+            eod_running)
+                # EOD 시퀀스 실행 중 -- 완료까지 대기한다
+                log "EOD 시퀀스 실행 중. 완료 대기한다."
+                ;;
+            user_stopped)
+                # 사용자가 의도적으로 정지 -- 재시작하지 않는다
+                log "사용자 의도적 정지 감지. 재시작하지 않는다."
+                ;;
             stopped)
-                # 매매가 중단됨 (서버는 살아있지만 매매가 멈춤)
-                log "WARNING: 매매가 중단되었다. 재시작을 시도한다."
+                # 매매가 비정상 중단됨 (크래시 등) -- 재시작을 시도한다
+                log "WARNING: 매매가 비정상 중단되었다. 재시작을 시도한다."
                 start_trading || log "WARNING: 매매 재시작 실패"
                 ;;
             unknown)

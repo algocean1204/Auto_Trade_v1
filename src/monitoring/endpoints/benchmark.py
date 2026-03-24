@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+import math
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.monitoring.server.auth import verify_api_key
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
@@ -172,12 +176,15 @@ def _compute_summary(items: list[BenchmarkPeriodItem]) -> BenchmarkSummaryItem:
     )
 
 
-def _safe_float(val: object, default: float = 0.0) -> float:
-    """안전하게 float으로 변환한다."""
+def _safe_float(val: float | str | None, default: float = 0.0) -> float:
+    """안전하게 float으로 변환한다. NaN/inf이면 기본값을 반환한다."""
     if val is None:
         return default
     try:
-        return float(val)
+        result = float(val)
+        if math.isnan(result) or math.isinf(result):
+            return default
+        return result
     except (ValueError, TypeError):
         return default
 
@@ -188,7 +195,8 @@ def _safe_float(val: object, default: float = 0.0) -> float:
 
 @benchmark_router.get("/comparison", response_model=BenchmarkComparisonResponse)
 async def get_benchmark_comparison(
-    period: str = "1M",
+    period: str = Query(default="1M", pattern="^(1W|1M|3M|6M|1Y)$"),
+    _auth: str = Depends(verify_api_key),
 ) -> BenchmarkComparisonResponse:
     """SPY/SSO 대비 AI 포트폴리오 수익률 비교를 반환한다.
 
@@ -216,7 +224,8 @@ async def get_benchmark_comparison(
 
 @benchmark_router.get("/chart", response_model=BenchmarkChartResponse)
 async def get_benchmark_chart(
-    period: str = "1M",
+    period: str = Query(default="1M", pattern="^(1W|1M|3M|6M|1Y)$"),
+    _auth: str = Depends(verify_api_key),
 ) -> BenchmarkChartResponse:
     """벤치마크 비교 차트 데이터를 반환한다.
 

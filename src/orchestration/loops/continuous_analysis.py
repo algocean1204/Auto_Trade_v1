@@ -12,15 +12,20 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel
 
+from typing import TYPE_CHECKING
+
 from src.common.event_bus import EventType, get_event_bus
 from src.common.logger import get_logger
 from src.common.market_clock import TimeInfo
 from src.orchestration.init.dependency_injector import InjectedSystem
 
+if TYPE_CHECKING:
+    from src.analysis.models import AnalysisContext, ComprehensiveReport
+
 logger = get_logger(__name__)
 _CACHE_KEY_PREFIX: str = "continuous_analysis"
 _RESULT_TTL_SECONDS: int = 7200
-_VIX_FALLBACK: float = 20.0
+_VIX_FALLBACK: float = 19.0
 _ANALYSIS_SESSIONS: frozenset[str] = frozenset({
     "pre_market", "power_open", "mid_day", "power_hour", "final_monitoring",
 })
@@ -111,13 +116,14 @@ async def _refresh_sector_rotation(system: InjectedSystem) -> None:
         sector_data: dict = {}
         for etf in ("XLK", "XLV", "XLF", "XLE", "XLY", "XLI", "XLU", "SPY"):
             try:
-                price = await broker.virtual_client.get_current_price(etf)
+                price = await broker.get_price(etf)
                 sector_data[etf] = {
                     "change_pct": getattr(price, "change_pct", 0.0),
                     "volume": getattr(price, "volume", 0),
                     "avg_volume": getattr(price, "avg_volume", 1),
                 }
-            except Exception:
+            except Exception as exc:
+                logger.debug("섹터 ETF 시세 조회 실패 (%s, 기본값 사용): %s", etf, exc)
                 sector_data[etf] = {"change_pct": 0.0, "volume": 0, "avg_volume": 1}
         signal = await sr.evaluate(sector_data, broker)  # type: ignore[union-attr]
         logger.info(
@@ -214,19 +220,16 @@ async def _run_single_analysis(
 
 async def _gather_market_context(
     system: InjectedSystem,
-    context: object,
+    context: AnalysisContext,
 ) -> dict:
     """Opus 팀에 전달할 시장 컨텍스트를 수집한다.
 
     센티넬 watch/priority 신호와 기본 시장 데이터를 포함한다.
     """
-    from src.analysis.models import AnalysisContext
-
-    ctx: AnalysisContext = context  # type: ignore[assignment]
     market_ctx: dict = {
-        "regime": ctx.regime,
-        "news_summary": ctx.news_summary[:500],
-        "positions": ctx.positions,
+        "regime": context.regime,
+        "news_summary": context.news_summary[:500],
+        "positions": context.positions,
     }
 
     # 센티넬 우선 반영 데이터 읽기
@@ -235,19 +238,19 @@ async def _gather_market_context(
         priority = await cache.read_json("sentinel:priority")
         if priority:
             market_ctx["sentinel_priority"] = priority
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("sentinel:priority 캐시 읽기 실패 (무시): %s", exc)
 
     try:
         watch = await cache.read_json("sentinel:watch")
         if watch:
             market_ctx["sentinel_watch"] = watch
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("sentinel:watch 캐시 읽기 실패 (무시): %s", exc)
 
     # 시장 데이터 추가
-    if ctx.market_data:
-        market_ctx["market_data"] = ctx.market_data
+    if context.market_data:
+        market_ctx["market_data"] = context.market_data
 
     # 뉴스 핵심기사와 분류 결과를 Opus 팀에 제공한다
     try:
@@ -255,15 +258,15 @@ async def _gather_market_context(
         if key_news and isinstance(key_news, list):
             # 상위 5건만 포함하여 토큰 절약한다
             market_ctx["key_news"] = key_news[:5]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("news:key_latest 캐시 읽기 실패 (무시): %s", exc)
 
     try:
         classified = await cache.read_json("news:classified_latest")
         if classified and isinstance(classified, list):
             market_ctx["classified_news_count"] = len(classified)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("news:classified_latest 캐시 읽기 실패 (무시): %s", exc)
 
     return market_ctx
 
@@ -307,8 +310,8 @@ async def _build_analysis_context(system: InjectedSystem) -> object:
         vf = system.features.get("vix_fetcher")
         if vf is not None:
             vix = await vf.get_vix()  # type: ignore[union-attr]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("VIX 조회 실패 (폴백 %.1f 사용): %s", _VIX_FALLBACK, exc)
     regime_str = "sideways"
     detector = system.features.get("regime_detector")
     if detector is not None:
@@ -372,6 +375,15 @@ async def _build_analysis_context(system: InjectedSystem) -> object:
     except Exception as exc:
         logger.warning("콘탱고 감지 실패 (무시): %s", exc)
 
+    # 외부 데이터 소스 캐시를 AI 프롬프트에 포함한다
+    try:
+        from src.orchestration.phases.preparation import _collect_external_data
+        external = await _collect_external_data(system)
+        if external:
+            market_data["external"] = external
+    except Exception as exc:
+        logger.debug("외부 데이터 수집 실패 (무시): %s", exc)
+
     return AnalysisContext(
         news_summary=news_summary,
         indicators=indicators,
@@ -380,21 +392,18 @@ async def _build_analysis_context(system: InjectedSystem) -> object:
         market_data=market_data,
     )
 
-def _report_to_dict(report: object, system: InjectedSystem) -> dict:
+def _report_to_dict(report: ComprehensiveReport, system: InjectedSystem) -> dict:
     """ComprehensiveReport를 캐시용 dict로 변환한다."""
-    from src.analysis.models import ComprehensiveReport
-
-    r: ComprehensiveReport = report  # type: ignore[assignment]
     time_info = system.components.clock.get_time_info()
     return {
-        "timestamp": r.timestamp.isoformat(),
+        "timestamp": report.timestamp.isoformat(),
         "session": time_info.session_type,
-        "issues_count": len(r.signals),
-        "issues": r.signals,
-        "confidence": r.confidence,
-        "recommendations": r.recommendations,
-        "regime_assessment": r.regime_assessment,
-        "risk_level": r.risk_level,
+        "issues_count": len(report.signals),
+        "issues": report.signals,
+        "confidence": report.confidence,
+        "recommendations": report.recommendations,
+        "regime_assessment": report.regime_assessment,
+        "risk_level": report.risk_level,
     }
 
 def _build_stub_result(system: InjectedSystem) -> dict:

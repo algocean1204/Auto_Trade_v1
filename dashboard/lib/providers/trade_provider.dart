@@ -6,6 +6,9 @@ import '../services/api_service.dart';
 class TradeProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   TradeProvider(this._apiService);
 
   StrategyParams? _strategyParams;
@@ -31,7 +34,7 @@ class TradeProvider with ChangeNotifier {
   Future<void> loadStrategyParams() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _strategyParams = await _apiService.getStrategyParams();
@@ -40,14 +43,14 @@ class TradeProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> updateStrategyParams(Map<String, dynamic> params) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       await _apiService.updateStrategyParams(params);
@@ -57,14 +60,14 @@ class TradeProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> loadDailyReport(String date) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final report = await _apiService.getDailyReport(date);
@@ -74,14 +77,14 @@ class TradeProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> loadWeeklyReport(String week) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final report = await _apiService.getWeeklyReport(week);
@@ -91,14 +94,14 @@ class TradeProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> loadPendingAdjustments() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _pendingAdjustments = await _apiService.getPendingAdjustments();
@@ -107,7 +110,7 @@ class TradeProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -118,7 +121,7 @@ class TradeProvider with ChangeNotifier {
       await loadPendingAdjustments();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -128,14 +131,14 @@ class TradeProvider with ChangeNotifier {
       await loadPendingAdjustments();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> loadUniverse() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _universe = await _apiService.getUniverse();
@@ -144,7 +147,7 @@ class TradeProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -154,7 +157,7 @@ class TradeProvider with ChangeNotifier {
       await loadUniverse();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -166,7 +169,7 @@ class TradeProvider with ChangeNotifier {
       return result;
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
       rethrow;
     }
   }
@@ -177,7 +180,7 @@ class TradeProvider with ChangeNotifier {
       await loadUniverse();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -187,7 +190,18 @@ class TradeProvider with ChangeNotifier {
       await loadUniverse();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

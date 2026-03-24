@@ -27,21 +27,21 @@ _system: InjectedSystem | None = None
 class ManualAnalyzeRequest(BaseModel):
     """수동 매매 분석 요청 모델이다. Flutter는 side 필드를 전송한다."""
 
-    ticker: str
+    ticker: str = Field(..., min_length=1, max_length=10, pattern=r"^[A-Za-z0-9]+$")
     action: str = ""  # buy, sell
     side: str = ""  # Flutter 호환용 (action의 별칭)
-    quantity: int = 0
+    quantity: int = Field(default=0, ge=0, le=10000)
     reason: str = ""
 
 
 class ManualExecuteRequest(BaseModel):
     """수동 매매 실행 요청 모델이다. Flutter는 side 필드를 전송한다."""
 
-    ticker: str
+    ticker: str = Field(..., min_length=1, max_length=10, pattern=r"^[A-Za-z0-9]+$")
     action: str = ""  # buy, sell
     side: str = ""  # Flutter 호환용 (action의 별칭)
-    quantity: int
-    price: float = 0.0  # 0이면 시장가
+    quantity: int = Field(..., ge=1, le=10000)
+    price: float = Field(default=0.0, ge=0.0)  # 0이면 시장가
 
 
 class ManualAnalyzeResponse(BaseModel):
@@ -92,7 +92,8 @@ def set_manual_trade_deps(system: InjectedSystem) -> None:
 
 async def _fetch_current_price(ticker: str) -> float:
     """브로커에서 현재가를 조회한다. 실패 시 일봉 폴백, 최종 실패 시 0.0을 반환한다."""
-    assert _system is not None
+    if _system is None:
+        return 0.0
     exchange = "NAS"
     try:
         exchange = _system.components.registry.get_exchange_code(ticker)
@@ -142,6 +143,10 @@ async def _build_ai_opinion(
 
     # 캐시에서 sentiment/confidence/recommendations 추출
     confidence_raw = cached_analysis.get("confidence", 0.0)
+    # NaN/inf 방어: 유효한 float이 아니면 0으로 처리한다
+    import math
+    if not isinstance(confidence_raw, (int, float)) or math.isnan(confidence_raw) or math.isinf(confidence_raw):
+        confidence_raw = 0.0
     # confidence가 0~1 범위이면 백분율로 변환한다
     confidence_pct = int(confidence_raw * 100) if confidence_raw <= 1.0 else int(confidence_raw)
 
@@ -220,7 +225,8 @@ def _build_suggestion(
 
 async def _build_technical_summary(ticker: str) -> dict[str, Any]:
     """기술 지표 요약을 생성한다. 실패 시 빈 dict(available=False)를 반환한다."""
-    assert _system is not None
+    if _system is None:
+        return {"available": False}
     try:
         builder = _system.features.get("indicator_bundle_builder")
         if builder is None:
@@ -254,7 +260,8 @@ async def _build_technical_summary(ticker: str) -> dict[str, Any]:
 
 async def _get_holding_info(ticker: str) -> dict[str, Any] | None:
     """PositionMonitor에서 보유 현황을 조회한다. 미보유 시 None을 반환한다."""
-    assert _system is not None
+    if _system is None:
+        return None
     try:
         pm = _system.features.get("position_monitor")
         if pm is None:
@@ -276,6 +283,7 @@ async def _get_holding_info(ticker: str) -> dict[str, Any] | None:
 @manual_trade_router.post("/analyze", response_model=ManualAnalyzeResponse)
 async def analyze_manual_trade(
     req: ManualAnalyzeRequest,
+    _auth: str = Depends(verify_api_key),
 ) -> ManualAnalyzeResponse:
     """수동 매매 전 AI 분석을 수행한다.
 
@@ -294,9 +302,9 @@ async def analyze_manual_trade(
                 detail=f"등록되지 않은 티커이다: {req.ticker}",
             )
 
-        # AI 분석 캐시를 조회한다
+        # AI 분석 캐시를 조회한다 — 캐시 키는 항상 대문자로 저장된다
         cache = _system.components.cache
-        cached = await cache.read_json(f"analysis:{req.ticker}")
+        cached = await cache.read_json(f"analysis:{req.ticker.upper()}")
         cached_analysis = cached if isinstance(cached, dict) else None
 
         # 현재가를 조회한다
@@ -318,7 +326,7 @@ async def analyze_manual_trade(
         holding = await _get_holding_info(req.ticker)
 
         # 하위 호환용 meta 데이터
-        meta = registry._ticker_map[req.ticker]
+        meta = registry.get_meta(req.ticker)
 
         return ManualAnalyzeResponse(
             ticker=req.ticker,
@@ -394,6 +402,27 @@ async def execute_manual_trade(
         fill_price = req.price
         if fill_price <= 0:
             fill_price = await _fetch_current_price(req.ticker)
+
+        # 수동 매매도 trades:today에 기록하여 DailyLossLimit/EOD 보고서에 반영한다
+        if result.status == "filled":
+            try:
+                from datetime import datetime, timezone
+                cache = _system.components.cache
+                record = {
+                    "ticker": req.ticker,
+                    "side": effective_action,
+                    "quantity": req.quantity,
+                    "price": fill_price,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "exit_type": "manual",
+                    "pnl": None,
+                    "reason": "manual_trade",
+                }
+                await cache.atomic_list_append(
+                    "trades:today", [record], max_size=500, ttl=86400,
+                )
+            except Exception as exc:
+                _logger.warning("수동 매매 기록 실패 (trades:today 누락): %s", exc)
 
         _logger.info(
             "수동 매매 실행 결과: %s %s x%d -> %s (order_id=%s)",

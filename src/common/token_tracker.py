@@ -12,10 +12,14 @@ import time
 from pathlib import Path
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 
 _logger = get_logger(__name__)
 
-_TRACKER_FILE = Path(__file__).resolve().parents[2] / "data" / "token_usage.json"
+
+def _tracker_file() -> Path:
+    """토큰 사용량 JSON 파일 경로를 반환한다."""
+    return get_data_dir() / "token_usage.json"
 
 # API 호출 전용 비용표 ($ per 1M tokens, 2026-03 기준)
 # SDK 호출은 구독에 포함이므로 비용 계산하지 않는다
@@ -33,6 +37,11 @@ _session_start: float = time.time()
 # 인메모리 누적 데이터: source별 분리 저장한다
 _api_usage: dict[str, dict[str, int | float]] = {}
 _sdk_usage: dict[str, dict[str, int | float]] = {}
+
+# 디스크 저장 스로틀: 최소 30초 간격으로만 파일에 쓴다 (매 호출마다 쓰면 I/O 병목)
+_last_save_time: float = 0.0
+_SAVE_INTERVAL_SEC: float = 30.0
+_dirty: bool = False
 
 
 def _get_store(source: str) -> dict[str, dict[str, int | float]]:
@@ -62,7 +71,7 @@ def record_usage(
         entry["input_tokens"] += input_tokens  # type: ignore[operator]
         entry["output_tokens"] += output_tokens  # type: ignore[operator]
 
-        _save_to_file()
+        _save_throttled()
 
 
 def record_error(model: str, source: str) -> None:
@@ -77,7 +86,7 @@ def record_error(model: str, source: str) -> None:
                 "errors": 0,
             }
         store[model]["errors"] += 1  # type: ignore[operator]
-        _save_to_file()
+        _save_throttled()
 
 
 def _calc_api_cost(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -143,25 +152,66 @@ def get_summary() -> dict:
 
 def reset_session() -> None:
     """세션 카운터를 초기화한다. 매매 시작 시 호출한다."""
-    global _session_start
+    global _session_start, _dirty, _last_save_time
     with _lock:
         _api_usage.clear()
         _sdk_usage.clear()
         _session_start = time.time()
+        _dirty = False
+        _last_save_time = 0.0
         _save_to_file()
     _logger.info("토큰 추적 세션 초기화 완료")
+
+
+def flush() -> None:
+    """더티 데이터가 있으면 즉시 파일에 저장한다. EOD 등에서 호출한다."""
+    global _dirty, _last_save_time
+    with _lock:
+        if _dirty:
+            _save_to_file()
+            _dirty = False
+            _last_save_time = time.time()
+
+
+def _save_throttled() -> None:
+    """최소 _SAVE_INTERVAL_SEC 간격으로만 디스크에 저장한다.
+
+    매 AI 호출마다 파일 쓰기를 하면 I/O 병목이 된다.
+    _lock을 보유한 상태에서 호출해야 한다.
+    """
+    global _dirty, _last_save_time
+    _dirty = True
+    now = time.time()
+    if now - _last_save_time >= _SAVE_INTERVAL_SEC:
+        _save_to_file()
+        _dirty = False
+        _last_save_time = now
 
 
 def _save_to_file() -> None:
     """현재 사용량을 JSON 파일로 저장한다. _lock 보유 상태에서 호출한다."""
     try:
-        _TRACKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tracker = _tracker_file()
+        tracker.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "session_start": _session_start,
             "updated_at": time.time(),
             "api": {model: dict(entry) for model, entry in _api_usage.items()},
             "sdk": {model: dict(entry) for model, entry in _sdk_usage.items()},
         }
-        _TRACKER_FILE.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        import os
+        import tempfile
+        content = json.dumps(data, indent=2, default=str)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(tracker.parent), suffix=".tmp",
+        )
+        try:
+            with open(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+            os.replace(tmp_path, str(tracker))
+        except BaseException:
+            os.unlink(tmp_path)
+            raise
     except Exception:
         _logger.debug("토큰 사용량 파일 저장 실패", exc_info=True)

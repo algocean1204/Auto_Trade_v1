@@ -18,6 +18,9 @@ class MacroProvider extends ChangeNotifier {
   /// 서버에 물리적으로 연결할 수 없는 상태인지 나타낸다.
   bool _isServerUnreachable = false;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   MacroProvider(this._api);
 
   MacroIndicators? get indicators => _indicators;
@@ -43,7 +46,7 @@ class MacroProvider extends ChangeNotifier {
     _isLoading = true;
     _errorMessage = null;
     _isServerUnreachable = false;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final futures = await Future.wait<dynamic>([
@@ -71,7 +74,7 @@ class MacroProvider extends ChangeNotifier {
       _indicators = MacroIndicators.empty();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -100,5 +103,16 @@ class MacroProvider extends ChangeNotifier {
       debugPrint('MacroProvider._safeFetch error: $e');
       return null;
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

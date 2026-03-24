@@ -42,6 +42,16 @@ class EnvLoader {
     return _cache[key] ?? defaultValue;
   }
 
+  /// .env 캐시를 초기화하고 다시 로드한다.
+  ///
+  /// 셋업 위저드에서 .env를 새로 생성한 후 호출하여
+  /// ApiService/SetupService가 최신 API_SECRET_KEY를 사용하도록 한다.
+  static void reload() {
+    _cache.clear();
+    _loaded = false;
+    load();
+  }
+
   // ── Private helpers ──
 
   /// .env 파일을 찾아 File 객체를 반환한다. 찾지 못하면 null을 반환한다.
@@ -56,8 +66,25 @@ class EnvLoader {
   }
 
   /// 탐색할 후보 경로 목록을 생성한다.
+  ///
+  /// 번들 모드(.app)에서는 ~/Library/Application Support/com.stocktrader.ai/.env를
+  /// 최우선으로 탐색한다. 서버가 해당 경로를 작업 디렉토리로 사용하므로
+  /// .env도 이 위치에 저장된다.
   static List<String> _buildCandidates() {
     final paths = <String>[];
+
+    // 번들 모드: Application Support 경로를 최우선으로 추가한다.
+    try {
+      final exePath = Platform.resolvedExecutable;
+      if (exePath.contains('.app/Contents/MacOS/')) {
+        final home = Platform.environment['HOME'] ?? '';
+        if (home.isNotEmpty) {
+          paths.add(
+            '$home/Library/Application Support/com.stocktrader.ai/.env',
+          );
+        }
+      }
+    } catch (_) {}
 
     // 실행 파일 기준으로 상위 디렉터리를 최대 12단계까지 탐색한다.
     // macOS 앱 패키지 구조가 깊다:

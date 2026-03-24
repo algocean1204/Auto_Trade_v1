@@ -6,6 +6,9 @@ import '../services/api_service.dart';
 class AgentProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   AgentProvider(this._apiService);
 
   List<AgentTeam> _teams = [];
@@ -29,7 +32,7 @@ class AgentProvider with ChangeNotifier {
   Future<void> loadTeams() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final loaded = await _apiService.getAgentList();
@@ -44,7 +47,7 @@ class AgentProvider with ChangeNotifier {
       _error = null;
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -54,14 +57,14 @@ class AgentProvider with ChangeNotifier {
       _currentAgentId = agentId;
       _isMdLoading = false;
       _mdError = null;
-      notifyListeners();
+      _safeNotify();
       return _mdCache[agentId];
     }
 
     _currentAgentId = agentId;
     _isMdLoading = true;
     _mdError = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final content = await _apiService.getAgentMd(agentId);
@@ -73,7 +76,7 @@ class AgentProvider with ChangeNotifier {
       return null;
     } finally {
       _isMdLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -82,7 +85,7 @@ class AgentProvider with ChangeNotifier {
     try {
       await _apiService.saveAgentMd(agentId, content);
       _mdCache[agentId] = content;
-      notifyListeners();
+      _safeNotify();
       return true;
     } catch (e) {
       return false;
@@ -115,5 +118,16 @@ class AgentProvider with ChangeNotifier {
   /// 새로고침한다.
   Future<void> refresh() async {
     await loadTeams();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

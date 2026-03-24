@@ -56,17 +56,15 @@ class CrawlEngine:
     async def run(self, schedule: CrawlSchedule) -> CrawlResult:
         """크롤링 파이프라인 전체를 실행한다."""
         start = time.monotonic()
-        total = 0
-        new_count = 0
         failed_sources: list[str] = []
 
         # 소스별 크롤링을 병렬로 실행한다
-        tasks = self._create_crawl_tasks(schedule.active_sources)
+        matched_sources, tasks = self._create_crawl_tasks(schedule.active_sources)
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 결과를 수집한다
+        # 결과를 수집한다 (매칭된 소스만 전달하여 인덱스 일치를 보장한다)
         raw_articles, source_failures = self._collect_results(
-            schedule.active_sources, results,
+            matched_sources, results,
         )
         failed_sources.extend(source_failures)
         total = len(raw_articles)
@@ -89,16 +87,18 @@ class CrawlEngine:
 
     def _create_crawl_tasks(
         self, sources: list[SourceConfig],
-    ) -> list[asyncio.Task]:
-        """소스별 크롤링 태스크를 생성한다."""
+    ) -> tuple[list[SourceConfig], list[asyncio.Task]]:
+        """소스별 크롤링 태스크를 생성한다. 매칭된 소스와 태스크를 함께 반환한다."""
+        matched_sources: list[SourceConfig] = []
         tasks: list[asyncio.Task] = []
         for source in sources:
             crawler = _select_crawler(source, self._crawlers)
             if crawler is None:
                 logger.warning("크롤러 미매칭: %s", source.name)
                 continue
+            matched_sources.append(source)
             tasks.append(asyncio.create_task(crawler.safe_crawl(source)))
-        return tasks
+        return matched_sources, tasks
 
     def _collect_results(
         self,

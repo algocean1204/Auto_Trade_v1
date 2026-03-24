@@ -21,13 +21,21 @@ from urllib.parse import quote
 # 프로젝트 루트
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-LOG_DIR = Path.home() / "Library" / "Logs" / "trading"
+# macOS: ~/Library/Logs/trading, Linux: 프로젝트 루트 하위 logs/
+_mac_log_dir = Path.home() / "Library" / "Logs" / "trading"
+LOG_DIR = _mac_log_dir if _mac_log_dir.parent.exists() else PROJECT_ROOT / "logs"
 MONITOR_LOG = PROJECT_ROOT / "logs" / "monitor_overnight.log"
 TOKEN_USAGE_FILE = DATA_DIR / "token_usage.json"
 
-# 설정 로드
+# 설정 로드 -- Application Support / XDG_DATA_HOME → 프로젝트 루트 순서로 .env를 탐색한다
 _env: dict[str, str] = {}
-_env_file = PROJECT_ROOT / ".env"
+import platform as _platform
+if _platform.system() == "Darwin":
+    _APP_SUPPORT_ENV = Path.home() / "Library" / "Application Support" / "com.stocktrader.ai" / ".env"
+else:
+    _xdg = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
+    _APP_SUPPORT_ENV = Path(_xdg) / "com.stocktrader.ai" / ".env"
+_env_file = _APP_SUPPORT_ENV if _APP_SUPPORT_ENV.exists() else PROJECT_ROOT / ".env"
 if _env_file.exists():
     for line in _env_file.read_text().splitlines():
         line = line.strip()
@@ -43,7 +51,7 @@ API_KEY = _env.get("API_SECRET_KEY", "")
 
 # 포트 파일 경로이다. 서버가 동적으로 선택한 포트를 기록한다.
 _PORT_FILE = PROJECT_ROOT / "data" / "server_port.txt"
-_DEFAULT_PORT = 9500
+_DEFAULT_PORT = 9501
 
 
 def _read_server_port() -> int:
@@ -51,7 +59,7 @@ def _read_server_port() -> int:
     try:
         if _PORT_FILE.exists():
             port = int(_PORT_FILE.read_text().strip())
-            if 9500 <= port <= 9505:
+            if 9501 <= port <= 9505:
                 return port
     except (ValueError, OSError):
         pass
@@ -210,7 +218,7 @@ def get_recent_errors(minutes: int = 5) -> list[str]:
 
 def get_positions_info() -> str:
     """현재 포지션 정보를 조회한다."""
-    result = api_get("/api/positions")
+    result = api_get("/api/dashboard/positions")
     if not result:
         return "조회 실패"
     positions = result.get("positions", [])
@@ -481,17 +489,26 @@ def main() -> None:
 
     _last_hourly_report = time.time()  # 첫 리포트는 1시간 후
 
-    # SIGTERM/SIGINT 핸들러
+    # SIGTERM/SIGINT 핸들러 -- 플래그만 설정하여 메인 루프에서 종료 처리한다.
+    # 시그널 핸들러 내부에서 I/O(텔레그램 전송)를 하면 교착 상태 위험이 있다.
+    _signal_received = False
+
     def handle_signal(signum: int, frame: object) -> None:
-        log(f"신호 수신 (sig={signum}), 최종 리포트 전송 후 종료")
-        send_final_report()
-        sys.exit(0)
+        nonlocal _signal_received
+        _signal_received = True
+        log(f"신호 수신 (sig={signum}), 메인 루프에서 종료 처리 예정")
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
     try:
         while True:
+            # 시그널 수신 확인
+            if _signal_received:
+                log("시그널에 의한 종료 -- 최종 리포트 전송")
+                send_final_report()
+                break
+
             # 종료 시간 확인
             if should_stop():
                 log(f"{_STOP_TIME.strftime('%H:%M')} KST 도달 -- 최종 리포트 전송 후 종료")
@@ -506,8 +523,11 @@ def main() -> None:
             # 매시간 리포트
             send_hourly_report()
 
-            # 5분 대기
-            time.sleep(300)
+            # 5분 대기 (1초 단위로 분할하여 시그널 즉시 처리)
+            for _ in range(300):
+                if _signal_received:
+                    break
+                time.sleep(1)
 
     except KeyboardInterrupt:
         log("키보드 인터럽트 -- 최종 리포트 전송")

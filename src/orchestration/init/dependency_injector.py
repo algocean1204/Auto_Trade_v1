@@ -64,6 +64,7 @@ def _inject_f1_crawl(system: InjectedSystem) -> None:
 
         _register_feature(system, "crawl_engine", engine)
         _register_feature(system, "crawl_scheduler", scheduler)
+        _register_feature(system, "article_deduplicator", dedup)
     except Exception as exc:
         logger.warning("F1 CrawlEngine 초기화 실패 (건너뜀): %s", exc)
 
@@ -192,6 +193,62 @@ def _inject_f3_indicators(system: InjectedSystem) -> None:
         logger.warning("F3 OrderFlowAggregator 임포트 실패 (건너뜀): %s", exc)
     except Exception as exc:
         logger.warning("F3 OrderFlowAggregator 초기화 실패 (건너뜀): %s", exc)
+
+    # -- 외부 데이터 소스 (F3-ext) --
+    _inject_f3_external(system)
+
+
+def _inject_f3_external(system: InjectedSystem) -> None:
+    """F3-ext 외부 데이터 수집기를 초기화하고 등록한다.
+
+    Polymarket, Trading Economics, ETFdb, Macrotrends, TipRanks, Dataroma
+    6개 소스를 등록한다. 개별 실패 시 해당 소스만 건너뛴다.
+    """
+    c = system.components
+
+    # Polymarket 예측시장 확률 수집기이다
+    try:
+        from src.indicators.external.polymarket_fetcher import PolymarketFetcher
+        _register_feature(system, "polymarket_fetcher", PolymarketFetcher(c.cache, c.http))
+    except Exception as exc:
+        logger.warning("F3-ext Polymarket 초기화 실패 (건너뜀): %s", exc)
+
+    # Trading Economics 경제 캘린더 수집기이다
+    try:
+        from src.indicators.external.tradingeconomics_fetcher import TradingEconomicsFetcher
+        _register_feature(
+            system, "tradingeconomics_fetcher", TradingEconomicsFetcher(c.cache, c.http),
+        )
+    except Exception as exc:
+        logger.warning("F3-ext TradingEconomics 초기화 실패 (건너뜀): %s", exc)
+
+    # ETFdb 자금 유출입 수집기이다
+    try:
+        from src.indicators.external.etf_flow_fetcher import EtfFlowFetcher
+        _register_feature(system, "etf_flow_fetcher", EtfFlowFetcher(c.cache, c.http))
+    except Exception as exc:
+        logger.warning("F3-ext EtfFlowFetcher 초기화 실패 (건너뜀): %s", exc)
+
+    # Macrotrends 밸류에이션 수집기이다
+    try:
+        from src.indicators.external.macrotrends_fetcher import MacrotrendsFetcher
+        _register_feature(system, "macrotrends_fetcher", MacrotrendsFetcher(c.cache, c.http))
+    except Exception as exc:
+        logger.warning("F3-ext Macrotrends 초기화 실패 (건너뜀): %s", exc)
+
+    # TipRanks 애널리스트 컨센서스 수집기이다
+    try:
+        from src.indicators.external.tipranks_fetcher import TipRanksFetcher
+        _register_feature(system, "tipranks_fetcher", TipRanksFetcher(c.cache, c.http))
+    except Exception as exc:
+        logger.warning("F3-ext TipRanks 초기화 실패 (건너뜀): %s", exc)
+
+    # Dataroma 슈퍼인베스터 포트폴리오 추적기이다
+    try:
+        from src.indicators.external.dataroma_fetcher import DataromaFetcher
+        _register_feature(system, "dataroma_fetcher", DataromaFetcher(c.cache, c.http))
+    except Exception as exc:
+        logger.warning("F3-ext Dataroma 초기화 실패 (건너뜀): %s", exc)
 
 
 def _inject_f4_strategy(system: InjectedSystem) -> None:
@@ -455,11 +512,8 @@ def inject_dependencies(components: SystemComponents) -> InjectedSystem:
         logger.warning("UniversePersister 초기화 실패 (건너뜀): %s", exc)
 
     # DI 결과 요약 — 로드 성공/실패 feature 목록을 기록한다
-    loaded = [k for k, v in system.features.items() if v is not None]
-    failed = [k for k, v in system.features.items() if v is None]
-    logger.info("DI 완료: %d개 로드, %d개 실패", len(loaded), len(failed))
-    if failed:
-        logger.warning("DI 미로드 feature: %s", ", ".join(failed))
+    loaded = list(system.features.keys())
+    logger.info("DI 완료: %d개 feature 로드", len(loaded))
     # 필수 feature 누락 시 error 레벨로 경고한다
     critical = {"position_monitor", "order_manager", "entry_strategy", "exit_strategy"}
     missing_critical = critical - set(loaded)

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
 from src.monitoring.server.auth import verify_api_key
@@ -60,9 +60,9 @@ class AlertItem(BaseModel):
 class AlertListResponse(BaseModel):
     """알림 목록 응답 모델이다."""
 
-    alerts: list[AlertItem]
-    total_count: int
-    unread_count: int
+    alerts: list[AlertItem] = Field(default_factory=list)
+    total_count: int = 0
+    unread_count: int = 0
 
 
 class AlertUnreadCountResponse(BaseModel):
@@ -129,17 +129,20 @@ def _build_alert_item(raw: dict, read_ids: set[str]) -> AlertItem:
         severity=str(raw.get("severity", "INFO")),
         timestamp=str(raw.get("timestamp", "")),
         read=alert_id in read_ids,
+        title=str(raw.get("title", "")),
         data=raw.get("data"),
     )
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────
 
-@alerts_router.get("/", response_model=AlertListResponse)
+# 빈 문자열 경로로 변경: FastAPI가 /api/alerts/ 리다이렉트를 방지한다
+@alerts_router.get("", response_model=AlertListResponse)
 async def get_alerts(
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=1000),
     alert_type: str | None = None,
     severity: str | None = None,
+    _auth: str = Depends(verify_api_key),
 ) -> AlertListResponse:
     """전체 알림 목록을 반환한다.
 
@@ -190,7 +193,9 @@ async def get_alerts(
 
 
 @alerts_router.get("/unread-count", response_model=AlertUnreadCountResponse)
-async def get_unread_count() -> AlertUnreadCountResponse:
+async def get_unread_count(
+    _auth: str = Depends(verify_api_key),
+) -> AlertUnreadCountResponse:
     """읽지 않은 알림 수를 반환한다.
 
     전체 목록을 로드하지 않고 읽음 ID 집합 차이만 계산하여 빠르게 반환한다.
@@ -211,7 +216,7 @@ async def get_unread_count() -> AlertUnreadCountResponse:
 
 @alerts_router.post("/{alert_id}/read", response_model=AlertMarkReadResponse)
 async def mark_alert_read(
-    alert_id: str,
+    alert_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
     _key: str = Depends(verify_api_key),
 ) -> AlertMarkReadResponse:
     """지정된 알림을 읽음 처리한다. 인증 필수.
@@ -223,10 +228,9 @@ async def mark_alert_read(
     try:
         cache = _system.components.cache  # type: ignore[union-attr]
 
-        # 기존 읽음 목록 로드 후 추가
-        read_ids = await _get_read_ids()
-        read_ids.add(alert_id)
-        await cache.write_json("alerts:read", list(read_ids))
+        # atomic_set_add로 read→add→write 경합을 방지한다.
+        # 동시 요청이 서로의 읽음 처리를 덮어쓰는 문제를 해결한다.
+        await cache.atomic_set_add("alerts:read", alert_id)
 
         _logger.info("알림 읽음 처리 완료: %s", alert_id)
         return AlertMarkReadResponse(success=True, alert_id=alert_id)

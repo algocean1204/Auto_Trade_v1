@@ -40,12 +40,12 @@ def check_response(resp: HttpResponse, context: str) -> dict:
 
 def build_url(auth: KisAuth, path: str) -> str:
     """인증 객체의 base_url과 경로를 결합한다."""
-    return f"{auth._base_url}{path}"
+    return f"{auth.base_url}{path}"
 
 
 def account_parts(auth: KisAuth) -> tuple[str, str]:
     """계좌번호를 CANO(8자리)와 ACNT_PRDT_CD(2자리)로 분리한다."""
-    parts = auth._account.split("-")
+    parts = auth.account.split("-")
     return parts[0], parts[1] if len(parts) > 1 else "01"
 
 
@@ -60,10 +60,14 @@ def safe_float(value: str | None, default: float = 0.0) -> float:
 
 
 def safe_int(value: str | None, default: int = 0) -> int:
-    """문자열을 int로 안전 변환한다. None이나 빈 문자열이면 기본값을 반환한다."""
+    """문자열을 int로 안전 변환한다. None이나 빈 문자열이면 기본값을 반환한다.
+
+    KIS API가 소수점 포함 문자열("10.0000")을 반환할 수 있으므로
+    float 변환을 거쳐 int로 변환한다.
+    """
     if not value:
         return default
     try:
-        return int(value)
+        return int(float(value))
     except (ValueError, TypeError):
         return default

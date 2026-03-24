@@ -5,6 +5,9 @@ import '../services/api_service.dart';
 class RiskProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   RiskProvider(this._apiService);
 
   RiskDashboardData? _dashboardData;
@@ -29,7 +32,7 @@ class RiskProvider with ChangeNotifier {
   Future<void> loadDashboard() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       // /api/risk/dashboard 엔드포인트를 사용한다
@@ -39,11 +42,22 @@ class RiskProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> refresh() async {
     await loadDashboard();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from src.common.logger import get_logger
 from src.optimization.feedback.models import TimePerformanceResult
 
@@ -15,12 +17,15 @@ _MARKET_CLOSE_HOUR: int = 16
 _TOP_N: int = 3
 
 
-def _safe_float(val: object, default: float = 0.0) -> float:
-    """안전하게 float 변환한다."""
+def _safe_float(val: float | str | None, default: float = 0.0) -> float:
+    """안전하게 float 변환한다. NaN/inf이면 기본값을 반환한다."""
     if val is None:
         return default
     try:
-        return float(val)
+        result = float(val)
+        if math.isnan(result) or math.isinf(result):
+            return default
+        return result
     except (ValueError, TypeError):
         return default
 

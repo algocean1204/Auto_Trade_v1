@@ -7,7 +7,7 @@ nikkei_asia, scmp, yonhap_en, hankyung, mk)를 처리한다.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 import feedparser

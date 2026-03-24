@@ -90,7 +90,7 @@ class PositionCard extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
-              value: position.unrealizedPnlPct.abs() / 100,
+              value: (position.unrealizedPnlPct.abs() / 100).clamp(0.0, 1.0),
               backgroundColor: tc.surfaceBorder.withValues(alpha: 0.3),
               valueColor: AlwaysStoppedAnimation<Color>(pnlColor),
               minHeight: 4,

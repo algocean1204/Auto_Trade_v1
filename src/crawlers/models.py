@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SourceConfig(BaseModel):
@@ -26,7 +26,7 @@ class RawArticle(BaseModel):
     source: str
     published_at: datetime | None = None
     language: str = "en"
-    metadata: dict = {}
+    metadata: dict = Field(default_factory=dict)
 
 
 class VerifiedArticle(BaseModel):

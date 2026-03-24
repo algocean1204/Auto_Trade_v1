@@ -7,15 +7,18 @@ Flutter 대시보드 Dart 모델(tax_models.dart)과 구조를 일치시킨다.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+
+from src.monitoring.server.auth import verify_api_key
+from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
 
 if TYPE_CHECKING:
+    from src.common.cache_gateway import CacheClient
     from src.orchestration.init.dependency_injector import InjectedSystem
 
 _logger = get_logger(__name__)
@@ -29,8 +32,6 @@ _system: InjectedSystem | None = None
 _ANNUAL_EXEMPTION_KRW = 2_500_000
 # 기본 세율 22% (양도소득세 20% + 지방소득세 2%)이다.
 _DEFAULT_TAX_RATE = 0.22
-# 기본 환율(KRW/USD)이다. 캐시에 환율 정보가 없을 때 사용한다.
-_DEFAULT_FX_RATE = 1350.0
 
 
 def set_tax_deps(system: InjectedSystem) -> None:
@@ -40,8 +41,21 @@ def set_tax_deps(system: InjectedSystem) -> None:
     _logger.info("TaxEndpoints 의존성 주입 완료")
 
 
+async def _read_fx_from_cache(cache: CacheClient) -> float:
+    """fx:current 캐시에서 환율을 읽는다. 없으면 0.0을 반환한다."""
+    try:
+        data = await cache.read_json("fx:current")  # type: ignore[union-attr]
+        if data and isinstance(data, dict):
+            rate = float(data.get("usd_krw_rate", 0))
+            if 900 < rate < 2000:
+                return rate
+    except Exception as exc:
+        _logger.debug("환율 캐시 조회 실패 (무시): %s", exc)
+    return 0.0
+
+
 # ---------------------------------------------------------------------------
-# 응답 모델 정의 — Flutter tax_models.dart 구조와 일치시킨다
+# 응답 모델 정의 -- Flutter tax_models.dart 구조와 일치시킨다
 # ---------------------------------------------------------------------------
 
 class TaxSummaryModel(BaseModel):
@@ -109,13 +123,19 @@ class TaxReportResponse(BaseModel):
     """총 손실(USD)이다."""
     net_gain: float
     """순 손익(USD)이다."""
+    net_gain_krw: float = 0.0
+    """순 손익(KRW)이다. 환율 미조회 시 0이다."""
+    taxable_krw: float = 0.0
+    """과세 대상 금액(KRW)이다. 250만원 공제 후."""
+    estimated_tax_krw: float = 0.0
+    """연간 추정 세금(KRW)이다. 250만원 공제 적용 후 22%."""
     short_term: float
     """단기 손익(1년 미만, USD)이다."""
     long_term: float
     """장기 손익(1년 이상, USD)이다."""
     wash_sales: int
     """Wash Sale 건수이다."""
-    transactions: list[TaxTransaction]
+    transactions: list[TaxTransaction] = Field(default_factory=list)
     """개별 거래 목록이다."""
 
 
@@ -134,7 +154,7 @@ class HarvestSuggestion(BaseModel):
 class TaxHarvestResponse(BaseModel):
     """세금 손실 수확 제안 응답이다."""
 
-    suggestions: list[HarvestSuggestion]
+    suggestions: list[HarvestSuggestion] = Field(default_factory=list)
     """손실 수확 제안 목록이다."""
 
 
@@ -145,7 +165,7 @@ class TaxHarvestResponse(BaseModel):
 def _build_default_tax_status() -> TaxStatusResponse:
     """캐시 미스/시스템 미초기화 시 기본 세금 현황을 생성한다."""
     return TaxStatusResponse(
-        year=datetime.now().year,
+        year=datetime.now(tz=timezone.utc).year,
         summary=TaxSummaryModel(
             total_gain_usd=0.0,
             total_loss_usd=0.0,
@@ -176,7 +196,7 @@ def _build_tax_status_from_cache(cached: dict) -> TaxStatusResponse:
         raw_summary = cached.get("summary", {})
         raw_remaining = cached.get("remaining_exemption", {})
         return TaxStatusResponse(
-            year=int(cached.get("year", datetime.now().year)),
+            year=int(cached.get("year", datetime.now(tz=timezone.utc).year)),
             summary=TaxSummaryModel(
                 total_gain_usd=float(raw_summary.get("total_gain_usd", 0.0)),
                 total_loss_usd=float(raw_summary.get("total_loss_usd", 0.0)),
@@ -197,7 +217,7 @@ def _build_tax_status_from_cache(cached: dict) -> TaxStatusResponse:
 
     # 레거시 플랫 구조 → 새 구조로 변환한다
     ytd_pnl = float(cached.get("ytd_realized_pnl", 0.0))
-    fx_rate = float(cached.get("fx_rate", _DEFAULT_FX_RATE))
+    fx_rate = float(cached.get("fx_rate", 0.0))
 
     # 이익/손실 분리: ytd_pnl이 양수면 이익, 음수면 손실로 분류한다
     total_gain = max(ytd_pnl, 0.0)
@@ -214,7 +234,7 @@ def _build_tax_status_from_cache(cached: dict) -> TaxStatusResponse:
     utilization_pct = (used_krw / _ANNUAL_EXEMPTION_KRW * 100.0) if _ANNUAL_EXEMPTION_KRW > 0 else 0.0
 
     return TaxStatusResponse(
-        year=int(cached.get("year", datetime.now().year)),
+        year=int(cached.get("year", datetime.now(tz=timezone.utc).year)),
         summary=TaxSummaryModel(
             total_gain_usd=total_gain,
             total_loss_usd=total_loss,
@@ -235,7 +255,7 @@ def _build_tax_status_from_cache(cached: dict) -> TaxStatusResponse:
 
 
 @tax_router.get("/status", response_model=TaxStatusResponse)
-async def get_tax_status() -> TaxStatusResponse:
+async def get_tax_status(_auth: str = Depends(verify_api_key)) -> TaxStatusResponse:
     """연초 대비 현재 세금 현황을 반환한다.
 
     1차: tax:status 캐시에서 읽는다.
@@ -269,7 +289,9 @@ async def get_tax_status() -> TaxStatusResponse:
 
             if total_gain > 0 or total_loss > 0:
                 net_gain_usd = total_gain - total_loss
-                net_gain_krw = net_gain_usd * _DEFAULT_FX_RATE
+                # fx:current 캐시에서 환율을 읽는다. 없으면 KRW 변환을 생략한다
+                fx_val = await _read_fx_from_cache(cache)
+                net_gain_krw = net_gain_usd * fx_val
                 taxable_krw = max(net_gain_krw - _ANNUAL_EXEMPTION_KRW, 0.0)
                 estimated_tax = taxable_krw * _DEFAULT_TAX_RATE
                 used_krw = min(max(net_gain_krw, 0.0), _ANNUAL_EXEMPTION_KRW)
@@ -277,7 +299,7 @@ async def get_tax_status() -> TaxStatusResponse:
                 utilization_pct = (used_krw / _ANNUAL_EXEMPTION_KRW * 100) if _ANNUAL_EXEMPTION_KRW > 0 else 0.0
 
                 return TaxStatusResponse(
-                    year=datetime.now().year,
+                    year=datetime.now(tz=timezone.utc).year,
                     summary=TaxSummaryModel(
                         total_gain_usd=total_gain,
                         total_loss_usd=total_loss,
@@ -303,7 +325,7 @@ async def get_tax_status() -> TaxStatusResponse:
 
 
 @tax_router.get("/report", response_model=TaxReportResponse)
-async def get_tax_report(year: int = 2026) -> TaxReportResponse:
+async def get_tax_report(year: int = 2026, _auth: str = Depends(verify_api_key)) -> TaxReportResponse:
     """연간 세금 리포트를 반환한다.
 
     캐시 키 tax:report:{year}에서 데이터를 읽는다.
@@ -325,21 +347,29 @@ async def get_tax_report(year: int = 2026) -> TaxReportResponse:
         cached = await cache.read_json(f"tax:report:{year}")
         if cached and isinstance(cached, dict):
             raw_txns = cached.get("transactions", [])
+            # 거래 목록이 극단적으로 클 수 있으므로 최근 2000건으로 제한한다
+            _MAX_TAX_TXNS = 2000
+            txn_list = raw_txns if isinstance(raw_txns, list) else []
+            if len(txn_list) > _MAX_TAX_TXNS:
+                txn_list = txn_list[-_MAX_TAX_TXNS:]
             transactions = [
                 TaxTransaction(
                     ticker=str(t.get("ticker", "")),
                     gain_usd=float(t.get("gain_usd", 0.0)),
                     tax_krw=float(t.get("tax_krw", 0.0)),
-                    fx_rate=float(t.get("fx_rate", 1350.0)),
+                    fx_rate=float(t.get("fx_rate", 0.0)),
                     date=str(t.get("date", "")),
                 )
-                for t in (raw_txns if isinstance(raw_txns, list) else [])
+                for t in txn_list
             ]
             return TaxReportResponse(
                 year=year,
                 total_gains=float(cached.get("total_gains", 0.0)),
                 total_losses=float(cached.get("total_losses", 0.0)),
                 net_gain=float(cached.get("net_gain", 0.0)),
+                net_gain_krw=float(cached.get("net_gain_krw", 0.0)),
+                taxable_krw=float(cached.get("taxable_krw", 0.0)),
+                estimated_tax_krw=float(cached.get("estimated_tax_krw", 0.0)),
                 short_term=float(cached.get("short_term", 0.0)),
                 long_term=float(cached.get("long_term", 0.0)),
                 wash_sales=int(cached.get("wash_sales", 0)),
@@ -394,7 +424,7 @@ def _convert_harvest_suggestion(raw: dict) -> HarvestSuggestion:
 
 
 @tax_router.get("/harvest-suggestions", response_model=TaxHarvestResponse)
-async def get_harvest_suggestions() -> TaxHarvestResponse:
+async def get_harvest_suggestions(_auth: str = Depends(verify_api_key)) -> TaxHarvestResponse:
     """세금 손실 수확 제안 목록을 반환한다.
 
     캐시 키 tax:harvest에서 데이터를 읽는다.

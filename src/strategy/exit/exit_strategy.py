@@ -9,6 +9,7 @@ C-5 수정: _executed_scales / _peak_pnl 상태를 캐시에 영속하여
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 
 from src.analysis.models import MarketRegime
 from src.common.cache_gateway import CacheClient
@@ -17,6 +18,9 @@ from src.indicators.models import IndicatorBundle
 from src.strategy.models import ExitDecision, Position, StatArbSignal, StrategyParams
 
 logger = get_logger(__name__)
+
+# 캐시 저장용 백그라운드 태스크 참조 — GC 소멸을 방지한다
+_background_tasks: set[asyncio.Task] = set()
 
 # 청산 유형 (우선순위순)
 _EXIT_EMERGENCY = ("emergency", 0.0)
@@ -164,10 +168,11 @@ def _check_news_fade_exit(
     position: Position,
     news_context: dict | None,
     price_spike: dict | None,
+    impact_threshold: float = 0.9,
 ) -> ExitDecision | None:
     """NewsFading 청산 -- 뉴스 스파이크 급등 후 하락 예상 시 롱 포지션을 청산한다.
 
-    impact_score < 0.9이고 1%+ 급등(60초 이내) 발생 시 포지션을 50% 청산하여
+    impact_score < impact_threshold이고 1%+ 급등(60초 이내) 발생 시 포지션을 50% 청산하여
     뉴스 페이딩 리스크를 관리한다.
     """
     if not price_spike or not news_context:
@@ -178,7 +183,7 @@ def _check_news_fade_exit(
 
     # 급등 후 하락 예상: 롱 포지션에만 적용한다 (급등 = pct_change > 0)
     if pct_change >= _NEWS_FADE_MIN_SPIKE_PCT and seconds <= 60:
-        if impact_score < 0.9:  # 고영향 뉴스는 구조적 변화일 수 있어 제외한다
+        if impact_score < impact_threshold:  # 고영향 뉴스는 구조적 변화일 수 있어 제외한다
             return ExitDecision(
                 should_exit=True,
                 exit_type="news_fade",
@@ -301,7 +306,7 @@ class ExitStrategy:
         )
 
     @staticmethod
-    def _fire_and_forget(coro: object) -> None:
+    def _fire_and_forget(coro: Coroutine[object, object, None]) -> None:
         """코루틴을 현재 이벤트 루프에 fire-and-forget으로 예약한다.
 
         캐시 저장 실패 시 로그만 남기고 매매 로직에 영향을 주지 않는다.
@@ -318,7 +323,9 @@ class ExitStrategy:
             except Exception:
                 logger.warning("캐시 저장 실패 (매매 로직에 영향 없음)")
 
-        loop.create_task(_safe_save())
+        task = loop.create_task(_safe_save())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     def evaluate(
         self,
@@ -341,6 +348,7 @@ class ExitStrategy:
             news_context: 최신 뉴스 컨텍스트 (impact_score 포함)
             price_spike: 가격 스파이크 정보 (pct_change, seconds, current_price)
         """
+        self._current_sp = params
         ticker = position.ticker
 
         # 고점(high watermark)을 갱신한다
@@ -356,13 +364,13 @@ class ExitStrategy:
             # Beast 공격적 트레일링 (+1.5% 진입 → -0.5% 하락 청산)
             self._check_beast_trailing(position),
             # news_fade(4.5) - StatArb(4.7)보다 우선한다
-            _check_news_fade_exit(position, news_context, price_spike)
+            _check_news_fade_exit(position, news_context, price_spike, params.news_fade_impact_threshold)
             if params.news_fading_enabled else None,
             # stat_arb(4.7) - 뉴스 페이딩 다음 순서이다
             _check_stat_arb_exit(position, stat_arb_signals)
             if params.stat_arb_enabled else None,
-            _check_take_profit(position, regime),
             self._check_scaled_exit(position, regime),
+            _check_take_profit(position, regime),
             self._check_trailing_stop(position, regime),
         ]
 
@@ -456,6 +464,13 @@ class ExitStrategy:
         trailing = regime.params.trailing_stop
         if trailing <= 0:
             return None
+
+        # 소량 잔여 포지션은 트레일링 폭을 완화한다 (파라미터 기반)
+        sp = getattr(self, '_current_sp', None)
+        small_qty = sp.min_exit_qty if sp else 5
+        trail_mult = sp.small_position_trailing_multiplier if sp else 1.5
+        if position.quantity <= small_qty:
+            trailing = trailing * trail_mult
 
         ticker = position.ticker
         peak = self._peak_pnl.get(ticker, 0.0)

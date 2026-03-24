@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from src.common.cache_gateway import CacheClient
 from src.common.logger import get_logger
+from src.indicators.misc.fred_fetcher import FRED_API_URL
 from src.risk.models import LiquidityBias
 
 _logger = get_logger(__name__)
@@ -97,10 +98,7 @@ class NetLiquidityTracker:
         """FRED API에서 최신 관측값을 가져온다."""
         import httpx
 
-        url = (
-            "https://api.stlouisfed.org/fred/series/"
-            "observations"
-        )
+        url = FRED_API_URL
         params = {
             "series_id": series_id,
             "api_key": self._api_key,

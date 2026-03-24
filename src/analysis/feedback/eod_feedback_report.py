@@ -11,23 +11,47 @@ from src.common.logger import get_logger
 logger: logging.Logger = get_logger(__name__)
 
 
+async def _load_previous_feedback(cache: object) -> list[str]:
+    """전날 피드백의 suggestions를 캐시에서 로드한다."""
+    try:
+        data = await cache.read_json("feedback:latest")  # type: ignore[union-attr]
+        if data and isinstance(data, dict):
+            return data.get("suggestions", [])
+    except Exception as exc:
+        logger.debug("전날 피드백 캐시 로드 실패 (무시): %s", exc)
+    return []
+
+
 def _build_feedback_prompt(
     daily_trades: list[dict],
     pnl_summary: dict,
+    previous_suggestions: list[str] | None = None,
 ) -> str:
     """피드백 분석용 프롬프트를 생성한다."""
     trades_json = json.dumps(daily_trades, default=str, ensure_ascii=False)
     pnl_json = json.dumps(pnl_summary, default=str, ensure_ascii=False)
+
+    prev_section = ""
+    if previous_suggestions:
+        prev_lines = "\n".join(f"  - {s}" for s in previous_suggestions)
+        prev_section = (
+            f"\n전일 개선안:\n{prev_lines}\n"
+            "위 개선안이 오늘 매매에 반영되었는지 분석하고, "
+            "'feedback_status' 필드에 각 항목의 반영 여부와 이유를 포함하라.\n"
+        )
+
     return (
         "오늘의 매매 내역과 손익을 분석하여 피드백을 작성하라.\n"
         "생존 매매 원칙($300/월)에 비추어 평가하라.\n\n"
         f"매매 내역:\n{trades_json}\n\n"
-        f"손익 요약:\n{pnl_json}\n\n"
+        f"손익 요약:\n{pnl_json}\n"
+        f"{prev_section}\n"
         "아래 JSON 형식으로 응답하라:\n"
         '{"summary": {"total_trades": int, "win_rate": float, '
         '"total_pnl_amount": float, "best_trade": str, "worst_trade": str}, '
         '"lessons": ["교훈1", "교훈2", ...], '
-        '"suggestions": ["개선안1", "개선안2", ...]}'
+        '"suggestions": ["개선안1", "개선안2", ...], '
+        '"feedback_status": [{"suggestion": "개선안 원문", "reflected": true/false, "reason": "반영/미반영 이유"}]}'
     )
 
 
@@ -72,12 +96,18 @@ class EODFeedbackReport:
         self,
         daily_trades: list[dict],
         pnl_summary: dict,
+        cache: object = None,
     ) -> FeedbackReport:
         """일일 매매 결과를 분석하여 피드백 보고서를 생성한다."""
         if not daily_trades:
             return self._empty_report()
 
-        prompt = _build_feedback_prompt(daily_trades, pnl_summary)
+        # 전날 피드백 suggestions를 로드하여 반영 여부를 추적한다
+        previous_suggestions: list[str] = []
+        if cache is not None:
+            previous_suggestions = await _load_previous_feedback(cache)
+
+        prompt = _build_feedback_prompt(daily_trades, pnl_summary, previous_suggestions)
         try:
             response: AiResponse = await self._ai.send_text(
                 prompt, model="sonnet",

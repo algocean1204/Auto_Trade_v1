@@ -5,6 +5,9 @@ import '../services/api_service.dart';
 class ChartProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   ChartProvider(this._apiService);
 
   List<DailyReturn> _dailyReturns = [];
@@ -27,7 +30,7 @@ class ChartProvider with ChangeNotifier {
   Future<void> loadAllCharts({int days = 30}) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final results = await Future.wait([
@@ -48,7 +51,7 @@ class ChartProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -58,13 +61,25 @@ class ChartProvider with ChangeNotifier {
     if (_cumulativeReturns.isNotEmpty) return;
     try {
       _cumulativeReturns = await _apiService.getCumulativeReturns();
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
-      // 홈 화면에서는 차트 오류를 조용히 처리한다.
+      // 홈 화면에서는 차트 오류를 조용히 처리하되 로그는 남긴다
+      debugPrint('ChartProvider: cumulative returns load failed - $e');
     }
   }
 
   Future<void> refresh() async {
     await loadAllCharts();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

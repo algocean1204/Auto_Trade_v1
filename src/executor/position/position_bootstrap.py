@@ -6,12 +6,17 @@ PositionMonitor의 캐시를 초기화한다.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel
 
 from src.common.broker_gateway import BrokerClient
 from src.common.error_handler import BrokerError
 from src.common.logger import get_logger
 from src.executor.position.position_monitor import PositionMonitor
+
+if TYPE_CHECKING:
+    from src.common.cache_gateway import CacheClient
 
 logger = get_logger(__name__)
 
@@ -25,8 +30,8 @@ class BootstrapResult(BaseModel):
 
 
 async def _verify_beast_pyramid_state(
-    positions: dict,
-    cache: object,
+    positions: dict[str, object],
+    cache: CacheClient | None,
 ) -> None:
     """동기화된 포지션에 대해 캐시 beast/pyramid 상태를 검증한다.
 
@@ -47,8 +52,8 @@ async def _verify_beast_pyramid_state(
                     "부트스트랩 Beast 상태 확인: %s (beast_positions 캐시 키 존재)",
                     ticker,
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("beast_positions 캐시 조회 실패 (%s, 무시): %s", ticker, exc)
 
         try:
             pyr_raw = await cache.read(f"pyramid_level:{ticker}")  # type: ignore[union-attr]
@@ -57,14 +62,14 @@ async def _verify_beast_pyramid_state(
                     "부트스트랩 피라미딩 상태 확인: %s level=%s (pyramid_level 캐시 키 존재)",
                     ticker, pyr_raw,
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pyramid_level 캐시 조회 실패 (%s, 무시): %s", ticker, exc)
 
 
 async def bootstrap_positions(
     broker: BrokerClient,
     position_monitor: PositionMonitor,
-    cache: object | None = None,
+    cache: CacheClient | None = None,
 ) -> BootstrapResult:
     """시스템 시작 시 기존 포지션을 KIS에서 로드한다.
 

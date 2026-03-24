@@ -103,7 +103,7 @@ def _hmm_classify(candles: list[Candle5m]) -> MicroRegimeResult | None:
         return None
 
 
-def _assign_state_labels(means: object) -> list[str]:
+def _assign_state_labels(means: np.ndarray) -> list[str]:
     """HMM 상태별 평균 특성으로 레짐 레이블을 할당한다.
 
     고변동성(vol > 0.005)을 최우선으로 판단한다 — 방향성과 무관하게 위험하다.
@@ -198,13 +198,17 @@ def _volatility_score(candles: list[Candle5m]) -> float:
 
 
 def _classify_regime(score: float) -> str:
-    """합성 점수로 레짐을 분류한다."""
+    """합성 점수로 레짐을 분류한다.
+
+    점수가 높을수록 방향성+활동성이 크다:
+    trending(0.6+) > volatile(0.4~0.6) > mean_reverting(0.2~0.4) > quiet(0.2-)
+    """
     if score >= _TRENDING_THRESHOLD:
         return "trending"
     if score >= _VOLATILE_THRESHOLD:
-        return "mean_reverting"
-    if score >= _QUIET_THRESHOLD:
         return "volatile"
+    if score >= _QUIET_THRESHOLD:
+        return "mean_reverting"
     return "quiet"
 
 

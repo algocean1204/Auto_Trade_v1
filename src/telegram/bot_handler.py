@@ -5,6 +5,8 @@ python-telegram-bot 라이브러리로 webhook/polling을 처리한다.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from src.common.logger import get_logger
 from src.telegram.command_processor import CommandProcessor
 from src.telegram.message_formatter import MessageFormatter
@@ -19,7 +21,6 @@ try:
     from telegram.ext import (
         Application,
         CommandHandler,
-        ContextTypes,
     )
     _HAS_TELEGRAM = True
 except ImportError:
@@ -77,7 +78,7 @@ class BotHandler:
             await app.shutdown()
             logger.info("텔레그램 봇 정지 완료")
 
-    async def _on_command(self, update: object, context: object) -> None:
+    async def _on_command(self, update: Any, context: Any) -> None:
         """일반 명령어 핸들러이다. 권한 확인 후 CommandProcessor로 위임한다."""
         if not _HAS_TELEGRAM:
             return
@@ -99,7 +100,7 @@ class BotHandler:
         response = BotResponse(reply_text=result.response_text)
         await msg.reply_text(response.reply_text, parse_mode=response.parse_mode)
 
-    async def _on_trade(self, update: object, context: object) -> None:
+    async def _on_trade(self, update: Any, context: Any) -> None:
         """매매 명령어 핸들러이다. /buy SOXL 5, /sell QLD 3 형식이다."""
         if not _HAS_TELEGRAM:
             return

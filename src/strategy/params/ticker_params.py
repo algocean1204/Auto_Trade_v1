@@ -1,15 +1,31 @@
 """F4 티커별 파라미터 -- 개별 티커의 커스텀 파라미터를 관리한다."""
 from __future__ import annotations
 
+import asyncio
 import json
+import tempfile
 from pathlib import Path
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 
 logger = get_logger(__name__)
 
-# 기본 파일 경로
-_DEFAULT_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "ticker_params.json"
+# 파일 쓰기 경합 방지용 Lock — 모듈 레벨 싱글톤이다
+_ticker_file_lock: asyncio.Lock | None = None
+
+
+def _get_ticker_file_lock() -> asyncio.Lock:
+    """파일 Lock을 lazy 초기화한다."""
+    global _ticker_file_lock
+    if _ticker_file_lock is None:
+        _ticker_file_lock = asyncio.Lock()
+    return _ticker_file_lock
+
+# 기본 파일 경로 -- get_data_dir()은 호출 시점에 평가해야 하므로 함수로 감싼다
+def _default_path() -> Path:
+    """기본 ticker_params.json 경로를 반환한다."""
+    return get_data_dir() / "ticker_params.json"
 
 # 티커별 기본값
 _DEFAULTS: dict[str, dict] = {
@@ -48,12 +64,24 @@ def _read_file(path: Path) -> dict:
 
 
 def _write_file(path: Path, data: dict) -> None:
-    """dict를 JSON 파일에 저장한다."""
+    """dict를 JSON 파일에 원자적으로 저장한다.
+
+    임시 파일에 먼저 쓰고 rename하여 반쪽짜리 파일을 방지한다.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+    tmp_fd = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent,
+        suffix=".tmp", delete=False,
     )
+    try:
+        tmp_fd.write(text)
+        tmp_fd.flush()
+        tmp_fd.close()
+        Path(tmp_fd.name).replace(path)
+    except Exception:
+        Path(tmp_fd.name).unlink(missing_ok=True)
+        raise
 
 
 class TickerParams:
@@ -61,7 +89,7 @@ class TickerParams:
 
     def __init__(self, params_file_path: str | None = None) -> None:
         """파일 경로를 지정한다. None이면 기본 경로를 사용한다."""
-        self._path = Path(params_file_path) if params_file_path else _DEFAULT_PATH
+        self._path = Path(params_file_path) if params_file_path else _default_path()
         self._cache: dict[str, dict] = {}
         self._load_all()
 
@@ -89,6 +117,14 @@ class TickerParams:
         self._save_all()
         logger.info("티커 파라미터 업데이트: %s %s", ticker, list(updates.keys()))
         return merged
+
+    async def async_update(self, ticker: str, updates: dict) -> dict:
+        """비동기 컨텍스트에서 티커 파라미터를 부분 업데이트한다.
+
+        asyncio.Lock으로 동시 파일 접근을 방지한다.
+        """
+        async with _get_ticker_file_lock():
+            return self.update(ticker, updates)
 
     def _save_all(self) -> None:
         """전체 캐시를 파일에 저장한다."""

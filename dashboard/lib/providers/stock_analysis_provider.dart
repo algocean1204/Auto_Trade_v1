@@ -18,6 +18,9 @@ class StockAnalysisProvider with ChangeNotifier {
   List<String> _tickers = [];
   bool _tickersLoaded = false;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   StockAnalysisProvider(this._api);
 
   // ── Getters ──
@@ -57,7 +60,7 @@ class StockAnalysisProvider with ChangeNotifier {
     if (_selectedTicker.isEmpty && _tickers.isNotEmpty) {
       _selectedTicker = _tickers.first;
     }
-    notifyListeners();
+    _safeNotify();
   }
 
   /// 티커를 선택하고 분석 데이터를 로드한다.
@@ -67,7 +70,7 @@ class StockAnalysisProvider with ChangeNotifier {
     _selectedTicker = ticker;
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _data = await _api.getStockAnalysis(ticker);
@@ -84,7 +87,7 @@ class StockAnalysisProvider with ChangeNotifier {
       }
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -98,5 +101,16 @@ class StockAnalysisProvider with ChangeNotifier {
     if (ticker == _selectedTicker && _data != null) return;
     _data = null;
     await loadAnalysis(ticker);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

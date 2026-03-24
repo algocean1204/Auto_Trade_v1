@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class DateRange(BaseModel):
@@ -17,8 +17,7 @@ class DateRange(BaseModel):
 class PreparedData(BaseModel):
     """정제된 학습 데이터이다."""
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     data: list[dict]
     row_count: int
@@ -28,8 +27,7 @@ class PreparedData(BaseModel):
 class FeatureMatrix(BaseModel):
     """21개 피처가 포함된 피처 행렬이다."""
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     features: list[list[float]]
     feature_names: list[str]
@@ -46,8 +44,7 @@ class LabelVector(BaseModel):
 class TrainedModel(BaseModel):
     """학습 완료된 모델 메타데이터이다."""
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_path: str
     metrics: dict

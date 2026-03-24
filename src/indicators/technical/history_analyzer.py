@@ -42,7 +42,7 @@ def _cluster_levels(prices: list[float], pct: float) -> list[float]:
     clusters: list[list[float]] = [[sorted_prices[0]]]
     for price in sorted_prices[1:]:
         center = np.mean(clusters[-1])
-        if abs(price - center) / center < pct:
+        if center > 0 and abs(price - center) / center < pct:
             clusters[-1].append(price)
         else:
             clusters.append([price])
@@ -75,9 +75,9 @@ def _detect_double_patterns(closes: np.ndarray) -> list[str]:
     patterns: list[str] = []
     lows_arr = _find_local_lows(last_20, 2)
     highs_arr = _find_local_highs(last_20, 2)
-    if len(lows_arr) >= 2 and abs(lows_arr[-1] - lows_arr[-2]) / lows_arr[-2] < 0.02:
+    if len(lows_arr) >= 2 and lows_arr[-2] > 0 and abs(lows_arr[-1] - lows_arr[-2]) / lows_arr[-2] < 0.02:
         patterns.append("double_bottom")
-    if len(highs_arr) >= 2 and abs(highs_arr[-1] - highs_arr[-2]) / highs_arr[-2] < 0.02:
+    if len(highs_arr) >= 2 and highs_arr[-2] > 0 and abs(highs_arr[-1] - highs_arr[-2]) / highs_arr[-2] < 0.02:
         patterns.append("double_top")
     return patterns
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Position(BaseModel):
@@ -26,7 +26,7 @@ class EntryDecision(BaseModel):
     confidence: float
     position_size_pct: float
     blocked_by: str | None = None
-    gate_results: dict[str, bool] = {}
+    gate_results: dict[str, bool] = Field(default_factory=dict)
     ticker: str
     direction: str = "bull"
 
@@ -79,7 +79,7 @@ class MicroRegimeResult(BaseModel):
 
     regime: str  # trending / mean_reverting / volatile / quiet
     score: float
-    weights: dict[str, float] = {}
+    weights: dict[str, float] = Field(default_factory=dict)
 
 
 class FadeSignal(BaseModel):
@@ -95,20 +95,26 @@ class WickDecision(BaseModel):
     """윅 캐처 판단이다."""
 
     should_catch: bool
-    entry_prices: list[float] = []
+    entry_prices: list[float] = Field(default_factory=list)
     bounce_exit_pct: float = 2.0
 
 
 class RotationSignal(BaseModel):
     """섹터 로테이션 신호이다."""
 
-    top3_prefer: list[str] = []
-    bottom2_avoid: list[str] = []
-    scores: dict[str, float] = {}
+    top3_prefer: list[str] = Field(default_factory=list)
+    bottom2_avoid: list[str] = Field(default_factory=list)
+    scores: dict[str, float] = Field(default_factory=dict)
 
 
 class StrategyParams(BaseModel):
-    """전략 파라미터 종합이다."""
+    """전략 파라미터 종합이다.
+
+    model_config extra="allow"로 indicator_weights 등
+    strategy_params.json에만 존재하는 추가 키가 model_dump() 시 보존된다.
+    """
+
+    model_config = {"extra": "allow"}
 
     # 기능 토글
     beast_mode_enabled: bool = True
@@ -117,20 +123,24 @@ class StrategyParams(BaseModel):
     news_fading_enabled: bool = True
     wick_catcher_enabled: bool = True
     # Beast Mode -- strategy_params.json과 동일한 기본값이다
-    beast_min_confidence: float = 0.7
-    beast_min_obi: float = 0.2
-    beast_max_daily: int = 10
-    beast_cooldown_seconds: int = 180
+    beast_min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    beast_min_obi: float = Field(default=0.2, ge=0.0, le=1.0)
+    beast_max_daily: int = Field(default=10, ge=1, le=50)
+    beast_cooldown_seconds: int = Field(default=180, ge=0, le=3600)
     # Pyramiding
-    pyramid_level1_pct: float = 1.5
-    pyramid_level2_pct: float = 3.0
-    pyramid_level3_pct: float = 5.0
+    pyramid_level1_pct: float = Field(default=1.5, ge=0.0, le=20.0)
+    pyramid_level2_pct: float = Field(default=3.0, ge=0.0, le=30.0)
+    pyramid_level3_pct: float = Field(default=5.0, ge=0.0, le=50.0)
     # 일반
-    default_position_size_pct: float = 10.0
-    max_position_pct: float = 23.75
-    obi_threshold: float = 0.1
-    ml_threshold: float = 0.3
-    friction_hurdle: float = 0.7
+    default_position_size_pct: float = Field(default=10.0, ge=0.1, le=50.0)
+    max_position_pct: float = Field(default=23.75, ge=0.1, le=100.0)
+    obi_threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+    ml_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    friction_hurdle: float = Field(default=0.7, ge=0.0, le=5.0)
+    # 피드백 반영 파라미터
+    min_exit_qty: int = Field(default=5, ge=1, le=100)
+    news_fade_impact_threshold: float = Field(default=0.9, ge=0.0, le=5.0)
+    small_position_trailing_multiplier: float = Field(default=1.5, ge=0.1, le=10.0)
 
 
 class TargetStatus(BaseModel):

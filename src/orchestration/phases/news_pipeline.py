@@ -9,20 +9,23 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from collections.abc import Coroutine
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
+from src.analysis.classifier.key_news_filter import HIGH_IMPACT_THRESHOLD
 from src.common.event_bus import EventType, get_event_bus
 from src.common.logger import get_logger
+from src.common.telegram_gateway import escape_html
 from src.orchestration.init.dependency_injector import InjectedSystem
 
 logger = get_logger(__name__)
 
 
-def _serialize_datetime(dt: object) -> str:
+def _serialize_datetime(dt: datetime | str | None) -> str:
     """datetime 객체를 ISO 문자열로 변환한다. 이미 문자열이면 그대로 반환한다."""
     if dt is None:
         return ""
@@ -35,8 +38,8 @@ def _serialize_datetime(dt: object) -> str:
 # 매매 세션이 KST 기준이므로 뉴스 날짜 그룹핑도 KST를 사용한다
 _KST = ZoneInfo("Asia/Seoul")
 
-# 고영향 뉴스 임팩트 임계값 (F2 분류 결과의 impact_score 기준)
-_HIGH_IMPACT_THRESHOLD: float = 0.7
+# 고영향 뉴스 임팩트 임계값 — key_news_filter.HIGH_IMPACT_THRESHOLD와 동일 값을 사용한다
+_HIGH_IMPACT_THRESHOLD: float = HIGH_IMPACT_THRESHOLD
 # 캐시 키 — preparation.py와 동일한 키를 사용하여 endpoints가 읽을 수 있도록 한다
 _CLASSIFIED_CACHE_KEY: str = "news:classified_latest"
 _SUMMARY_CACHE_KEY: str = "news:latest_summary"
@@ -94,7 +97,7 @@ async def _crawl_news(system: InjectedSystem) -> list[Any]:
             result.failed_sources, result.duration_seconds,
         )
     except Exception as exc:
-        logger.error("[Step 1] 크롤링 실행 실패: %s", exc)
+        logger.error("[Step 1] 크롤링 실행 실패: %s", exc, exc_info=True)
         raise
     finally:
         bus.unsubscribe(EventType.ARTICLE_COLLECTED, _collector)
@@ -304,7 +307,7 @@ async def _send_to_telegram(
             else:
                 logger.warning("[Step 4] 텔레그램 전송 실패: %s", result.error)
         except Exception as exc:
-            logger.error("[Step 4] 텔레그램 전송 예외: %s", exc)
+            logger.error("[Step 4] 텔레그램 전송 예외: %s", exc, exc_info=True)
     else:
         logger.info("[Step 4] 전송할 뉴스 없음")
 
@@ -315,10 +318,10 @@ def _format_telegram_message(articles: list[dict]) -> str:
     """고영향 뉴스 목록을 텔레그램 메시지로 포맷팅한다."""
     lines: list[str] = ["<b>[고영향 뉴스 알림]</b>", ""]
     for i, article in enumerate(articles[:10], start=1):
-        title = article.get("title", "제목 없음")
+        title = escape_html(str(article.get("title", "제목 없음")))
         score = article.get("impact_score", 0.0)
-        category = article.get("category", "미분류")
-        direction = article.get("direction", "neutral")
+        category = escape_html(str(article.get("category", "미분류")))
+        direction = escape_html(str(article.get("direction", "neutral")))
         lines.append(f"{i}. [{category}] {title} (영향도: {score:.1f}, {direction})")
     if len(articles) > 10:
         lines.append(f"\n... 외 {len(articles) - 10}건")
@@ -512,7 +515,11 @@ async def _cache_classified_results(
             for fa in new_flutter if fa.get("id")
         ]
         if article_tasks:
-            await asyncio.gather(*article_tasks, return_exceptions=True)
+            article_results = await asyncio.gather(*article_tasks, return_exceptions=True)
+            # 개별 캐시 저장 실패를 로깅한다 (전체 흐름은 중단하지 않는다)
+            for r in article_results:
+                if isinstance(r, Exception):
+                    logger.debug("개별 기사 캐시 저장 실패: %s", r)
 
         # 6) 티커별 뉴스 캐시 — GET /api/analysis/{ticker}/news 엔드포인트용
         # tickers_affected 필드를 기반으로 기사를 분류하여 news:{ticker}에 저장한다
@@ -541,7 +548,11 @@ async def _cache_classified_results(
                 await cache.write_json(f"news:{_tk}", merged, ttl=_DAILY_CACHE_TTL)
             ticker_tasks.append(_update_ticker_news())
         if ticker_tasks:
-            await asyncio.gather(*ticker_tasks, return_exceptions=True)
+            ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
+            # 티커별 캐시 저장 실패를 로깅한다 (전체 흐름은 중단하지 않는다)
+            for r in ticker_results:
+                if isinstance(r, Exception):
+                    logger.debug("티커별 뉴스 캐시 저장 실패: %s", r)
 
         logger.info(
             "[Cache] 캐시 누적 완료: 신규=%d, 전체=%d, 날짜=%d",
@@ -552,7 +563,7 @@ async def _cache_classified_results(
 
 
 async def _safe_call(
-    coro: object,
+    coro: Coroutine[Any, Any, list[Any]],
     fallback: list[Any],
     label: str,
     errors: list[str],
@@ -663,6 +674,34 @@ async def _collect_and_classify(
     return crawled_count, classified_dicts, situation_reports, merged_count, translated_count
 
 
+async def _warm_dedup_cache(system: InjectedSystem) -> None:
+    """DB에 저장된 기사의 content_hash로 dedup 캐시를 예열한다.
+
+    서버 재시작 후 InMemoryCache가 비어있을 때 이미 처리된 기사가
+    다시 크롤링/분류/전송되는 것을 방지한다.
+    DB의 최근 72시간 기사 해시를 dedup 캐시에 로드한다.
+    """
+    try:
+        from src.orchestration.phases.article_persister import get_recent_content_hashes
+
+        dedup = system.features.get("article_deduplicator")
+        if dedup is None:
+            logger.debug("[Warm] article_deduplicator 미등록 — 예열 건너뜀")
+            return
+
+        hashes = await get_recent_content_hashes(system.components.db)
+        if hashes:
+            await dedup.warm_from_db(hashes)  # type: ignore[union-attr]
+    except Exception as exc:
+        logger.warning("[Warm] dedup 캐시 예열 실패 (파이프라인 계속): %s", exc)
+
+
+# 마지막 텔레그램 전송 시점 캐시 키이다
+_LAST_TELEGRAM_SENT_KEY: str = "news:last_telegram_sent_ts"
+# 텔레그램 전송 이력 TTL (24시간)이다
+_TELEGRAM_SENT_TTL: int = 86400
+
+
 async def run_news_pipeline(system: InjectedSystem) -> PipelineResult:
     """뉴스 파이프라인을 실행한다.
 
@@ -670,6 +709,7 @@ async def run_news_pipeline(system: InjectedSystem) -> PipelineResult:
     _pipeline_lock으로 동시 실행을 방지한다:
     - 이미 실행 중이면 즉시 반환한다 (에러 목록에 "파이프라인 이미 실행 중" 기록)
     - preparation.py도 이 락을 확인하여 분류 단계 경합을 방지한다
+    DB 기반 dedup 예열로 서버 재시작 후에도 중복 처리를 방지한다.
     """
     if _pipeline_lock.locked():
         logger.warning("=== 뉴스 파이프라인 이미 실행 중 — 건너뜀 ===")
@@ -678,6 +718,13 @@ async def run_news_pipeline(system: InjectedSystem) -> PipelineResult:
     async with _pipeline_lock:
         logger.info("=== 뉴스 파이프라인 시작 ===")
         errors: list[str] = []
+
+        # Step 0: DB 기반 dedup 캐시 예열 — 서버 재시작 후 중복 크롤링 방지
+        await _warm_dedup_cache(system)
+
+        # Step 0.5: 마지막 텔레그램 전송 시점 조회 — 이후 기사만 전송
+        last_sent_ts = await _get_last_telegram_sent_ts(system)
+
         crawled_count, classified, situation_reports, merged_count, translated_count = (
             await _collect_and_classify(system, errors)
         )
@@ -693,14 +740,28 @@ async def run_news_pipeline(system: InjectedSystem) -> PipelineResult:
 
         # 분류 결과를 캐시에 저장하여 news endpoints에서 조회할 수 있도록 한다
         await _cache_classified_results(system, classified, high_impact)
-        # 전체 분류된 뉴스(핵심+일반)를 텔레그램에 전달한다 — 포맷터가 3섹션으로 구분한다
-        sent = await _send_to_telegram(system, classified, situation_reports)
+
+        # 텔레그램: 마지막 전송 이후의 새 기사만 전송한다
+        new_for_telegram = _filter_after_timestamp(classified, last_sent_ts)
+        if len(new_for_telegram) < len(classified):
+            logger.info(
+                "[Step 4] 텔레그램 중복 필터: 전체 %d건 → 신규 %d건",
+                len(classified), len(new_for_telegram),
+            )
+
+        sent = await _send_to_telegram(system, new_for_telegram, situation_reports)
+
+        # 전송 성공 시 마지막 전송 시각을 기록한다
+        if sent:
+            await _record_telegram_sent_ts(system)
+
         logger.info(
             "=== 뉴스 파이프라인 완료 (crawled=%d, merged=%d, classified=%d, "
-            "translated=%d, persisted=%d, high_impact=%d, situations=%d, sent=%s) ===",
+            "translated=%d, persisted=%d, high_impact=%d, situations=%d, "
+            "telegram_new=%d, sent=%s) ===",
             crawled_count, merged_count, len(classified),
             translated_count, persisted_count, len(high_impact),
-            len(situation_reports), sent,
+            len(situation_reports), len(new_for_telegram), sent,
         )
         return PipelineResult(
             crawled_count=crawled_count,
@@ -713,3 +774,78 @@ async def run_news_pipeline(system: InjectedSystem) -> PipelineResult:
             sent_to_telegram=sent,
             errors=errors,
         )
+
+
+async def _get_last_telegram_sent_ts(system: InjectedSystem) -> datetime | None:
+    """마지막 텔레그램 전송 시각을 캐시에서 조회한다.
+
+    캐시에 없으면 DB의 마지막 기사 시각을 폴백으로 사용한다.
+    서버 최초 실행 시에는 None을 반환하여 전체 전송한다.
+    """
+    try:
+        raw = await system.components.cache.read(_LAST_TELEGRAM_SENT_KEY)
+        if raw is not None:
+            return datetime.fromisoformat(raw)
+    except Exception:
+        pass
+
+    # 캐시에 없으면 DB 마지막 기사 시각을 폴백으로 사용한다
+    try:
+        from src.orchestration.phases.article_persister import get_last_article_time
+        return await get_last_article_time(system.components.db)
+    except Exception:
+        return None
+
+
+async def _record_telegram_sent_ts(system: InjectedSystem) -> None:
+    """현재 시각을 마지막 텔레그램 전송 시각으로 캐시에 기록한다."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await system.components.cache.write(
+            _LAST_TELEGRAM_SENT_KEY, now_iso, ttl=_TELEGRAM_SENT_TTL,
+        )
+    except Exception as exc:
+        logger.warning("텔레그램 전송 시각 기록 실패 (무시): %s", exc)
+
+
+def _filter_after_timestamp(
+    articles: list[dict],
+    cutoff: datetime | None,
+) -> list[dict]:
+    """cutoff 이후에 발행된 기사만 필터링한다.
+
+    cutoff이 None이면 전체를 반환한다 (최초 실행).
+    published_at이 없는 기사는 신규로 간주하여 포함한다.
+    """
+    if cutoff is None:
+        return articles
+
+    result = []
+    for a in articles:
+        pub = a.get("published_at")
+        if pub is None:
+            # 발행일 없는 기사는 신규로 간주한다
+            result.append(a)
+            continue
+        try:
+            if isinstance(pub, str):
+                pub_dt = datetime.fromisoformat(pub)
+            elif isinstance(pub, datetime):
+                pub_dt = pub
+            else:
+                result.append(a)
+                continue
+
+            # timezone-naive → UTC로 간주한다
+            if pub_dt.tzinfo is None:
+                pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=timezone.utc)
+
+            if pub_dt > cutoff:
+                result.append(a)
+        except (ValueError, TypeError):
+            # 파싱 실패 시 신규로 간주한다
+            result.append(a)
+
+    return result

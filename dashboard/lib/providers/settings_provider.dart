@@ -5,6 +5,9 @@ import '../services/api_service.dart';
 class SettingsProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   SettingsProvider(this._apiService);
 
   List<AlertNotification> _alerts = [];
@@ -24,7 +27,7 @@ class SettingsProvider with ChangeNotifier {
   }) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _alerts = await _apiService.getAlerts(
@@ -38,7 +41,7 @@ class SettingsProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -48,17 +51,28 @@ class SettingsProvider with ChangeNotifier {
       await loadAlerts();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> refreshUnreadCount() async {
     try {
       _unreadCount = await _apiService.getUnreadCount();
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

@@ -12,6 +12,9 @@ class ReportProvider with ChangeNotifier {
   bool _isLoading = false;
   String? _error;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   ReportProvider(this._api);
 
   List<ReportDate>? get availableDates => _availableDates;
@@ -24,7 +27,7 @@ class ReportProvider with ChangeNotifier {
   Future<void> loadDates({int limit = 30}) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _availableDates = await _api.getReportDates(limit: limit);
@@ -42,7 +45,7 @@ class ReportProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -50,7 +53,7 @@ class ReportProvider with ChangeNotifier {
   Future<void> loadReport(String date) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _currentReport = await _api.getDailyTradingReport(date);
@@ -61,7 +64,7 @@ class ReportProvider with ChangeNotifier {
       _currentReport = null;
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -77,5 +80,16 @@ class ReportProvider with ChangeNotifier {
     _availableDates = null;
     _selectedDate = null;
     await loadDates();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

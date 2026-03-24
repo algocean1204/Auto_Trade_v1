@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import html
 import json
 import logging
 from datetime import datetime, timezone
@@ -20,6 +19,7 @@ from src.analysis.models import (
 from src.common.ai_gateway import AiClient
 from src.common.cache_gateway import CacheClient
 from src.common.logger import get_logger
+from src.common.telegram_gateway import escape_html
 
 logger: logging.Logger = get_logger(__name__)
 
@@ -139,8 +139,8 @@ def _parse_detection_response(content: str) -> list[SituationDetectionResult]:
 
 
 def _esc(text: str) -> str:
-    """텔레그램 HTML 특수문자를 이스케이프한다."""
-    return html.escape(text, quote=False)
+    """텔레그램 HTML 특수문자를 이스케이프한다. (중앙 유틸리티 위임)"""
+    return escape_html(text)
 
 
 def format_situation_telegram(report: SituationReport) -> str:

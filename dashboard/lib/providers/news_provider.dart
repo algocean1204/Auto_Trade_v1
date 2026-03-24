@@ -32,6 +32,14 @@ class NewsProvider with ChangeNotifier {
   int _currentOffset = 0;
   static const int _pageSize = 50;
 
+  /// 빠른 필터 전환 시 race condition 방지를 위한 세대 카운터이다.
+  /// loadArticles 시작 시 증가하고, 완료 시 현재 세대와 비교하여
+  /// stale 응답이면 결과를 무시한다.
+  int _loadGeneration = 0;
+
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   NewsProvider(this._api);
 
   // ── Getters ──
@@ -58,7 +66,7 @@ class NewsProvider with ChangeNotifier {
   Future<void> loadDates({int limit = 30}) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _dates = await _api.getNewsDates(limit: limit);
@@ -68,7 +76,7 @@ class NewsProvider with ChangeNotifier {
       final dates = _dates;
       if (dates != null && dates.isNotEmpty && _selectedDate == null) {
         _isLoading = false;
-        notifyListeners();
+        _safeNotify();
         await selectDate(dates.first.date);
         return;
       }
@@ -76,7 +84,7 @@ class NewsProvider with ChangeNotifier {
       _error = _friendlyError(e);
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -89,7 +97,7 @@ class NewsProvider with ChangeNotifier {
     _selectedArticle = null;
     _currentOffset = 0;
     _total = 0;
-    notifyListeners();
+    _safeNotify();
 
     await Future.wait([
       loadArticles(),
@@ -100,8 +108,12 @@ class NewsProvider with ChangeNotifier {
   /// 기사 목록을 로드한다.
   /// 주요 뉴스만 모드에서는 impact 파라미터 없이 로드하고 클라이언트에서 필터링한다.
   /// 단일 impact 필터가 설정되어 있으면 해당 값을 API에 전달한다.
+  /// 세대 카운터 패턴으로 빠른 필터 전환 시 stale 응답을 무시한다.
   Future<void> loadArticles({int offset = 0}) async {
     if (_selectedDate == null) return;
+
+    // 세대 증가: 이전 진행 중인 요청의 결과를 무효화한다
+    final thisGeneration = ++_loadGeneration;
 
     if (offset == 0) {
       _isLoading = true;
@@ -109,7 +121,7 @@ class NewsProvider with ChangeNotifier {
     } else {
       _isLoadingMore = true;
     }
-    notifyListeners();
+    _safeNotify();
 
     try {
       // 주요 뉴스만 모드: API는 impact 필터 없이 호출하고 클라이언트에서 필터링한다.
@@ -123,6 +135,9 @@ class NewsProvider with ChangeNotifier {
         limit: _pageSize,
         offset: offset,
       );
+
+      // stale 응답 확인: 요청 시작 이후 새 요청이 발생했으면 결과를 버린다
+      if (thisGeneration != _loadGeneration) return;
 
       _total = (result['total'] as num? ?? 0).toInt();
       final rawArticles = result['articles'] as List? ?? [];
@@ -162,12 +177,17 @@ class NewsProvider with ChangeNotifier {
       }
       _error = null;
     } catch (e) {
+      // stale 에러도 무시한다
+      if (thisGeneration != _loadGeneration) return;
       _error = _friendlyError(e);
       if (offset == 0) _articles = [];
     } finally {
-      _isLoading = false;
-      _isLoadingMore = false;
-      notifyListeners();
+      // stale 응답이면 UI 상태를 건드리지 않는다
+      if (thisGeneration == _loadGeneration) {
+        _isLoading = false;
+        _isLoadingMore = false;
+        _safeNotify();
+      }
     }
   }
 
@@ -183,40 +203,40 @@ class NewsProvider with ChangeNotifier {
 
     try {
       _summary = await _api.getNewsSummary(date: _selectedDate);
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       // 요약 로드 실패는 조용히 처리한다 (기사 목록은 계속 표시)
       _summary = null;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   /// 기사 상세 내용을 로드한다.
   Future<void> loadArticleDetail(String id) async {
     _isLoadingDetail = true;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _selectedArticle = await _api.getArticleDetail(id);
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       // 상세 로드 실패 시 기존 기사 정보를 유지한다
     } finally {
       _isLoadingDetail = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   /// 선택된 기사를 설정한다 (로컬 데이터로 즉시 표시).
   void selectArticle(NewsArticle article) {
     _selectedArticle = article;
-    notifyListeners();
+    _safeNotify();
   }
 
   /// 기사 선택을 해제한다.
   void clearSelectedArticle() {
     _selectedArticle = null;
-    notifyListeners();
+    _safeNotify();
   }
 
   /// 카테고리 필터를 설정하고 기사 목록을 다시 로드한다.
@@ -225,7 +245,7 @@ class NewsProvider with ChangeNotifier {
     _filterCategory = category;
     _articles = null;
     _currentOffset = 0;
-    notifyListeners();
+    _safeNotify();
     loadArticles();
   }
 
@@ -235,7 +255,7 @@ class NewsProvider with ChangeNotifier {
     _filterImpact = impact;
     _articles = null;
     _currentOffset = 0;
-    notifyListeners();
+    _safeNotify();
     loadArticles();
   }
 
@@ -245,7 +265,7 @@ class NewsProvider with ChangeNotifier {
     _filterImportance = importance;
     _articles = null;
     _currentOffset = 0;
-    notifyListeners();
+    _safeNotify();
     loadArticles();
   }
 
@@ -258,7 +278,7 @@ class NewsProvider with ChangeNotifier {
     }
     _articles = null;
     _currentOffset = 0;
-    notifyListeners();
+    _safeNotify();
     loadArticles();
   }
 
@@ -272,7 +292,7 @@ class NewsProvider with ChangeNotifier {
     }
     _articles = null;
     _currentOffset = 0;
-    notifyListeners();
+    _safeNotify();
     loadArticles();
   }
 
@@ -284,7 +304,7 @@ class NewsProvider with ChangeNotifier {
     _majorNewsOnly = true;
     _articles = null;
     _currentOffset = 0;
-    notifyListeners();
+    _safeNotify();
     loadArticles();
   }
 
@@ -315,5 +335,16 @@ class NewsProvider with ChangeNotifier {
     _total = 0;
     _error = null;
     await loadDates();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

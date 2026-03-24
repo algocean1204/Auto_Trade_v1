@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.common.database_gateway import SessionFactory
 from src.common.logger import get_logger
@@ -61,3 +62,46 @@ async def persist_articles(
 
     logger.info("[Step 3.5] DB 저장 완료: 성공=%d, 실패=%d, 전체=%d건", saved, failed, len(classified))
     return saved, failed
+
+
+async def get_last_article_time(db: SessionFactory) -> datetime | None:
+    """DB에 저장된 마지막 기사의 created_at을 반환한다.
+
+    파이프라인 시작 시 호출하여 이 시점 이후의 뉴스만 처리하도록 한다.
+    기사가 없으면 None을 반환한다.
+    """
+    try:
+        async with db.get_session() as session:
+            result = await session.execute(
+                select(func.max(Article.created_at)),
+            )
+            return result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("마지막 기사 시각 조회 실패: %s", exc)
+        return None
+
+
+async def get_recent_content_hashes(
+    db: SessionFactory,
+    hours: int = 72,
+) -> set[str]:
+    """최근 N시간 이내 기사의 content_hash 집합을 반환한다.
+
+    서버 재시작 후 dedup 캐시 예열에 사용한다.
+    InMemoryCache는 휘발성이므로 DB 기반으로 복구해야 중복 크롤링을 방지한다.
+    """
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        async with db.get_session() as session:
+            result = await session.execute(
+                select(Article.content_hash).where(
+                    Article.created_at >= cutoff,
+                    Article.content_hash.is_not(None),
+                ),
+            )
+            hashes = {row[0] for row in result.all() if row[0]}
+            logger.info("DB에서 최근 %d시간 기사 해시 %d건 조회", hours, len(hashes))
+            return hashes
+    except Exception as exc:
+        logger.warning("기사 해시 조회 실패: %s", exc)
+        return set()

@@ -17,6 +17,7 @@ _logger = get_logger(__name__)
 # -- 상수 --
 _BEAR_REGIMES: frozenset[str] = frozenset({"crash", "mild_bear"})
 _MAX_CONCURRENT_POSITIONS: int = 10
+_MAX_TOTAL_EXPOSURE_PCT: float = 80.0
 
 
 class SafetyCheckResult(BaseModel):
@@ -57,16 +58,22 @@ class HardSafety:
         quantity: int,
         balance: BalanceData,
         regime: str,
+        order_price: float = 0.0,
     ) -> SafetyCheckResult:
         """매매 안전성을 검사한다.
 
         3가지 검사를 순차 실행하며, 실패한 항목을 모두 수집한다.
+
+        Args:
+            order_price: 신규 진입 시 매수 예정 단가이다.
+                기존 보유종목이 아닌 경우 비중 검사에 필요하다.
+                0이면 기존 포지션의 현재가를 사용한다.
         """
         failed: list[str] = []
 
         # 검사 1: 단일 종목 비중 제한
         reason_1 = self._check_position_concentration(
-            ticker, quantity, balance,
+            ticker, quantity, balance, order_price,
         )
         if reason_1:
             failed.append(reason_1)
@@ -83,10 +90,17 @@ class HardSafety:
         if reason_3:
             failed.append(reason_3)
 
+        # 검사 4: 전체 포지션 합산 노출도 제한 (80%)
+        reason_4 = self._check_total_exposure(
+            side, quantity, balance, order_price,
+        )
+        if reason_4:
+            failed.append(reason_4)
+
         passed = len(failed) == 0
         result = SafetyCheckResult(
             passed=passed,
-            checks_run=3,
+            checks_run=4,
             failed_checks=failed,
             reason="; ".join(failed) if failed else "",
         )
@@ -104,8 +118,13 @@ class HardSafety:
         ticker: str,
         quantity: int,
         balance: BalanceData,
+        order_price: float = 0.0,
     ) -> str:
-        """단일 종목 비중이 최대치를 초과하는지 검사한다."""
+        """단일 종목 비중이 최대치를 초과하는지 검사한다.
+
+        기존 보유종목이 아닌 경우 order_price를 사용하여 정확한
+        비중을 계산한다. order_price도 0이면 비중 검사를 건너뛴다.
+        """
         if balance.total_equity <= 0:
             return "총 자산이 0 이하이다"
 
@@ -114,6 +133,17 @@ class HardSafety:
         )
         # 기존 보유분 + 신규 주문의 예상 가치
         current_price = _find_current_price(ticker, balance)
+        # 신규 종목(기존 보유하지 않은)이면 order_price를 사용한다
+        if current_price <= 0:
+            current_price = order_price
+        if current_price <= 0:
+            # 가격 정보가 전혀 없으면 비중 검사를 건너뛴다
+            # (가격 미확보 상태에서 차단하면 정상 매매를 막을 수 있다)
+            _logger.debug(
+                "비중검사 건너뜀: %s 가격 미확보 (order_price=0)",
+                ticker,
+            )
+            return ""
         added_value = quantity * current_price
         total_value = existing_value + added_value
 
@@ -155,6 +185,42 @@ class HardSafety:
             return (
                 f"포지션수초과: {current_count}개 "
                 f">= {_MAX_CONCURRENT_POSITIONS}개"
+            )
+        return ""
+
+    def _check_total_exposure(
+        self,
+        side: str,
+        quantity: int,
+        balance: BalanceData,
+        order_price: float = 0.0,
+    ) -> str:
+        """전체 포지션 합산 노출도가 80%를 초과하는지 검사한다.
+
+        기존 모든 포지션의 평가 금액 합계에 신규 주문 금액을 더한 뒤
+        총 자산 대비 비율이 _MAX_TOTAL_EXPOSURE_PCT를 초과하면 차단한다.
+        """
+        if side != "buy":
+            return ""
+        if balance.total_equity <= 0:
+            return ""
+        # 기존 포지션 전체의 평가 금액 합산
+        total_existing = sum(
+            pos.quantity * pos.current_price for pos in balance.positions
+        )
+        # 신규 주문의 예상 가치를 더한다
+        added_value = quantity * order_price if order_price > 0 else 0.0
+        total_exposure = total_existing + added_value
+        exposure_pct = (total_exposure / balance.total_equity) * 100
+        if exposure_pct > _MAX_TOTAL_EXPOSURE_PCT:
+            _logger.warning(
+                "총노출도초과: %.1f%% > %.1f%% (기존=$%.0f + 신규=$%.0f / 자산=$%.0f)",
+                exposure_pct, _MAX_TOTAL_EXPOSURE_PCT,
+                total_existing, added_value, balance.total_equity,
+            )
+            return (
+                f"총노출도초과: {exposure_pct:.1f}% "
+                f"> {_MAX_TOTAL_EXPOSURE_PCT}%"
             )
         return ""
 

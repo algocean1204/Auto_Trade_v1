@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from src.common.logger import get_logger
 from src.scalping.liquidity.depth_analyzer import analyze_depth

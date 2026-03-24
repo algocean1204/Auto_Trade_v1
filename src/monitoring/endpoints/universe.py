@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 
 from src.common.logger import get_logger
 from src.monitoring.schemas.universe_schemas import (
@@ -27,6 +27,8 @@ from src.monitoring.schemas.universe_schemas import (
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
+    from src.common.ticker_registry import TickerRegistry
+    from src.common.universe_persister import UniversePersister
     from src.orchestration.init.dependency_injector import InjectedSystem
 
 _logger = get_logger(__name__)
@@ -44,7 +46,9 @@ def set_universe_deps(system: InjectedSystem) -> None:
 
 
 @universe_router.get("", response_model=UniverseResponse)
-async def get_universe() -> UniverseResponse:
+async def get_universe(
+    _auth: str = Depends(verify_api_key),
+) -> UniverseResponse:
     """ETF 유니버스 전체 목록을 반환한다.
 
     Flutter UniverseTickerEx.fromJson 호환: direction, underlying 필드를 추가한다.
@@ -77,8 +81,9 @@ _SECTOR_NAMES: dict[str, tuple[str, str]] = {
     "semiconductor": ("반도체", "Semiconductor"),
     "tech": ("기술", "Technology"),
     "broad_market": ("시장 전체", "Broad Market"),
+    "small_cap": ("소형주", "Small Cap"),
     "energy": ("에너지", "Energy"),
-    "finance": ("금융", "Finance"),
+    "financials": ("금융", "Financials"),
     "healthcare": ("헬스케어", "Healthcare"),
     "biotech": ("바이오", "Biotech"),
     "real_estate": ("부동산", "Real Estate"),
@@ -96,7 +101,9 @@ _SECTOR_NAMES: dict[str, tuple[str, str]] = {
 
 
 @universe_router.get("/sectors", response_model=SectorsResponse)
-async def get_sectors() -> SectorsResponse:
+async def get_sectors(
+    _auth: str = Depends(verify_api_key),
+) -> SectorsResponse:
     """사용 가능한 섹터 목록을 반환한다.
 
     Flutter SectorData.fromJson 호환 형식으로 반환한다:
@@ -256,7 +263,9 @@ async def _save_mappings(mappings: list[dict]) -> None:
 
 
 @universe_router.get("/mappings", response_model=MappingsResponse)
-async def get_mappings() -> MappingsResponse:
+async def get_mappings(
+    _auth: str = Depends(verify_api_key),
+) -> MappingsResponse:
     """티커 매핑(원본-레버리지 페어) 목록을 반환한다.
 
     캐시에 저장된 매핑이 있으면 사용하고, 없으면 레지스트리에서 자동 생성한다.
@@ -348,7 +357,7 @@ async def delete_mapping(
 
 
 async def _try_add_pair(
-    registry: object, pair_ticker: str, persister: object | None,
+    registry: TickerRegistry, pair_ticker: str, persister: UniversePersister | None,
 ) -> str | None:
     """_ETF_RAW에서 페어 티커 메타데이터를 조회하여 자동 추가한다.
 
@@ -421,7 +430,7 @@ async def auto_add_ticker(
 
 @universe_router.delete("/{ticker}", response_model=TickerActionResponse)
 async def delete_ticker(
-    ticker: str,
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
     _key: str = Depends(verify_api_key),
 ) -> TickerActionResponse:
     """유니버스에서 티커를 삭제한다. 인증 필수.

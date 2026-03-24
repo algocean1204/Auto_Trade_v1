@@ -5,6 +5,7 @@ SessionFactory를 주입받아 DB 접근한다.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -21,21 +22,21 @@ _logger = get_logger(__name__)
 # 배치 크기 상수이다
 _DEFAULT_BATCH_SIZE = 100
 
-# 틱 데이터 INSERT SQL이다
+# 틱 데이터 INSERT SQL -- tick_data 테이블 스키마(id, ticker, price, volume, timestamp, created_at)에 맞춘다
 _INSERT_SQL = text("""
-    INSERT INTO tick_data (ticker, price, volume, trade_time, side, created_at)
-    VALUES (:ticker, :price, :volume, :trade_time, :side, :created_at)
+    INSERT INTO tick_data (id, ticker, price, volume, timestamp, created_at)
+    VALUES (:id, :ticker, :price, :volume, :timestamp, :created_at)
 """)
 
 
 def _event_to_params(event: TradeEvent) -> dict:
     """TradeEvent를 SQL 파라미터 딕셔너리로 변환한다."""
     return {
+        "id": str(uuid.uuid4()),
         "ticker": event.ticker,
         "price": event.price,
         "volume": event.volume,
-        "trade_time": event.time,
-        "side": event.side,
+        "timestamp": event.time,
         "created_at": datetime.now(tz=timezone.utc),
     }
 

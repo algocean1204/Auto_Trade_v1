@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
 
-from src.common.event_bus import EventType, get_event_bus
+from src.common.event_bus import get_event_bus
 from src.common.logger import get_logger
 
 _logger = get_logger(__name__)

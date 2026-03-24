@@ -1,9 +1,6 @@
 """F3 지표 -- WebSocket 체결 데이터 기반 주문 흐름 집계이다."""
 from __future__ import annotations
 
-import json
-import math
-
 from src.common.cache_gateway import CacheClient
 from src.common.logger import get_logger
 from src.indicators.models import OrderFlowSnapshot

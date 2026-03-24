@@ -8,8 +8,8 @@ from src.common.logger import get_logger
 
 logger: logging.Logger = get_logger(__name__)
 
-# 기본 영향도 임계값이다
-_DEFAULT_THRESHOLD: float = 0.7
+# 고영향 뉴스 판별 임계값이다 — 여러 모듈에서 공유하므로 공개 상수로 정의한다
+HIGH_IMPACT_THRESHOLD: float = 0.7
 
 
 def _to_key_news(news: ClassifiedNews) -> KeyNews:
@@ -43,7 +43,7 @@ class KeyNewsFilter:
     def filter(
         self,
         news_list: list[ClassifiedNews],
-        threshold: float = _DEFAULT_THRESHOLD,
+        threshold: float = HIGH_IMPACT_THRESHOLD,
     ) -> list[KeyNews]:
         """임계값 이상의 뉴스를 필터링하고 KeyNews로 변환한다."""
         filtered = [

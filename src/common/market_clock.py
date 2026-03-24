@@ -1,12 +1,13 @@
 """
 MarketClock (C0.11) -- KST/ET 시각과 매매 윈도우, 시장 세션 유형을 제공한다.
 서머타임(EDT/EST)은 ZoneInfo("US/Eastern")이 자동 처리한다.
+미국 시장 공휴일(NYSE 비거래일)을 인지하여 공휴일 매매를 방지한다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -14,6 +15,115 @@ from pydantic import BaseModel
 
 _KST: ZoneInfo = ZoneInfo("Asia/Seoul")
 _ET: ZoneInfo = ZoneInfo("US/Eastern")
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """해당 월의 n번째 특정 요일 날짜를 반환한다.
+
+    Args:
+        year: 연도
+        month: 월
+        weekday: 요일 (0=월, ..., 6=일)
+        n: 몇 번째 (1-based)
+    """
+    first = date(year, month, 1)
+    # 첫 번째 해당 요일까지의 차이를 계산한다
+    diff = (weekday - first.weekday()) % 7
+    first_occurrence = first + timedelta(days=diff)
+    return first_occurrence + timedelta(weeks=n - 1)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """해당 월의 마지막 특정 요일 날짜를 반환한다."""
+    # 다음 달 1일에서 거꾸로 찾는다
+    if month == 12:
+        next_first = date(year + 1, 1, 1)
+    else:
+        next_first = date(year, month + 1, 1)
+    last_day = next_first - timedelta(days=1)
+    diff = (last_day.weekday() - weekday) % 7
+    return last_day - timedelta(days=diff)
+
+
+def _get_us_market_holidays(year: int) -> set[date]:
+    """해당 연도의 NYSE 비거래 공휴일 목록을 반환한다.
+
+    NYSE 기준 9개 공휴일을 포함한다.
+    공휴일이 토요일이면 금요일로, 일요일이면 월요일로 대체한다.
+    """
+    holidays: list[date] = []
+
+    # 1. 새해 (1/1)
+    new_year = date(year, 1, 1)
+    holidays.append(new_year)
+
+    # 2. 마틴 루터 킹 주니어 데이 (1월 셋째 월요일)
+    holidays.append(_nth_weekday(year, 1, 0, 3))
+
+    # 3. 대통령의 날 (2월 셋째 월요일)
+    holidays.append(_nth_weekday(year, 2, 0, 3))
+
+    # 4. 굿 프라이데이 -- 부활절 전 금요일
+    # 부활절 날짜 계산 (Anonymous Gregorian Algorithm)
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l_val = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l_val) // 451
+    month = (h + l_val - 7 * m + 114) // 31
+    day = ((h + l_val - 7 * m + 114) % 31) + 1
+    easter = date(year, month, day)
+    good_friday = easter - timedelta(days=2)
+    holidays.append(good_friday)
+
+    # 5. 메모리얼 데이 (5월 마지막 월요일)
+    holidays.append(_last_weekday(year, 5, 0))
+
+    # 6. Juneteenth (6/19) -- 2021년부터 연방 공휴일
+    holidays.append(date(year, 6, 19))
+
+    # 7. 독립기념일 (7/4)
+    holidays.append(date(year, 7, 4))
+
+    # 8. 노동절 (9월 첫째 월요일)
+    holidays.append(_nth_weekday(year, 9, 0, 1))
+
+    # 9. 추수감사절 (11월 넷째 목요일)
+    holidays.append(_nth_weekday(year, 11, 3, 4))
+
+    # 10. 크리스마스 (12/25)
+    holidays.append(date(year, 12, 25))
+
+    # 주말 대체 규칙: 토요일→금요일, 일요일→월요일
+    adjusted: set[date] = set()
+    for h in holidays:
+        if h.weekday() == 5:  # 토요일 → 금요일
+            adjusted.add(h - timedelta(days=1))
+        elif h.weekday() == 6:  # 일요일 → 월요일
+            adjusted.add(h + timedelta(days=1))
+        else:
+            adjusted.add(h)
+    return adjusted
+
+
+# 연도별 공휴일 캐시 — 매번 재계산하지 않는다
+_holiday_cache: dict[int, set[date]] = {}
+
+
+def is_us_market_holiday(et_date: date) -> bool:
+    """해당 날짜(ET 기준)가 미국 시장 공휴일인지 판별한다."""
+    year = et_date.year
+    if year not in _holiday_cache:
+        _holiday_cache[year] = _get_us_market_holidays(year)
+    return et_date in _holiday_cache[year]
+
 
 _LOOP_INTERVALS: dict[str, int] = {
     "preparation": 60,
@@ -49,6 +159,8 @@ class TimeInfo(BaseModel):
     session_type: SessionType
     is_regular_session: bool
     is_danger_zone: bool
+    is_near_close: bool
+    is_market_holiday: bool
     loop_interval_seconds: int
 
 
@@ -116,6 +228,15 @@ def _check_danger_zone(now_et: datetime) -> bool:
     return (570 <= mins < 600) or (930 <= mins < 960)
 
 
+def _check_near_close(now_et: datetime) -> bool:
+    """ET 기준 장 마감 직전 구간(15:30~16:00)인지 판별한다.
+
+    유동성이 급감하는 마감 30분 동안 신규 진입을 차단하기 위한 판별이다.
+    """
+    mins = _to_minutes(now_et.hour, now_et.minute)
+    return 930 <= mins < 960
+
+
 class MarketClock:
     """시장 시계 -- KST/ET 시각과 세션 상태를 제공한다."""
 
@@ -136,20 +257,33 @@ class MarketClock:
         kst = self._now_kst()
         et = self._now_et(kst)
         session = _determine_session(kst)
+        holiday = is_us_market_holiday(et.date())
+
+        # 공휴일이면 매매 윈도우를 비활성화한다
+        trading_window = _check_trading_window(kst) and not holiday
 
         return TimeInfo(
             now_kst=kst,
             now_et=et,
-            is_trading_window=_check_trading_window(kst),
+            is_trading_window=trading_window,
             session_type=session,
-            is_regular_session=_check_regular_session(et),
+            is_regular_session=_check_regular_session(et) and not holiday,
             is_danger_zone=_check_danger_zone(et),
+            is_near_close=_check_near_close(et),
+            is_market_holiday=holiday,
             loop_interval_seconds=_LOOP_INTERVALS[session],
         )
 
     def is_trading_window(self) -> bool:
-        """매매 가능 윈도우(20:00~다음날 06:30 KST)를 판별한다."""
-        return _check_trading_window(self._now_kst())
+        """매매 가능 윈도우(20:00~다음날 06:30 KST)를 판별한다.
+
+        미국 시장 공휴일이면 매매 윈도우를 비활성화한다.
+        """
+        kst = self._now_kst()
+        et = self._now_et(kst)
+        if is_us_market_holiday(et.date()):
+            return False
+        return _check_trading_window(kst)
 
     def get_session_type(self) -> SessionType:
         """현재 KST 시각 기준 세션 유형을 반환한다."""
@@ -176,6 +310,8 @@ class MarketClock:
             "is_trading_window": info.is_trading_window,
             "is_regular_session": info.is_regular_session,
             "is_danger_zone": info.is_danger_zone,
+            "is_near_close": info.is_near_close,
+            "is_market_holiday": info.is_market_holiday,
             "loop_interval_seconds": info.loop_interval_seconds,
             "is_auto_stop": self.is_auto_stop_time(),
         }

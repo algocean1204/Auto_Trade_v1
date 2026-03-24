@@ -62,19 +62,35 @@ async def _fetch_indicators(
 def _merge_and_clean(
     trades: list[dict], indicators: list[dict],
 ) -> list[dict]:
-    """거래와 지표 데이터를 병합하고 결측치를 제거한다."""
+    """거래와 지표 데이터를 병합하고 결측치를 제거한다.
+
+    indicator_history는 지표별로 별도 행에 저장되므로
+    (ticker, 시간) 기준으로 피벗하여 하나의 dict로 합친다.
+    indicator_name을 키로, value를 값으로 사용한다.
+    """
     merged: list[dict] = []
-    # 지표를 시간 기준 dict로 변환한다 (indicator_history.recorded_at 사용)
-    ind_map: dict[str, dict] = {}
+
+    # 지표를 (ticker, 시간) 기준으로 피벗한다
+    # 각 행은 {indicator_name: value, ...} 구조로 변환된다
+    ind_map: dict[str, dict[str, float]] = {}
     for ind in indicators:
-        key = str(ind.get("recorded_at", ""))[:16]
-        ind_map[key] = ind
+        ticker = str(ind.get("ticker", ""))
+        time_key = str(ind.get("recorded_at", ""))[:16]
+        composite_key = f"{ticker}:{time_key}"
+        if composite_key not in ind_map:
+            ind_map[composite_key] = {}
+        name = str(ind.get("indicator_name", ""))
+        value = ind.get("value")
+        if name and value is not None:
+            ind_map[composite_key][name] = float(value)
 
     for trade in trades:
+        ticker = str(trade.get("ticker", ""))
         trade_time = str(trade.get("created_at", ""))[:16]
+        composite_key = f"{ticker}:{trade_time}"
         row = {**trade}
-        if trade_time in ind_map:
-            row.update(ind_map[trade_time])
+        if composite_key in ind_map:
+            row.update(ind_map[composite_key])
         merged.append(row)
 
     # None 값이 절반 이상인 행을 제거한다

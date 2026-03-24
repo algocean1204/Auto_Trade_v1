@@ -24,6 +24,9 @@ class DashboardProvider with ChangeNotifier {
 
   DashboardProvider(this._apiService);
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   DashboardSummary? _summary;
   SystemStatus? _systemStatus;
   bool _isLoading = false;
@@ -76,9 +79,15 @@ class DashboardProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     stopAutoRefresh();
     _cancelReconnectTimer();
     super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 
   /// 1초 주기 자동 새로고침을 시작한다.
@@ -100,30 +109,33 @@ class DashboardProvider with ChangeNotifier {
 
   /// 자동 새로고침용 조용한 데이터 로드이다.
   /// _isLoading 플래그를 건드리지 않아 UI 깜빡임이 없다.
+  /// 4개 API를 병렬로 호출하여 응답 대기 시간을 최소화한다.
   Future<void> _autoRefreshSilent() async {
     _isAutoRefreshing = true;
     try {
       final modeStr = _currentMode?.name;
-      final newSummary = await _apiService.getDashboardSummary(mode: modeStr);
-      final newStatus = await _apiService.getSystemStatus();
-      final newAccounts = await _apiService.getAccountsSummary();
-      final newPositions = await _apiService.getPositions(mode: modeStr);
+      final results = await Future.wait([
+        _apiService.getDashboardSummary(mode: modeStr),
+        _apiService.getSystemStatus(),
+        _apiService.getAccountsSummary(),
+        _apiService.getPositions(mode: modeStr),
+      ]);
 
-      _summary = newSummary;
-      _systemStatus = newStatus;
-      _accountsSummary = newAccounts;
-      _positions = newPositions;
+      _summary = results[0] as DashboardSummary;
+      _systemStatus = results[1] as SystemStatus;
+      _accountsSummary = results[2] as Map<String, dynamic>;
+      _positions = results[3] as List<Map<String, dynamic>>;
       _error = null;
       _setConnectionState(ServerConnectionState.connected);
       _cancelReconnectTimer();
-      notifyListeners();
+      _safeNotify();
     } on ServerUnreachableException {
       _setConnectionState(ServerConnectionState.disconnected);
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       // 자동 새로고침 실패 시 기존 데이터 유지, 에러만 갱신
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     } finally {
       _isAutoRefreshing = false;
     }
@@ -148,16 +160,21 @@ class DashboardProvider with ChangeNotifier {
   Future<void> loadDashboardData() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final modeStr = _currentMode?.name; // 'virtual' 또는 'real', null이면 서버 기본값 사용
-      _summary = await _apiService.getDashboardSummary(mode: modeStr);
-      _systemStatus = await _apiService.getSystemStatus();
-      // 두 계좌 요약을 비동기로 가져온다 (실패해도 메인 데이터에 영향 없음)
-      _accountsSummary = await _apiService.getAccountsSummary();
-      // 포지션 목록을 가져온다 (실패해도 메인 데이터에 영향 없음)
-      _positions = await _apiService.getPositions(mode: modeStr);
+      // 4개 API를 병렬로 호출하여 응답 대기 시간을 최소화한다.
+      final results = await Future.wait([
+        _apiService.getDashboardSummary(mode: modeStr),
+        _apiService.getSystemStatus(),
+        _apiService.getAccountsSummary(),
+        _apiService.getPositions(mode: modeStr),
+      ]);
+      _summary = results[0] as DashboardSummary;
+      _systemStatus = results[1] as SystemStatus;
+      _accountsSummary = results[2] as Map<String, dynamic>;
+      _positions = results[3] as List<Map<String, dynamic>>;
       _error = null;
       _setConnectionState(ServerConnectionState.connected);
       // 성공하면 재연결 타이머를 취소한다
@@ -173,7 +190,7 @@ class DashboardProvider with ChangeNotifier {
       // 일반 오류는 연결 상태를 변경하지 않는다
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -193,7 +210,7 @@ class DashboardProvider with ChangeNotifier {
   void _scheduleReconnect() {
     _cancelReconnectTimer();
     _retryCountdown = _reconnectIntervalSec;
-    notifyListeners();
+    _safeNotify();
 
     // 카운트다운 타이머: 1초마다 감소
     _reconnectTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -203,11 +220,11 @@ class DashboardProvider with ChangeNotifier {
         _reconnectTimer = null;
         _retryCountdown = 0;
         _connectionState = ServerConnectionState.reconnecting;
-        notifyListeners();
+        _safeNotify();
         // 재연결 시도
         loadDashboardData();
       } else {
-        notifyListeners();
+        _safeNotify();
       }
     });
   }

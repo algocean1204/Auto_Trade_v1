@@ -6,7 +6,7 @@ TelegramSender를 통해 발송한다.
 from __future__ import annotations
 
 from src.common.logger import get_logger
-from src.common.telegram_gateway import TelegramSender
+from src.common.telegram_gateway import TelegramSender, escape_html
 
 _logger = get_logger(__name__)
 
@@ -14,16 +14,16 @@ _logger = get_logger(__name__)
 def _format_trade(data: dict) -> str:
     """매매 체결 알림을 HTML로 포맷팅한다."""
     action = data.get("action", "N/A")
-    ticker = data.get("ticker", "N/A")
+    ticker = escape_html(str(data.get("ticker", "N/A")))
     qty = data.get("quantity", 0)
     price = data.get("price", 0.0)
-    reason = data.get("reason", "")
+    reason = escape_html(str(data.get("reason", "")))
     emoji = "🟢" if action == "buy" else "🔴"
 
     lines = [
         f"{emoji} <b>매매 체결</b>",
         f"티커: <code>{ticker}</code>",
-        f"방향: {action.upper()} x{qty}",
+        f"방향: {escape_html(action.upper())} x{qty}",
         f"가격: ${price:,.2f}",
     ]
     if reason:
@@ -51,7 +51,7 @@ def _format_daily_report(data: dict) -> str:
     if positions:
         lines.append("\n<b>보유 포지션:</b>")
         for pos in positions[:5]:
-            t = pos.get("ticker", "?")
+            t = escape_html(str(pos.get("ticker", "?")))
             pnl_pos = pos.get("pnl_pct", 0.0)
             lines.append(f"  {t}: {pnl_pos:+.2f}%")
     return "\n".join(lines)
@@ -59,8 +59,8 @@ def _format_daily_report(data: dict) -> str:
 
 def _format_emergency(data: dict) -> str:
     """긴급 알림을 HTML로 포맷팅한다."""
-    reason = data.get("reason", "알 수 없는 사유")
-    action = data.get("action", "긴급 정지")
+    reason = escape_html(str(data.get("reason", "알 수 없는 사유")))
+    action = escape_html(str(data.get("action", "긴급 정지")))
     return (
         f"🚨 <b>긴급 알림</b>\n"
         f"조치: {action}\n"
@@ -70,17 +70,17 @@ def _format_emergency(data: dict) -> str:
 
 def _format_news(data: dict) -> str:
     """핵심 뉴스 알림을 HTML로 포맷팅한다."""
-    title = data.get("title", "제목 없음")
+    title = escape_html(str(data.get("title", "제목 없음")))
     impact = data.get("impact", "unknown")
     tickers = data.get("related_tickers", [])
-    summary = data.get("summary", "")
+    summary = escape_html(str(data.get("summary", "")))
 
-    ticker_str = ", ".join(tickers[:5]) if tickers else "없음"
+    ticker_str = ", ".join(escape_html(str(t)) for t in tickers[:5]) if tickers else "없음"
     impact_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(impact, "⚪")
 
     lines = [
         f"📰 <b>핵심 뉴스</b>",
-        f"영향도: {impact_emoji} {impact.upper()}",
+        f"영향도: {impact_emoji} {escape_html(impact.upper())}",
         f"제목: {title}",
         f"관련: {ticker_str}",
     ]

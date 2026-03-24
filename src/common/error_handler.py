@@ -7,6 +7,7 @@ ErrorHandler (C0.9) -- 예외를 표준 ErrorResponse로 변환하고 글로벌 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -124,10 +125,11 @@ def to_error_response(exc: Exception) -> ErrorResponse:
         )
 
     # 예상치 못한 예외는 내부 정보 노출을 최소화한다
+    # str(exc)는 파일 경로/DB URL 등 민감 정보를 포함할 수 있어 응답에 노출하지 않는다
     return ErrorResponse(
         error_code="UNKNOWN_ERROR",
         message="알 수 없는 오류가 발생했다",
-        detail=str(exc) if str(exc) else None,
+        detail=None,
         timestamp=now,
     )
 
@@ -143,7 +145,7 @@ def _get_status_code(exc: TradingError) -> int:
     return status_map.get(exc.error_code, 500)
 
 
-def register_exception_handlers(app: object) -> None:
+def register_exception_handlers(app: Any) -> None:
     """FastAPI 앱에 글로벌 예외 핸들러를 등록한다.
 
     FastAPI를 직접 import하지 않고, app 객체의 메서드를 동적으로 호출한다.

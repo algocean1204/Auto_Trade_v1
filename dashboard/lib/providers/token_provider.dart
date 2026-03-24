@@ -13,6 +13,8 @@ import '../services/server_launcher.dart';
 ///   - 필수 갱신: 발급 후 16시간 경과 시 갱신 권고
 ///   - 자동 갱신: 서버 실행 중 + 만료 1시간 전 → 자동 재발급
 class TokenProvider with ChangeNotifier {
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
   /// 토큰 발급 중 여부이다.
   bool _isIssuing = false;
 
@@ -62,11 +64,16 @@ class TokenProvider with ChangeNotifier {
   /// 토큰 발급 시각이다.
   DateTime? get issuedAt => _issuedAt;
 
-  /// 토큰이 유효한지 여부 (가상/실전 모두 만료 전이어야 한다).
+  /// 토큰이 유효한지 여부이다.
+  ///
+  /// 가상/실전 중 하나만 설정되어 있어도 해당 토큰이 유효하면 true를 반환한다.
+  /// 두 종류 모두 null이면 (아직 발급 전) false를 반환한다.
   bool get isTokenValid {
-    if (_virtualExpires == null || _realExpires == null) return false;
+    if (_virtualExpires == null && _realExpires == null) return false;
     final now = DateTime.now();
-    return now.isBefore(_virtualExpires!) && now.isBefore(_realExpires!);
+    final virtualOk = _virtualExpires != null && now.isBefore(_virtualExpires!);
+    final realOk = _realExpires != null && now.isBefore(_realExpires!);
+    return virtualOk || realOk;
   }
 
   /// 토큰 필수 갱신이 필요한지 여부이다 (발급 후 16시간 경과).
@@ -136,53 +143,187 @@ class TokenProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _pollingTimer?.cancel();
     super.dispose();
   }
 
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
+  }
+
   /// 토큰을 발급한다.
   ///
-  /// scripts/issue_token.py를 subprocess로 실행하여
-  /// KIS API에서 가상/실전 토큰을 동시에 발급받는다.
+  /// 개발 모드: scripts/issue_token.py를 subprocess로 실행한다.
+  /// 번들 모드: 서버가 실행 중이면 API로 요청하고,
+  ///           서버가 꺼져 있으면 내장 trading_server 바이너리로 실행한다.
   Future<void> issueToken() async {
     // 이미 발급 중이면 중복 실행을 방지한다.
     if (_isIssuing) return;
     _isIssuing = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
-      final projectRoot =
-          ServerLauncher.instance.projectRoot ?? _findProjectRoot();
-      if (projectRoot == null) {
-        _error = '프로젝트 경로를 찾을 수 없습니다.';
-        return;
+      final launcher = ServerLauncher.instance;
+
+      if (launcher.isBundledApp) {
+        await _issueTokenBundled(launcher);
+      } else {
+        await _issueTokenDev(launcher);
+      }
+    } catch (e) {
+      _error = '토큰 발급 실패: $e';
+    } finally {
+      _isIssuing = false;
+      _autoRenewing = false;
+      _safeNotify();
+    }
+  }
+
+  /// 개발 모드에서 .venv/bin/python으로 토큰을 발급한다.
+  Future<void> _issueTokenDev(ServerLauncher launcher) async {
+    final projectRoot = launcher.projectRoot;
+    if (projectRoot == null) {
+      _error = '프로젝트 경로를 찾을 수 없습니다.';
+      return;
+    }
+
+    final venvPython = '$projectRoot/.venv/bin/python';
+    if (!File(venvPython).existsSync()) {
+      _error = 'Python 가상환경을 찾을 수 없습니다.';
+      return;
+    }
+
+    final result = await Process.run(
+      venvPython,
+      ['-u', 'scripts/issue_token.py'],
+      workingDirectory: projectRoot,
+    );
+
+    _handleIssueTokenResult(result);
+  }
+
+  /// 번들 모드에서 토큰을 발급한다.
+  ///
+  /// 1순위: 서버가 실행 중이면 POST /api/setup/token API를 사용한다.
+  /// 2순위: 내장 issue_token.py를 시스템 Python으로 실행한다.
+  ///        --env-file, --data-dir 인자로 올바른 경로를 전달한다.
+  ///
+  /// trading_server 바이너리의 --issue-token CLI 모드는 지원하지 않는다.
+  /// (main.py에 argparse가 없어 전체 서버가 시작되므로 사용 불가)
+  Future<void> _issueTokenBundled(ServerLauncher launcher) async {
+    // 1) 서버가 실행 중이면 API로 토큰 발급을 요청한다.
+    if (await launcher.isServerRunning()) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 5);
+      try {
+        final request = await client.postUrl(
+          Uri.parse('${launcher.baseUrl}/api/setup/token'),
+        );
+        request.headers.contentType = ContentType.json;
+        request.write('{}');
+        final response = await request.close().timeout(
+          const Duration(seconds: 30),
+        );
+        final body = await response.transform(utf8.decoder).join();
+
+        if (response.statusCode == 200) {
+          final output = jsonDecode(body);
+          if (output['success'] == true) {
+            _virtualExpires = _parseDateTime(output['virtual_expires']);
+            _realExpires = _parseDateTime(output['real_expires']);
+            _issuedAt = _parseDateTime(output['issued_at']) ?? DateTime.now();
+            _error = null;
+            return;
+          }
+          // success=false인 경우 에러 메시지를 설정한다
+          _error = output['error']?.toString() ?? 'API 토큰 발급 실패';
+          return;
+        }
+        // API 실패 시 fallback으로 이동한다.
+        debugPrint(
+          'TokenProvider: API 응답 ${response.statusCode}, fallback 시도',
+        );
+      } catch (e) {
+        debugPrint('TokenProvider: API 토큰 발급 실패, fallback 시도: $e');
+      } finally {
+        client.close(force: true);
+      }
+    }
+
+    // 2) 내장 issue_token.py를 시스템 Python으로 실행한다.
+    //    번들 모드에서는 .env와 데이터 디렉토리가 Application Support에 있으므로
+    //    --env-file과 --data-dir 인자로 올바른 경로를 전달한다.
+    final projectRoot = launcher.projectRoot;
+    if (projectRoot != null) {
+      // 번들 내 scripts/issue_token.py 또는 _internal/scripts/issue_token.py를 탐색한다
+      final scriptCandidates = [
+        '$projectRoot/scripts/issue_token.py',
+        '$projectRoot/_internal/scripts/issue_token.py',
+      ];
+      String? scriptPath;
+      for (final candidate in scriptCandidates) {
+        if (File(candidate).existsSync()) {
+          scriptPath = candidate;
+          break;
+        }
       }
 
-      final venvPython = '$projectRoot/.venv/bin/python';
-      if (!File(venvPython).existsSync()) {
-        _error = 'Python 가상환경을 찾을 수 없습니다.';
+      if (scriptPath != null) {
+        final envPath = launcher.envFilePath;
+        final dataDir = launcher.dataDirectory;
+        // 시스템 Python을 탐색한다 (번들에는 .venv가 없다)
+        final pythonPaths = [
+          '/usr/bin/python3',
+          '/usr/local/bin/python3',
+        ];
+        for (final python in pythonPaths) {
+          if (File(python).existsSync()) {
+            // issue_token.py에 경로를 명시적으로 전달한다
+            final args = ['-u', scriptPath];
+            if (envPath != null) args.addAll(['--env-file', envPath]);
+            if (dataDir != null) args.addAll(['--data-dir', dataDir]);
+
+            final result = await Process.run(
+              python,
+              args,
+              workingDirectory: launcher.bundledWorkingDir,
+            );
+            _handleIssueTokenResult(result);
+            return;
+          }
+        }
+        _error = '시스템 Python3을 찾을 수 없습니다. '
+            'Xcode Command Line Tools를 설치하세요.';
         return;
       }
+    }
 
-      final result = await Process.run(
-        venvPython,
-        ['-u', 'scripts/issue_token.py'],
-        workingDirectory: projectRoot,
-      );
+    _error = '번들 모드에서 토큰 발급 수단을 찾을 수 없습니다. 서버를 먼저 시작하세요.';
+  }
 
-      if (result.exitCode != 0) {
-        // 기본 에러 메시지를 설정한다.
-        _error = '토큰 발급 실패 (exit: ${result.exitCode})';
-        // stdout에 JSON 에러가 있을 경우 파싱하여 상세 메시지를 사용한다.
-        try {
-          final json = jsonDecode(result.stdout.toString());
-          if (json['error'] != null) _error = json['error'].toString();
-        } catch (_) {}
-        return;
+  /// subprocess 실행 결과를 파싱하여 토큰 상태를 업데이트한다.
+  void _handleIssueTokenResult(ProcessResult result) {
+    if (result.exitCode != 0) {
+      _error = '토큰 발급 실패 (exit: ${result.exitCode})';
+      try {
+        final json = jsonDecode(result.stdout.toString());
+        if (json['error'] != null) {
+          _error = _humanizeTokenError(json['error'].toString());
+        }
+      } catch (_) {
+        // stdout 파싱 실패 시 stderr에서 에러 힌트를 추출한다
+        final stderr = result.stderr.toString().trim();
+        if (stderr.isNotEmpty) {
+          _error = '토큰 발급 실패: $stderr';
+        }
       }
+      return;
+    }
 
-      // 성공 시 stdout JSON을 파싱하여 만료 시각을 저장한다.
+    try {
       final output = jsonDecode(result.stdout.toString());
       if (output['success'] == true) {
         _virtualExpires = _parseDateTime(output['virtual_expires']);
@@ -190,15 +331,31 @@ class TokenProvider with ChangeNotifier {
         _issuedAt = _parseDateTime(output['issued_at']) ?? DateTime.now();
         _error = null;
       } else {
-        _error = output['error']?.toString() ?? '알 수 없는 오류';
+        _error = _humanizeTokenError(
+          output['error']?.toString() ?? '알 수 없는 오류',
+        );
       }
-    } catch (e) {
-      _error = '토큰 발급 실패: $e';
-    } finally {
-      _isIssuing = false;
-      _autoRenewing = false;
-      notifyListeners();
+    } on FormatException {
+      _error = '토큰 발급 스크립트 출력을 파싱할 수 없습니다.';
     }
+  }
+
+  /// KIS 토큰 발급 에러 메시지를 사용자 친화적으로 변환한다.
+  String _humanizeTokenError(String raw) {
+    if (raw.contains('환경변수 누락')) return raw;
+    if (raw.contains('TimeoutError') || raw.contains('Timeout')) {
+      return 'KIS 서버 연결 시간 초과. 네트워크 상태를 확인하세요.';
+    }
+    if (raw.contains('ClientConnectorError') || raw.contains('Cannot connect')) {
+      return 'KIS 서버에 연결할 수 없습니다. 인터넷 연결을 확인하세요.';
+    }
+    if (raw.contains('HTTP 401') || raw.contains('HTTP 403')) {
+      return 'KIS API 인증 실패. API 키와 시크릿을 확인하세요.';
+    }
+    if (raw.contains('HTTP 5')) {
+      return 'KIS 서버 일시적 오류. 잠시 후 다시 시도하세요.';
+    }
+    return raw;
   }
 
   // ── Private helpers ──
@@ -219,16 +376,19 @@ class TokenProvider with ChangeNotifier {
   /// 토큰 파일을 직접 읽어 상태를 확인한다.
   ///
   /// 앱 재시작 시 기존 토큰 상태를 복원하는 데 사용한다.
+  /// ServerLauncher.dataDirectory를 사용하여 번들/개발 모드 모두 지원한다.
+  /// 발급 진행 중에는 상태 덮어쓰기를 방지하기 위해 건너뛴다.
   void _checkTokenFiles() {
+    // 발급 중에는 파일 폴링을 건너뛴다 — issueToken이 최종 상태를 설정한다.
+    if (_isIssuing) return;
     try {
-      final projectRoot =
-          ServerLauncher.instance.projectRoot ?? _findProjectRoot();
-      if (projectRoot == null) return;
+      final dataDir = ServerLauncher.instance.dataDirectory;
+      if (dataDir == null) return;
 
       final virtualToken =
-          _readTokenFile('$projectRoot/data/kis_token.json');
+          _readTokenFile('$dataDir/kis_token.json');
       final realToken =
-          _readTokenFile('$projectRoot/data/kis_real_token.json');
+          _readTokenFile('$dataDir/kis_real_token.json');
 
       var changed = false;
 
@@ -250,16 +410,21 @@ class TokenProvider with ChangeNotifier {
 
       // issuedAt은 토큰 파일의 수정 시각으로 추정한다.
       // issue_token.py가 파일을 덮어쓰므로 수정 시각이 발급 시각에 해당한다.
-      if (_issuedAt == null && virtualToken != null) {
-        try {
-          final stat =
-              File('$projectRoot/data/kis_token.json').statSync();
-          _issuedAt = stat.modified;
-          changed = true;
-        } catch (_) {}
+      // 가상/실전 중 존재하는 파일에서 추정한다 (한쪽만 설정된 경우 대응).
+      if (_issuedAt == null) {
+        final tokenFileToCheck = virtualToken != null
+            ? '$dataDir/kis_token.json'
+            : (realToken != null ? '$dataDir/kis_real_token.json' : null);
+        if (tokenFileToCheck != null) {
+          try {
+            final stat = File(tokenFileToCheck).statSync();
+            _issuedAt = stat.modified;
+            changed = true;
+          } catch (_) {}
+        }
       }
 
-      if (changed) notifyListeners();
+      if (changed) _safeNotify();
     } catch (_) {}
   }
 
@@ -277,43 +442,22 @@ class TokenProvider with ChangeNotifier {
   /// 문자열을 DateTime으로 파싱한다.
   ///
   /// 공백이 포함된 형식(예: "2026-03-15 09:00:00")을 ISO 8601로 변환한다.
+  /// KIS API가 반환하는 만료시각은 KST(+09:00)이므로 타임존이 없으면 KST를 추가한다.
   DateTime? _parseDateTime(dynamic value) {
     if (value == null) return null;
     try {
-      return DateTime.parse(value.toString().replaceAll(' ', 'T'));
+      var s = value.toString().replaceAll(' ', 'T');
+      // KIS API 만료시각은 KST이다. 타임존 정보가 없으면 +09:00을 추가하여
+      // 사용자가 KST 외 타임존에서도 올바른 비교가 가능하도록 한다.
+      if (!s.contains('+') && !s.contains('Z') && !s.endsWith('z')) {
+        s += '+09:00';
+      }
+      return DateTime.parse(s);
     } catch (_) {
       return null;
     }
   }
 
-  /// ServerLauncher와 동일한 로직으로 프로젝트 루트를 탐색한다.
-  ///
-  /// 컴파일된 macOS 앱에서는 Directory.current가 프로젝트 경로가 아니므로
-  /// 실행 파일 경로 기준으로도 탐색한다.
-  String? _findProjectRoot() {
-    // 1) 실행 파일 기준 상위 디렉토리를 탐색한다 (macOS .app 번들 대응).
-    try {
-      var dir = File(Platform.resolvedExecutable).parent;
-      for (var i = 0; i < 12; i++) {
-        if (File('${dir.path}/.env').existsSync() &&
-            File('${dir.path}/src/main.py').existsSync()) {
-          return dir.path;
-        }
-        dir = dir.parent;
-      }
-    } catch (_) {}
-
-    // 2) 현재 작업 디렉토리 기준으로 탐색한다.
-    try {
-      var dir = Directory.current;
-      for (var i = 0; i < 8; i++) {
-        if (File('${dir.path}/.env').existsSync() &&
-            File('${dir.path}/src/main.py').existsSync()) {
-          return dir.path;
-        }
-        dir = dir.parent;
-      }
-    } catch (_) {}
-    return null;
-  }
+  // 프로젝트 루트 탐색은 ServerLauncher에 위임한다.
+  // TokenProvider 고유의 _findProjectRoot는 제거하고 ServerLauncher.instance.projectRoot를 사용한다.
 }

@@ -14,6 +14,29 @@ from src.strategy.models import EntryDecision, Position, StrategyParams
 
 logger = get_logger(__name__)
 
+# 모듈 레벨 TickerParams 싱글톤 -- 매 평가마다 파일 I/O를 방지한다
+_ticker_params_cache: object | None = None
+_knowledge_manager_cache: object | None = None
+
+
+def _get_ticker_params() -> object:
+    """TickerParams 싱글톤을 반환한다. 최초 호출 시 한 번만 로드한다."""
+    global _ticker_params_cache
+    if _ticker_params_cache is None:
+        from src.strategy.params.ticker_params import TickerParams
+        _ticker_params_cache = TickerParams()
+    return _ticker_params_cache
+
+
+def _get_knowledge_manager() -> object:
+    """KnowledgeManager 싱글톤을 반환한다. ChromaDB+BGE-M3 초기화가 무거우므로 캐싱한다."""
+    global _knowledge_manager_cache
+    if _knowledge_manager_cache is None:
+        from src.optimization.rag.knowledge_manager import KnowledgeManager
+        _knowledge_manager_cache = KnowledgeManager()
+    return _knowledge_manager_cache
+
+
 # Friction Gate -- 마찰 비용 허들 기준 (기본 bps)
 _FRICTION_SPREAD_BPS: float = 10.0
 _FRICTION_SLIPPAGE_BPS: float = 5.0
@@ -51,15 +74,23 @@ def _check_obi_gate(bundle: IndicatorBundle, params: StrategyParams) -> tuple[bo
     return bundle.order_flow.obi > params.obi_threshold, False
 
 
-def _check_cross_asset_gate(bundle: IndicatorBundle) -> tuple[bool, bool]:
+def _check_cross_asset_gate(bundle: IndicatorBundle, ticker: str = "") -> tuple[bool, bool]:
     """크로스에셋 모멘텀 게이트 -- 리더 정렬도가 0.3 이상인지 확인한다.
 
+    인버스 ETF는 리더 하락이 유리하므로 alignment를 반전하여 평가한다.
     Returns: (통과 여부, 데이터 미가용 여부)
     """
     if bundle.momentum is None:
         logger.debug("크로스에셋 게이트: momentum 데이터 미가용 -- 통과+페널티 처리한다")
         return True, True
-    return bundle.momentum.alignment > 0.3, False
+    alignment = bundle.momentum.alignment
+    # 인버스 ETF는 리더 하락(음수 alignment)이 유리하므로 부호를 반전한다
+    if ticker:
+        from src.common.ticker_registry import get_ticker_registry
+        reg = get_ticker_registry()
+        if reg.has_ticker(ticker) and reg.is_inverse(ticker):
+            alignment = -alignment
+    return alignment > 0.3, False
 
 
 def _check_whale_gate(bundle: IndicatorBundle) -> tuple[bool, bool]:
@@ -131,8 +162,8 @@ def _check_friction_gate(bundle: IndicatorBundle, params: StrategyParams) -> boo
             )
         return passed
     except Exception as exc:
-        logger.warning("마찰 게이트 계산 실패 (통과 처리): %s", exc)
-        return True  # fail-open
+        logger.warning("마찰 게이트 계산 실패 (차단 처리 — 마찰 비용 미확인 시 진입 불가): %s", exc)
+        return False  # fail-closed: 마찰 비용을 계산할 수 없으면 수익성 보장 불가
 
 
 def _check_rag_gate(bundle: IndicatorBundle) -> bool:
@@ -143,8 +174,7 @@ def _check_rag_gate(bundle: IndicatorBundle) -> bool:
     KnowledgeManager 임포트 실패 또는 패턴 없음 시 fail-open으로 통과 처리한다.
     """
     try:
-        from src.optimization.rag.knowledge_manager import KnowledgeManager
-        km = KnowledgeManager()
+        km = _get_knowledge_manager()
         # 현재 지표 상황을 텍스트로 변환하여 유사 실패 패턴을 검색한다
         query_parts = []
         if bundle.order_flow is not None:
@@ -172,11 +202,11 @@ def _check_rag_gate(bundle: IndicatorBundle) -> bool:
                 return False
         return True
     except Exception as exc:
-        logger.debug("RAG 게이트 검색 실패 (통과 처리): %s", exc)
-        return True  # fail-open
+        logger.warning("RAG 게이트 검색 실패 (통과 처리 — KnowledgeManager 장애): %s", exc)
+        return True  # fail-open: RAG는 부가 게이트이므로 장애 시 통과 (패턴 DB 부재 가능)
 
 
-def _calculate_confidence(bundle: IndicatorBundle, missing_penalty: float) -> float:
+def _calculate_confidence(bundle: IndicatorBundle, missing_penalty: float, ticker: str = "") -> float:
     """지표 번들에서 진입 확신도를 계산한다.
 
     실제 데이터가 있는 지표의 평균 점수를 기반으로 하되,
@@ -191,6 +221,12 @@ def _calculate_confidence(bundle: IndicatorBundle, missing_penalty: float) -> fl
             scores.append(min(val, 1.0))
     if bundle.momentum is not None:
         val = bundle.momentum.alignment
+        # 인버스 ETF는 음수 alignment가 유리하므로 부호를 반전한다
+        if ticker:
+            from src.common.ticker_registry import get_ticker_registry
+            _reg = get_ticker_registry()
+            if _reg.has_ticker(ticker) and _reg.is_inverse(ticker):
+                val = -val
         if not (math.isnan(val) or math.isinf(val)):
             scores.append(min(val, 1.0))
     if bundle.whale is not None:
@@ -236,14 +272,13 @@ def _calculate_position_size(
     base = params.default_position_size_pct
     if ticker:
         try:
-            from src.strategy.params.ticker_params import TickerParams
-            tp = TickerParams()
-            ticker_size = tp.get_position_size(ticker)
+            tp = _get_ticker_params()
+            ticker_size = tp.get_position_size(ticker)  # type: ignore[union-attr]
             if ticker_size != params.default_position_size_pct:
                 base = ticker_size
                 logger.debug("티커별 포지션 크기 적용: %s = %.1f%%", ticker, base)
-        except Exception:
-            pass  # 티커 파라미터 로드 실패 시 글로벌 기본값을 사용한다
+        except Exception as exc:
+            logger.debug("티커 파라미터 로드 실패 (%s, 글로벌 기본값 사용): %s", ticker, exc)
     # 레짐 배수 비정상 값 방어: 0 이하이면 기본값 1.0을 사용한다
     if regime_multiplier <= 0:
         logger.warning("레짐 승수 비정상: %.2f → 기본값 1.0 사용", regime_multiplier)
@@ -283,7 +318,7 @@ class EntryStrategy:
         # 데이터 의존 게이트: (이름, 평가함수) -- 미가용 시 페널티 부과
         data_gate_checks = [
             (_GATE_OBI, lambda: _check_obi_gate(bundle, params)),
-            (_GATE_CROSS_ASSET, lambda: _check_cross_asset_gate(bundle)),
+            (_GATE_CROSS_ASSET, lambda: _check_cross_asset_gate(bundle, ticker)),
             (_GATE_WHALE, lambda: _check_whale_gate(bundle)),
             (_GATE_ML, lambda: _check_ml_gate(bundle, params)),
         ]
@@ -319,7 +354,7 @@ class EntryStrategy:
             blocked_by = _GATE_RAG
 
         all_passed = all(gates.values())
-        confidence = _calculate_confidence(bundle, total_penalty) if all_passed else 0.0
+        confidence = _calculate_confidence(bundle, total_penalty, ticker) if all_passed else 0.0
 
         # 확신도가 최소 임계값(0.40) 미만이면 차단한다
         if all_passed and confidence < 0.40:
@@ -340,6 +375,16 @@ class EntryStrategy:
             ticker=ticker,
         ) if all_passed else 0.0
 
+        # 인버스 ETF는 방향을 "bear"로 설정한다
+        direction = "bull"
+        try:
+            from src.common.ticker_registry import get_ticker_registry
+            reg = get_ticker_registry()
+            if reg.has_ticker(ticker) and reg.is_inverse(ticker):
+                direction = "bear"
+        except Exception:
+            pass
+
         decision = EntryDecision(
             should_enter=all_passed,
             confidence=confidence,
@@ -347,6 +392,7 @@ class EntryStrategy:
             blocked_by=blocked_by,
             gate_results=gates,
             ticker=ticker,
+            direction=direction,
         )
         logger.info(
             "진입 판단: %s should_enter=%s confidence=%.4f blocked_by=%s penalty=%.2f",

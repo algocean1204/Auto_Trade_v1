@@ -5,12 +5,14 @@
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from src.common.event_bus import EventType
 from src.common.logger import get_logger
 from src.monitoring.server.auth import verify_api_key
 
@@ -26,6 +28,9 @@ _system: InjectedSystem | None = None
 # 긴급 정지 상태를 모듈 레벨에서 관리한다
 _emergency_active: bool = False
 _emergency_reason: str = ""
+
+# 동시 stop/resume 요청의 상태 전이 레이스를 방지한다
+_emergency_lock = asyncio.Lock()
 
 # VPIN 플래시 크래시 쿨다운 지속 시간 (emergency_protocol.py의 _VPIN_COOLDOWN_MINUTES와 동일)
 _VPIN_COOLDOWN_DELTA: timedelta = timedelta(minutes=30)
@@ -45,7 +50,7 @@ class EmergencyStatusResponse(BaseModel):
     # Flutter 프론트엔드가 기대하는 필드
     circuit_breaker_active: bool
     runaway_loss_shutdown: bool
-    flash_crash_cooldowns: dict[str, str]
+    flash_crash_cooldowns: dict[str, str] = Field(default_factory=dict)
 
     # 하위 호환성 필드
     emergency_active: bool
@@ -61,6 +66,12 @@ class EmergencyActionResponse(BaseModel):
     previous_reason: str | None = None
 
 
+class _EmergencyEventPayload(BaseModel):
+    """EventBus로 전송하는 긴급 이벤트 페이로드이다."""
+
+    reason: str = ""
+
+
 def set_emergency_deps(system: InjectedSystem) -> None:
     """InjectedSystem을 주입한다."""
     global _system
@@ -69,7 +80,7 @@ def set_emergency_deps(system: InjectedSystem) -> None:
 
 
 @emergency_router.get("/status", response_model=EmergencyStatusResponse)
-async def get_emergency_status() -> EmergencyStatusResponse:
+async def get_emergency_status(_auth: str = Depends(verify_api_key)) -> EmergencyStatusResponse:
     """긴급 정지 상태를 반환한다.
 
     EmergencyProtocol의 발동 이력을 분석하여 서킷 브레이커,
@@ -126,13 +137,14 @@ async def emergency_stop(
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        _emergency_active = True
-        _emergency_reason = reason
-        _system.running = False
+        async with _emergency_lock:
+            _emergency_active = True
+            _emergency_reason = reason
+            _system.running = False
 
-        # 이벤트 버스로 긴급 정지 알림을 전파한다
-        event_bus = _system.components.event_bus
-        await event_bus.emit("emergency_stop", {"reason": reason})
+            # 이벤트 버스로 긴급 정지 알림을 전파한다
+            event_bus = _system.components.event_bus
+            await event_bus.publish(EventType.EMERGENCY_STOP, _EmergencyEventPayload(reason=reason))
 
         _logger.warning("긴급 정지 실행: %s", reason)
         return EmergencyActionResponse(status="emergency_stopped", reason=reason)
@@ -152,12 +164,13 @@ async def emergency_resume(
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        _emergency_active = False
-        prev_reason = _emergency_reason
-        _emergency_reason = ""
+        async with _emergency_lock:
+            _emergency_active = False
+            prev_reason = _emergency_reason
+            _emergency_reason = ""
 
-        event_bus = _system.components.event_bus
-        await event_bus.emit("emergency_resume", {"prev_reason": prev_reason})
+            event_bus = _system.components.event_bus
+            await event_bus.publish(EventType.EMERGENCY_RESUME, _EmergencyEventPayload(reason=prev_reason))
 
         _logger.info("긴급 정지 해제 완료 (이전 사유: %s)", prev_reason)
         return EmergencyActionResponse(

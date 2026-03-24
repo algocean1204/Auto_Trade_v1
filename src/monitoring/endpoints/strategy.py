@@ -18,14 +18,16 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
@@ -38,8 +40,12 @@ strategy_router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
 _system: InjectedSystem | None = None
 
-# strategy_params.json 절대 경로 (프로젝트 루트 기준)
-_PARAMS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "strategy_params.json"
+# 백그라운드 태스크 참조 — GC에 의한 조기 수거를 방지한다
+_background_tasks: set[asyncio.Task] = set()
+
+def _params_path() -> Path:
+    """strategy_params.json 절대 경로를 반환한다. 호출 시점에 평가한다."""
+    return get_data_dir() / "strategy_params.json"
 
 
 class StrategyParamsResponse(BaseModel):
@@ -47,6 +53,15 @@ class StrategyParamsResponse(BaseModel):
 
     params: dict[str, Any] = Field(default_factory=dict)
     path: str = ""
+
+
+class StrategyParamsUpdateRequest(BaseModel):
+    """전략 파라미터 업데이트 요청 모델이다.
+
+    Flutter는 {"params": {...}} 형태로 전송한다.
+    """
+
+    params: dict[str, Any] = Field(..., description="업데이트할 파라미터 dict")
 
 
 class StrategyParamsUpdateResponse(BaseModel):
@@ -66,11 +81,12 @@ def set_strategy_deps(system: InjectedSystem) -> None:
 
 def _load_params_raw() -> dict[str, Any]:
     """strategy_params.json을 raw dict로 로드한다. 없으면 빈 dict를 반환한다."""
-    if not _PARAMS_PATH.exists():
-        _logger.warning("strategy_params.json 없음: %s", _PARAMS_PATH)
+    pp = _params_path()
+    if not pp.exists():
+        _logger.warning("strategy_params.json 없음: %s", pp)
         return {}
     try:
-        text = _PARAMS_PATH.read_text(encoding="utf-8")
+        text = pp.read_text(encoding="utf-8")
         return json.loads(text)
     except Exception:
         _logger.exception("strategy_params.json 로드 실패")
@@ -83,13 +99,14 @@ def _backup_params() -> str | None:
     백업 파일명 형식: strategy_params_{YYYYMMDD_HHMMSS}.json
     백업 성공 시 파일명 반환, 실패 시 None 반환.
     """
-    if not _PARAMS_PATH.exists():
+    pp = _params_path()
+    if not pp.exists():
         return None
     try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         backup_name = f"strategy_params_{ts}.json"
-        backup_path = _PARAMS_PATH.parent / backup_name
-        shutil.copy2(_PARAMS_PATH, backup_path)
+        backup_path = pp.parent / backup_name
+        shutil.copy2(pp, backup_path)
         _logger.info("전략 파라미터 백업 생성: %s", backup_name)
         return backup_name
     except Exception:
@@ -98,16 +115,32 @@ def _backup_params() -> str | None:
 
 
 def _write_params(data: dict[str, Any]) -> None:
-    """dict를 strategy_params.json에 기록한다."""
-    _PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PARAMS_PATH.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False, default=str),
-        encoding="utf-8",
+    """dict를 strategy_params.json에 원자적으로 기록한다.
+
+    임시 파일에 먼저 쓰고 rename하여, 쓰기 도중 프로세스가 죽어도
+    반쪽짜리 파일이 남지 않도록 한다.
+    """
+    pp = _params_path()
+    pp.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    tmp_fd = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=pp.parent,
+        suffix=".tmp", delete=False,
     )
+    try:
+        tmp_fd.write(text)
+        tmp_fd.flush()
+        tmp_fd.close()
+        Path(tmp_fd.name).replace(pp)
+    except Exception:
+        Path(tmp_fd.name).unlink(missing_ok=True)
+        raise
 
 
 @strategy_router.get("/params", response_model=StrategyParamsResponse)
-async def get_strategy_params() -> StrategyParamsResponse:
+async def get_strategy_params(
+    _auth: str = Depends(verify_api_key),
+) -> StrategyParamsResponse:
     """전략 파라미터 전체를 반환한다.
 
     Flutter StrategyParams.fromJson이 raw dict를 파싱하므로
@@ -117,7 +150,7 @@ async def get_strategy_params() -> StrategyParamsResponse:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
         params = _load_params_raw()
-        return StrategyParamsResponse(params=params, path=str(_PARAMS_PATH))
+        return StrategyParamsResponse(params=params, path=str(_params_path()))
     except Exception:
         _logger.exception("전략 파라미터 조회 실패")
         raise HTTPException(status_code=500, detail="파라미터 조회 실패") from None
@@ -125,7 +158,7 @@ async def get_strategy_params() -> StrategyParamsResponse:
 
 @strategy_router.put("/params", response_model=StrategyParamsUpdateResponse)
 async def update_strategy_params(
-    body: dict[str, Any],
+    body: StrategyParamsUpdateRequest,
     _key: str = Depends(verify_api_key),
 ) -> StrategyParamsUpdateResponse:
     """전략 파라미터를 부분 업데이트한다. 인증 필수.
@@ -136,13 +169,7 @@ async def update_strategy_params(
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        # Flutter 전송 형식 처리: {"params": {...}} 또는 flat dict
-        updates: dict[str, Any] = body.get("params", body)
-        if not isinstance(updates, dict):
-            raise HTTPException(
-                status_code=422,
-                detail="params 필드는 dict여야 한다",
-            )
+        updates = body.params
 
         # 기존 파라미터 로드 후 병합
         existing = _load_params_raw()
@@ -189,7 +216,7 @@ class TickerParamsSingleResponse(BaseModel):
 class TickerParamsUpdateRequest(BaseModel):
     """티커 오버라이드 설정 요청 모델이다."""
 
-    param_name: str = Field(..., description="오버라이드할 파라미터 이름")
+    param_name: str = Field(..., min_length=1, description="오버라이드할 파라미터 이름")
     value: Any = Field(..., description="파라미터 값 (숫자, 불리언 모두 허용)")
 
 
@@ -249,7 +276,9 @@ def _save_ticker_params(ticker_params: dict[str, dict[str, Any]]) -> str | None:
 # ── 티커별 파라미터 오버라이드 -- 엔드포인트 ─────────────────────────────
 
 @strategy_router.get("/ticker-params", response_model=TickerParamsAllResponse)
-async def get_all_ticker_params() -> TickerParamsAllResponse:
+async def get_all_ticker_params(
+    _auth: str = Depends(verify_api_key),
+) -> TickerParamsAllResponse:
     """모든 티커별 파라미터 오버라이드를 반환한다.
 
     strategy_params.json 의 ticker_params 섹션 전체를 반환한다.
@@ -266,7 +295,10 @@ async def get_all_ticker_params() -> TickerParamsAllResponse:
 
 
 @strategy_router.get("/ticker-params/{ticker}", response_model=TickerParamsSingleResponse)
-async def get_ticker_params(ticker: str) -> TickerParamsSingleResponse:
+async def get_ticker_params(
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
+    _auth: str = Depends(verify_api_key),
+) -> TickerParamsSingleResponse:
     """특정 티커의 파라미터 오버라이드를 반환한다.
 
     해당 티커에 오버라이드가 없으면 404를 반환한다.
@@ -295,8 +327,8 @@ async def get_ticker_params(ticker: str) -> TickerParamsSingleResponse:
     response_model=TickerParamsUpdateResponse,
 )
 async def set_ticker_param(
-    ticker: str,
-    body: TickerParamsUpdateRequest,
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
+    body: TickerParamsUpdateRequest = ...,
     _key: str = Depends(verify_api_key),
 ) -> TickerParamsUpdateResponse:
     """특정 티커의 파라미터 오버라이드를 설정한다. 인증 필수.
@@ -343,7 +375,7 @@ async def set_ticker_param(
     response_model=TickerParamsDeleteResponse,
 )
 async def delete_ticker_params(
-    ticker: str,
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
     _key: str = Depends(verify_api_key),
     param_name: str | None = None,
 ) -> TickerParamsDeleteResponse:
@@ -403,6 +435,16 @@ async def delete_ticker_params(
 _optimize_lock = asyncio.Lock()
 
 
+def _on_optimize_done(task: asyncio.Task) -> None:
+    """AI 최적화 태스크 완료 콜백 — 참조를 제거하고 예외를 로깅한다."""
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _logger.error("AI 최적화 백그라운드 태스크 예외: %s", exc)
+
+
 async def _run_ai_optimize_task() -> None:
     """AI 파라미터 최적화를 백그라운드에서 실행한다.
 
@@ -442,8 +484,10 @@ async def trigger_ai_optimize(
             message="AI 파라미터 최적화가 이미 실행 중이다.",
         )
     try:
-        # 즉시 반환 후 백그라운드 실행한다
-        asyncio.create_task(_run_ai_optimize_task())
+        # 즉시 반환 후 백그라운드 실행한다 — 참조를 저장하여 GC 소멸을 방지한다
+        task = asyncio.create_task(_run_ai_optimize_task())
+        _background_tasks.add(task)
+        task.add_done_callback(_on_optimize_done)
         _logger.info("AI 파라미터 최적화 태스크 시작")
         return AiOptimizeResponse(
             status="triggered",

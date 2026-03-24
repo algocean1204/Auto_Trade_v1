@@ -5,16 +5,18 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import Path as FilePath
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
@@ -28,6 +30,9 @@ _system: InjectedSystem | None = None
 
 _CACHE_KEY = "trading:principles"
 _CORE_CACHE_KEY = "principles:core"
+
+# 원칙 목록의 비원자적 read→modify→write 레이스를 방지한다
+_principles_lock = asyncio.Lock()
 
 
 class PrincipleRequest(BaseModel):
@@ -105,7 +110,9 @@ def set_principles_deps(system: InjectedSystem) -> None:
     _logger.info("PrinciplesEndpoints 의존성 주입 완료")
 
 
-_SEED_FILE = Path(__file__).resolve().parents[3] / "data" / "trading_principles.json"
+def _seed_file() -> FilePath:
+    """시드 파일 경로를 반환한다. 호출 시점에 평가한다."""
+    return get_data_dir() / "trading_principles.json"
 
 
 async def _ensure_seed_loaded() -> None:
@@ -117,12 +124,13 @@ async def _ensure_seed_loaded() -> None:
     if existing and isinstance(existing, list) and len(existing) > 0:
         return  # 이미 데이터가 있으면 건너뛴다
 
-    if not _SEED_FILE.exists():
-        _logger.warning("시드 파일 없음: %s", _SEED_FILE)
+    sf = _seed_file()
+    if not sf.exists():
+        _logger.warning("시드 파일 없음: %s", sf)
         return
 
     try:
-        raw = json.loads(_SEED_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(sf.read_text(encoding="utf-8"))
         principles = raw.get("principles", [])
         core = raw.get("core_principle", "")
         if principles:
@@ -156,7 +164,9 @@ async def _save_principles(principles: list[dict]) -> None:
 
 
 @principles_router.get("", response_model=PrinciplesListResponse)
-async def get_principles() -> PrinciplesListResponse:
+async def get_principles(
+    _auth: str = Depends(verify_api_key),
+) -> PrinciplesListResponse:
     """매매 원칙 목록을 반환한다. 핵심 원칙(core_principle)도 포함한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -186,20 +196,21 @@ async def add_principle(
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        principles = await _load_principles()
-        new_id = str(uuid.uuid4())[:8]
-        principle: dict[str, Any] = {
-            "id": new_id,
-            "title": req.title,
-            "content": req.content,
-            "category": req.category,
-            "priority": 0,
-            "is_system": False,
-            "enabled": True,
-            "created_at": datetime.now().isoformat(),
-        }
-        principles.append(principle)
-        await _save_principles(principles)
+        async with _principles_lock:
+            principles = await _load_principles()
+            new_id = str(uuid.uuid4())[:8]
+            principle: dict[str, Any] = {
+                "id": new_id,
+                "title": req.title,
+                "content": req.content,
+                "category": req.category,
+                "priority": 0,
+                "is_system": False,
+                "enabled": True,
+                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            }
+            principles.append(principle)
+            await _save_principles(principles)
         _logger.info("매매 원칙 추가: %s", req.title)
         return PrincipleCreateResponse(status="created", principle=principle)
     except HTTPException:
@@ -239,25 +250,26 @@ async def update_principle(
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        principles = await _load_principles()
-        for p in principles:
-            if p["id"] == principle_id:
-                # 제공된 필드만 업데이트한다
-                if req.title is not None:
-                    p["title"] = req.title
-                if req.content is not None:
-                    p["content"] = req.content
-                if req.category is not None:
-                    p["category"] = req.category
-                if req.enabled is not None:
-                    p["enabled"] = req.enabled
-                await _save_principles(principles)
-                _logger.info("매매 원칙 수정: %s", principle_id)
-                return PrincipleUpdateResponse(status="updated", principle=p)
-        raise HTTPException(
-            status_code=404,
-            detail=f"원칙을 찾을 수 없다: {principle_id}",
-        )
+        async with _principles_lock:
+            principles = await _load_principles()
+            for p in principles:
+                if p["id"] == principle_id:
+                    # 제공된 필드만 업데이트한다
+                    if req.title is not None:
+                        p["title"] = req.title
+                    if req.content is not None:
+                        p["content"] = req.content
+                    if req.category is not None:
+                        p["category"] = req.category
+                    if req.enabled is not None:
+                        p["enabled"] = req.enabled
+                    await _save_principles(principles)
+                    _logger.info("매매 원칙 수정: %s", principle_id)
+                    return PrincipleUpdateResponse(status="updated", principle=p)
+            raise HTTPException(
+                status_code=404,
+                detail=f"원칙을 찾을 수 없다: {principle_id}",
+            )
     except HTTPException:
         raise
     except Exception:
@@ -267,22 +279,23 @@ async def update_principle(
 
 @principles_router.delete("/{principle_id}", response_model=PrincipleDeleteResponse)
 async def delete_principle(
-    principle_id: str,
+    principle_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
     _key: str = Depends(verify_api_key),
 ) -> PrincipleDeleteResponse:
     """매매 원칙을 삭제한다. 인증 필수."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        principles = await _load_principles()
-        original_len = len(principles)
-        principles = [p for p in principles if p["id"] != principle_id]
-        if len(principles) == original_len:
-            raise HTTPException(
-                status_code=404,
-                detail=f"원칙을 찾을 수 없다: {principle_id}",
-            )
-        await _save_principles(principles)
+        async with _principles_lock:
+            principles = await _load_principles()
+            original_len = len(principles)
+            principles = [p for p in principles if p["id"] != principle_id]
+            if len(principles) == original_len:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"원칙을 찾을 수 없다: {principle_id}",
+                )
+            await _save_principles(principles)
         _logger.info("매매 원칙 삭제: %s", principle_id)
         return PrincipleDeleteResponse(status="deleted", id=principle_id)
     except HTTPException:

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from src.monitoring.server.auth import verify_api_key
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
@@ -69,7 +71,7 @@ class SlippageHourEntry(BaseModel):
 class SlippageOptimalHoursResponse(BaseModel):
     """시간대별 슬리피지 최적 시간 응답이다."""
 
-    hours: list[SlippageHourEntry]
+    hours: list[SlippageHourEntry] = Field(default_factory=list)
     """시간대별 슬리피지 목록이다."""
 
 
@@ -97,7 +99,7 @@ def _classify_hour_recommendation(avg_pct: float) -> str:
 # ---------------------------------------------------------------------------
 
 @slippage_router.get("/stats", response_model=SlippageStatsResponse)
-async def get_slippage_stats() -> SlippageStatsResponse:
+async def get_slippage_stats(_auth: str = Depends(verify_api_key)) -> SlippageStatsResponse:
     """슬리피지 종합 통계를 반환한다.
 
     SlippageTracker가 features에 있으면 실시간 데이터를 사용한다.
@@ -118,17 +120,30 @@ async def get_slippage_stats() -> SlippageStatsResponse:
         if tracker is not None:
             avg_pct = tracker.get_average_pct()
             total_usd = tracker.get_total_amount()
-            records = getattr(tracker, "_records", [])
+            all_records = getattr(tracker, "_records", [])
+            total_count = len(all_records)
+            # 최대 슬리피지 계산 시 최근 500건만 순회하여 대량 데이터 방지한다
+            _MAX_SLIPPAGE_SCAN = 500
+            recent_records = all_records[-_MAX_SLIPPAGE_SCAN:] if len(all_records) > _MAX_SLIPPAGE_SCAN else all_records
             worst = max(
-                (abs(r.slippage_pct) for r in records),
+                (abs(r.slippage_pct) for r in recent_records),
                 default=0.0,
             )
+            # best_execution_hour: 집계 캐시에서 읽는다 (EOD aggregator가 산출)
+            best_hour = 10
+            try:
+                cache = _system.components.cache
+                cached_stats = await cache.read_json("slippage:stats")
+                if cached_stats and isinstance(cached_stats, dict):
+                    best_hour = int(cached_stats.get("best_execution_hour", 10))
+            except Exception:
+                pass
             return SlippageStatsResponse(
                 avg_slippage_pct=avg_pct,
                 total_slippage_cost=total_usd,
                 max_slippage_pct=worst,
-                best_execution_hour=10,  # 기본 최적 시간: 오전 10시 ET
-                total_trades=len(records),
+                best_execution_hour=best_hour,
+                total_trades=total_count,
             )
 
         # 캐시에서 읽는다
@@ -158,17 +173,25 @@ async def get_slippage_stats() -> SlippageStatsResponse:
 
 
 @slippage_router.get("/optimal-hours", response_model=SlippageOptimalHoursResponse)
-async def get_optimal_hours() -> SlippageOptimalHoursResponse:
+async def get_optimal_hours(
+    ticker: str | None = None,
+    _auth: str = Depends(verify_api_key),
+) -> SlippageOptimalHoursResponse:
     """시간대별 슬리피지 통계 및 최적 체결 시간을 반환한다.
 
-    캐시 키 slippage:hours에서 데이터를 읽는다.
-    캐시 미스 시 빈 목록을 반환한다.
+    ticker 파라미터가 있으면 해당 티커 전용 캐시를 우선 조회한다.
+    캐시 미스 시 전체 통계(slippage:hours)를 반환한다.
     """
     if _system is None:
         return SlippageOptimalHoursResponse(hours=[])
     try:
         cache = _system.components.cache
-        cached = await cache.read_json("slippage:hours")
+        # 티커별 캐시를 우선 조회한다 (향후 티커별 데이터 저장 시 활용)
+        cached = None
+        if ticker:
+            cached = await cache.read_json(f"slippage:hours:{ticker}")
+        if not cached:
+            cached = await cache.read_json("slippage:hours")
         if cached and isinstance(cached, list):
             hours = [
                 SlippageHourEntry(

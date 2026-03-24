@@ -21,7 +21,7 @@ _VIX_DELTA_THRESHOLD: float = 3.0         # |VIX 변화| >= 3.0pt
 _VOLUME_SURGE_MULTIPLIER: float = 3.0     # 거래량 >= 평균의 300%
 _HARDSTOP_PROXIMITY_PCT: float = -0.7     # 손실률 <= -0.7% (하드스톱 -1.0% 근접)
 _PROFIT_TARGET_RATIO: float = 0.8         # 수익목표의 80% 도달
-_VIX_FALLBACK: float = 20.0              # VIX 폴백값
+_VIX_FALLBACK: float = 19.0              # VIX 폴백값 (vix_fetcher._FALLBACK_VIX와 일치시킨다)
 _VIX_FALLBACK_TOLERANCE: float = 0.01    # 폴백 판정 허용 오차
 _NEWS_URGENT_MIN_CONFIDENCE: float = 0.8  # 뉴스 urgent 최소 신뢰도 (watch=0.7보다 높아야 오탐 방지)
 _MAX_HEADLINES_PER_SCAN: int = 15         # 스캔당 최대 분류 헤드라인 수
@@ -31,7 +31,7 @@ _WATCH_ETFS: list[str] = ["SPY", "QQQ"]
 
 
 def _is_vix_fallback(value: float) -> bool:
-    """VIX 값이 폴백값(20.0)인지 허용 오차 내에서 판별한다."""
+    """VIX 값이 폴백값(19.0)인지 허용 오차 내에서 판별한다."""
     return abs(value - _VIX_FALLBACK) < _VIX_FALLBACK_TOLERANCE
 
 
@@ -119,8 +119,8 @@ async def _check_price_change(
 
     for ticker in tickers:
         try:
-            price = await broker.virtual_client.get_current_price(ticker)
-            current_price = getattr(price, "current_price", None) or getattr(price, "last", 0.0)
+            price = await broker.get_price(ticker)
+            current_price = price.price
 
             if current_price <= 0:
                 continue
@@ -161,7 +161,7 @@ async def _check_vix_spike(
 
     이전 VIX가 없으면 (첫 실행) 현재값만 저장하고 스킵한다.
     VIX 조회 실패 시 트리거하지 않는다 (false positive 방지).
-    VIX 폴백값(20.0 ± 0.01)은 실제 관측이 아니므로 비교하지 않는다.
+    VIX 폴백값(19.0 ± 0.01)은 실제 관측이 아니므로 비교하지 않는다.
     """
     signals: list[AnomalySignal] = []
     vf = system.features.get("vix_fetcher")
@@ -216,12 +216,12 @@ async def _check_volume_surge(system: InjectedSystem) -> list[AnomalySignal]:
         try:
             positions = monitor.get_all_positions()
             tickers.update(positions.keys())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("거래량 체크 포지션 조회 실패 (감시 ETF만 체크): %s", exc)
 
     for ticker in tickers:
         try:
-            price = await broker.virtual_client.get_current_price(ticker)
+            price = await broker.get_price(ticker)
             avg_vol = getattr(price, "avg_volume", 0)
             if avg_vol <= 0:
                 continue
@@ -275,8 +275,8 @@ async def _check_position_danger(system: InjectedSystem) -> list[AnomalySignal]:
             if not _is_vix_fallback(vix):
                 regime = detector.detect(vix_value=vix)
                 take_profit = regime.params.take_profit
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("레짐별 take_profit 조회 실패 (기본값 사용): %s", exc)
 
     for ticker, pos in positions.items():
         # 하드스톱 근접: pnl_pct <= -0.7%

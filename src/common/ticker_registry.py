@@ -107,7 +107,7 @@ class TickerRegistry:
             for t, e, d in _REF_RAW
         ]
 
-    def _get_meta(self, ticker: str) -> TickerMeta:
+    def get_meta(self, ticker: str) -> TickerMeta:
         """티커 메타 정보를 반환한다. 없으면 KeyError를 발생시킨다."""
         meta = self._ticker_map.get(ticker)
         if meta is None:
@@ -124,23 +124,23 @@ class TickerRegistry:
 
     def get_pair(self, ticker: str) -> str | None:
         """인버스 페어 티커를 반환한다. 페어가 없으면 None이다."""
-        return self._get_meta(ticker).pair_ticker
+        return self.get_meta(ticker).pair_ticker
 
     def get_exchange_code(self, ticker: str) -> str:
         """KIS 거래소 코드(NAS/AMS/NYS)를 반환한다."""
-        return self._get_meta(ticker).exchange
+        return self.get_meta(ticker).exchange
 
     def get_sector(self, ticker: str) -> str:
         """해당 티커의 섹터를 반환한다."""
-        return self._get_meta(ticker).sector
+        return self.get_meta(ticker).sector
 
     def is_inverse(self, ticker: str) -> bool:
         """인버스 ETF인지 판별한다."""
-        return self._get_meta(ticker).is_inverse
+        return self.get_meta(ticker).is_inverse
 
     def is_enabled(self, ticker: str) -> bool:
         """활성화된 ETF인지 판별한다."""
-        return self._get_meta(ticker).enabled
+        return self.get_meta(ticker).enabled
 
     def get_reference_tickers(self) -> list[ReferenceTicker]:
         """참조 티커(비레버리지) 목록을 반환한다."""

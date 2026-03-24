@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path as FilePath
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from src.common.logger import get_logger
+from src.common.paths import get_data_dir
 from src.monitoring.schemas.indicator_schemas import (
     BollingerData,
     IndicatorConfigResponse,
@@ -38,7 +39,9 @@ indicators_router = APIRouter(prefix="/api/indicators", tags=["indicators"])
 
 _system: InjectedSystem | None = None
 
-_STRATEGY_PARAMS_PATH = Path("data/strategy_params.json")
+def _strategy_params_path() -> FilePath:
+    """strategy_params.json 경로를 반환한다. 호출 시점에 평가한다."""
+    return get_data_dir() / "strategy_params.json"
 
 # RSI 캐시 TTL(초) -- 5분이다
 _RSI_CACHE_TTL: int = 300
@@ -66,10 +69,11 @@ def _require_system() -> None:
 
 def _load_strategy_params() -> dict:
     """strategy_params.json을 로드한다. 없으면 빈 딕셔너리를 반환한다."""
-    if not _STRATEGY_PARAMS_PATH.exists():
+    sp = _strategy_params_path()
+    if not sp.exists():
         return {}
     try:
-        return json.loads(_STRATEGY_PARAMS_PATH.read_text(encoding="utf-8"))
+        return json.loads(sp.read_text(encoding="utf-8"))
     except Exception:
         _logger.exception("strategy_params.json 로드 실패")
         return {}
@@ -77,8 +81,9 @@ def _load_strategy_params() -> dict:
 
 def _save_strategy_params(params: dict) -> None:
     """strategy_params.json에 데이터를 저장한다."""
-    _STRATEGY_PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STRATEGY_PARAMS_PATH.write_text(
+    sp = _strategy_params_path()
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(
         json.dumps(params, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
     )
@@ -97,7 +102,9 @@ def _to_float_or_none(val: Any) -> float | None:
 # ── 기존 엔드포인트 (Pydantic 모델로 개선) ───────────────────────────────
 
 @indicators_router.get("/weights", response_model=IndicatorWeightsResponse)
-async def get_indicator_weights() -> IndicatorWeightsResponse:
+async def get_indicator_weights(
+    _auth: str = Depends(verify_api_key),
+) -> IndicatorWeightsResponse:
     """현재 지표 가중치를 반환한다."""
     _require_system()
     try:
@@ -112,14 +119,30 @@ async def get_indicator_weights() -> IndicatorWeightsResponse:
 
 
 @indicators_router.get("/rsi", response_model=RsiDataResponse)
-async def get_rsi_data() -> RsiDataResponse:
-    """티커별 RSI 현황을 반환한다."""
+async def get_rsi_data(
+    _auth: str = Depends(verify_api_key),
+) -> RsiDataResponse:
+    """티커별 RSI 현황을 반환한다.
+
+    indicators:rsi 종합 캐시를 먼저 조회하고, 없으면 개별 티커별
+    indicators:rsi:{ticker} 캐시를 집계하여 반환한다.
+    """
     _require_system()
     try:
         cache = _system.components.cache  # type: ignore[union-attr]
         cached = await cache.read_json("indicators:rsi")
         if cached and isinstance(cached, dict):
             return RsiDataResponse(rsi_data=cached, message=None)
+        # 개별 티커별 RSI 캐시를 집계한다
+        registry = _system.components.registry  # type: ignore[union-attr]
+        rsi_agg: dict[str, Any] = {}
+        for meta in registry.get_universe():
+            tk = meta.ticker
+            tk_cached = await cache.read_json(f"indicators:rsi:{tk}")
+            if tk_cached and isinstance(tk_cached, dict):
+                rsi_agg[tk] = tk_cached
+        if rsi_agg:
+            return RsiDataResponse(rsi_data=rsi_agg, message=None)
         return RsiDataResponse(rsi_data={}, message="RSI 데이터가 없다")
     except HTTPException:
         raise
@@ -185,7 +208,10 @@ async def update_indicator_config(
 
 
 @indicators_router.get("/realtime/{ticker}", response_model=RealtimeIndicatorResponse)
-async def get_realtime_indicators(ticker: str) -> RealtimeIndicatorResponse:
+async def get_realtime_indicators(
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
+    _auth: str = Depends(verify_api_key),
+) -> RealtimeIndicatorResponse:
     """특정 티커의 실시간 기술 지표를 반환한다.
 
     IndicatorBundleBuilder 피처 또는 캐시에서 데이터를 조회한다.
@@ -208,9 +234,11 @@ async def get_realtime_indicators(ticker: str) -> RealtimeIndicatorResponse:
                     raw_bundle = await build_fn(ticker_upper)
                     if isinstance(raw_bundle, dict) and raw_bundle:
                         # 빌드 결과를 캐시에 저장한다
+                        # 실시간 지표는 5분 후 만료한다 (_TTL_INDICATORS와 동일)
                         await cache.write_json(
                             f"indicators:realtime:{ticker_upper}",
                             raw_bundle,
+                            ttl=300,
                         )
                         return _build_realtime_response(ticker_upper, raw_bundle)
                 except Exception:
@@ -246,8 +274,9 @@ async def get_realtime_indicators(ticker: str) -> RealtimeIndicatorResponse:
 
 @indicators_router.get("/rsi/{ticker}", response_model=TripleRsiResponse)
 async def get_triple_rsi(
-    ticker: str,
+    ticker: str = Path(..., pattern=r"^[A-Za-z0-9]{1,10}$"),
     days: int = Query(default=100, ge=30, le=365, description="조회 일수"),
+    _auth: str = Depends(verify_api_key),
 ) -> TripleRsiResponse:
     """특정 티커의 트리플 RSI(7, 14, 21) 데이터를 반환한다.
 
@@ -325,7 +354,8 @@ async def _fetch_closes_via_kis(
     BrokerClient.get_daily_candles()를 사용하여 KIS 일봉 API를 호출한다.
     OHLCV 데이터에서 종가(close)와 날짜(date)를 추출한다.
     """
-    assert _system is not None
+    if _system is None:
+        return [], []
 
     try:
         broker = _system.components.broker

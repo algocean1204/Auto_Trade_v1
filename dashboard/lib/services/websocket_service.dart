@@ -6,6 +6,7 @@ import '../models/dashboard_models.dart';
 import '../models/scalper_tape_models.dart';
 import '../constants/api_constants.dart';
 import 'server_launcher.dart';
+import '../utils/env_loader.dart';
 
 // WebSocket 연결 상태를 나타낸다.
 enum WsConnectionState { disconnected, connecting, connected, error }
@@ -21,6 +22,10 @@ class WebSocketService {
   final Map<String, StreamController> _controllers = {};
   final Map<String, int> _reconnectAttempts = {};
   final Map<String, WsConnectionState> _connectionStates = {};
+
+  /// 채널별 StreamSubscription을 관리하여 재연결 시 이전 listener를 cancel한다.
+  /// 이를 통해 listener 오버랩(중복 구독)을 방지한다.
+  final Map<String, StreamSubscription> _subscriptions = {};
 
   WebSocketService({String? baseUrl})
       : baseUrl = baseUrl ?? ServerLauncher.instance.wsBaseUrl;
@@ -69,19 +74,34 @@ class WebSocketService {
   ) {
     if (controller.isClosed) return;
 
+    // 기존 subscription이 있으면 cancel하여 listener 중복을 방지한다
+    _subscriptions[endpoint]?.cancel();
+    _subscriptions.remove(endpoint);
+
     _connectionStates[endpoint] = WsConnectionState.connecting;
 
     try {
       // 엔드포인트마다 독립 채널을 생성한다
-      final channel = WebSocketChannel.connect(Uri.parse('$baseUrl$endpoint'));
+      final apiKey = EnvLoader.get('API_SECRET_KEY');
+      final sep = endpoint.contains('?') ? '&' : '?';
+      final wsUrl = apiKey.isNotEmpty
+          ? '$baseUrl$endpoint${sep}token=$apiKey'
+          : '$baseUrl$endpoint';
+      final channel = WebSocketChannel.connect(Uri.parse(wsUrl));
       _channels[endpoint] = channel;
       _connectionStates[endpoint] = WsConnectionState.connected;
       _reconnectAttempts[endpoint] = 0;
 
-      channel.stream.listen(
+      final subscription = channel.stream.listen(
         (message) {
           try {
             final decoded = json.decode(message as String);
+
+            // 백엔드가 에러 메시지를 전송한 경우 무시한다
+            // {"error": "시스템 초기화 중"} 또는 {"channel": "...", "error": "..."} 형식
+            if (decoded is Map && decoded.containsKey('error') && !decoded.containsKey('data')) {
+              return;
+            }
 
             // 백엔드 응답 래퍼 처리: {channel: "xxx", data: [...], count: N} 형식인 경우
             // data 필드를 추출하고, 래퍼가 없으면 원본을 그대로 사용한다
@@ -124,6 +144,8 @@ class WebSocketService {
         },
         cancelOnError: false,
       );
+      // subscription을 맵에 저장하여 재연결 시 cancel할 수 있게 한다
+      _subscriptions[endpoint] = subscription;
     } catch (e) {
       _connectionStates[endpoint] = WsConnectionState.error;
       if (!controller.isClosed) {
@@ -152,6 +174,10 @@ class WebSocketService {
   }
 
   void _disconnect(String endpoint) {
+    // 기존 subscription을 먼저 cancel하여 listener 중복을 방지한다
+    _subscriptions[endpoint]?.cancel();
+    _subscriptions.remove(endpoint);
+
     _channels[endpoint]?.sink.close();
     _channels.remove(endpoint);
     _connectionStates[endpoint] = WsConnectionState.disconnected;
@@ -228,6 +254,12 @@ class WebSocketService {
   }
 
   void dispose() {
+    // 모든 subscription을 cancel하여 listener 누수를 방지한다
+    for (final sub in _subscriptions.values) {
+      sub.cancel();
+    }
+    _subscriptions.clear();
+
     for (final endpoint in _channels.keys.toList()) {
       _channels[endpoint]?.sink.close();
     }

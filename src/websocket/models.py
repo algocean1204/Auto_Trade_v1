@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ConnectionState(BaseModel):
     """WebSocket 연결 상태를 나타낸다."""
 
     connected: bool
-    subscriptions: list[str] = []
+    subscriptions: list[str] = Field(default_factory=list)
     last_message_time: datetime | None = None
 
 

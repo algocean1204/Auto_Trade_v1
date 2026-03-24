@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from src.common.logger import get_logger
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -52,14 +53,17 @@ class SessionFactory:
         Args:
             database_url: SQLite 접속 URL (aiosqlite 드라이버 포함)
         """
+        import os
+        # DB_ECHO 환경변수를 참조하여 SQL 쿼리 로깅 여부를 결정한다
+        db_echo = os.environ.get("DB_ECHO", "false").lower() in ("true", "1", "yes")
         self._engine: AsyncEngine = create_async_engine(
             database_url,
             poolclass=NullPool,
-            echo=False,
+            echo=db_echo,
         )
 
         @event.listens_for(self._engine.sync_engine, "connect")
-        def _set_sqlite_pragma(dbapi_conn: object, connection_record: object) -> None:
+        def _set_sqlite_pragma(dbapi_conn: Any, connection_record: Any) -> None:
             """커넥션 생성 시 SQLite WAL 모드와 성능 PRAGMA를 설정한다."""
             cursor = dbapi_conn.cursor()  # type: ignore[union-attr]
             cursor.execute("PRAGMA journal_mode=WAL")
@@ -94,8 +98,40 @@ class SessionFactory:
         finally:
             await session.close()
 
+    async def run_checkpoint(self) -> None:
+        """WAL 체크포인트를 실행하여 WAL 파일 크기를 억제한다.
+
+        TRUNCATE 모드로 실행하여 WAL 파일을 0바이트로 잘라낸다.
+        EOD 시퀀스 등 유지보수 시점에서 호출해야 한다.
+        """
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            logger.info("WAL 체크포인트 완료 (TRUNCATE)")
+        except Exception as exc:
+            logger.warning("WAL 체크포인트 실패 (무시): %s", exc)
+
+    async def run_optimize(self) -> None:
+        """PRAGMA optimize를 실행하여 쿼리 플래너 통계를 갱신한다.
+
+        SQLite 3.18+ 에서 지원되며, 통계가 오래된 테이블을 자동 분석한다.
+        종료 시점이나 EOD에서 호출하는 것이 권장된다.
+        """
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("PRAGMA optimize"))
+            logger.info("PRAGMA optimize 완료")
+        except Exception as exc:
+            logger.warning("PRAGMA optimize 실패 (무시): %s", exc)
+
     async def close(self) -> None:
-        """엔진과 커넥션 풀을 정리한다. 애플리케이션 종료 시 호출해야 한다."""
+        """엔진과 커넥션 풀을 정리한다. 애플리케이션 종료 시 호출해야 한다.
+
+        종료 전 WAL 체크포인트로 미반영 데이터를 본 DB에 병합하고,
+        PRAGMA optimize로 쿼리 플래너 통계를 최신으로 유지한다.
+        """
+        await self.run_checkpoint()
+        await self.run_optimize()
         await self._engine.dispose()
         logger.info("DatabaseGateway 엔진 종료 완료")
 

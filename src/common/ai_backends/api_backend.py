@@ -77,7 +77,7 @@ class ApiBackend:
             )
             return AiBackendResponse(content=text, model=resolved, source="api")
         except Exception as exc:
-            _logger.error("Anthropic API 호출 실패: %s", exc)
+            _logger.error("Anthropic API 호출 실패: %s", exc, exc_info=True)
             from src.common.token_tracker import record_error
             record_error(model=resolved, source="api")
             raise AiError(message="Anthropic API 호출 실패", detail=str(exc)) from exc

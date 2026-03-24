@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel
 
@@ -20,12 +20,13 @@ _HALT_DURATION_MINUTES: int = 30
 _VPIN_COOLDOWN_MINUTES: int = 30
 
 
+_ActionType = Literal["liquidate_all", "halt_trading", "reduce_exposure"]
+
+
 class EmergencyAction(BaseModel):
     """긴급 조치 내용이다."""
 
-    action_type: Literal[
-        "liquidate_all", "halt_trading", "reduce_exposure",
-    ]
+    action_type: _ActionType
     reason: str
     triggered_at: datetime
 
@@ -103,7 +104,7 @@ class EmergencyProtocol:
 
         now = datetime.now(tz=timezone.utc)
         action = self._build_action(
-            config["action"], trigger, severity, now,
+            cast(_ActionType, config["action"]), trigger, severity, now,
         )
         actions: list[EmergencyAction] = [action]
 
@@ -154,14 +155,14 @@ class EmergencyProtocol:
 
     def _build_action(
         self,
-        action_type: str,
+        action_type: _ActionType,
         trigger: str,
         severity: float,
         now: datetime,
     ) -> EmergencyAction:
         """긴급 조치 객체를 생성한다."""
         return EmergencyAction(
-            action_type=action_type,  # type: ignore[arg-type]
+            action_type=action_type,
             reason=f"{trigger} (심각도={severity:.2f})",
             triggered_at=now,
         )

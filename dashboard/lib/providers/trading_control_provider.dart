@@ -17,6 +17,9 @@ class TradingControlProvider with ChangeNotifier {
   final ApiService _apiService;
   final ServerLauncher _serverLauncher;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   TradingControlProvider(this._apiService, {ServerLauncher? serverLauncher})
       : _serverLauncher = serverLauncher ?? ServerLauncher.instance;
 
@@ -119,9 +122,15 @@ class TradingControlProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     stopPolling();
     _autoShutdownTimer?.cancel();
     super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 
   // ── 서버 자동 시작 ──
@@ -146,12 +155,12 @@ class TradingControlProvider with ChangeNotifier {
 
     _isStartingServer = true;
     _serverStartLog = null;
-    notifyListeners();
+    _safeNotify();
 
     final result = await _serverLauncher.ensureRunning(
       onLog: (msg) {
         _serverStartLog = msg;
-        notifyListeners();
+        _safeNotify();
       },
     );
 
@@ -163,13 +172,13 @@ class TradingControlProvider with ChangeNotifier {
       _error = null;
       // 서버가 바인드한 포트로 API/WS 연결을 갱신한다.
       _apiService.refreshBaseUrl();
-      notifyListeners();
+      _safeNotify();
       // 서버가 막 시작됐으므로 상태를 한 번 갱신한다.
       await _fetchStatus();
       return true;
     } else {
       _error = result.message;
-      notifyListeners();
+      _safeNotify();
       return false;
     }
   }
@@ -213,7 +222,7 @@ class TradingControlProvider with ChangeNotifier {
       'TradingControlProvider: 서버 보호 활성화 '
       '(만료: $shutdownTime, ${delay.inMinutes}분 후)',
     );
-    notifyListeners();
+    _safeNotify();
   }
 
   /// 보호 만료 후 서버를 자동 종료한다.
@@ -242,7 +251,7 @@ class TradingControlProvider with ChangeNotifier {
       await _serverLauncher.stop();
       _isConnected = false;
       _isRunning = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -263,17 +272,17 @@ class TradingControlProvider with ChangeNotifier {
   Future<bool> stopServer() async {
     if (_isRunning) {
       _error = '자동매매 실행 중에는 서버를 중지할 수 없습니다. 먼저 자동매매를 중지하세요.';
-      notifyListeners();
+      _safeNotify();
       return false;
     }
     if (_isBusyNews) {
       _error = '뉴스 수집 중에는 서버를 중지할 수 없습니다. 완료를 기다려주세요.';
-      notifyListeners();
+      _safeNotify();
       return false;
     }
     if (_isBusy) {
       _error = '작업 처리 중에는 서버를 중지할 수 없습니다.';
-      notifyListeners();
+      _safeNotify();
       return false;
     }
     if (_isServerProtectedNow()) {
@@ -281,7 +290,7 @@ class TradingControlProvider with ChangeNotifier {
       final h = until.hour.toString().padLeft(2, '0');
       final m = until.minute.toString().padLeft(2, '0');
       _error = '매매 세션 보호 중입니다 ($h:$m까지). EOD 보고서 생성이 완료될 때까지 서버를 유지합니다.';
-      notifyListeners();
+      _safeNotify();
       return false;
     }
 
@@ -294,7 +303,7 @@ class TradingControlProvider with ChangeNotifier {
     _isConnected = false;
     _isRunning = false;
     _error = null;
-    notifyListeners();
+    _safeNotify();
     return true;
   }
 
@@ -369,7 +378,7 @@ class TradingControlProvider with ChangeNotifier {
         _error = null;
         changed = true;
       }
-      if (changed) notifyListeners();
+      if (changed) _safeNotify();
     } on ServerUnreachableException {
       // 서버 미연결: _isRunning은 마지막 알려진 값을 유지한다.
       bool changed = false;
@@ -381,7 +390,7 @@ class TradingControlProvider with ChangeNotifier {
         _error = null;
         changed = true;
       }
-      if (changed) notifyListeners();
+      if (changed) _safeNotify();
       debugPrint('TradingControlProvider._fetchStatus: server unreachable');
     } catch (e) {
       // 503 등 서버 에러 시 안전하게 상태를 리셋한다.
@@ -398,7 +407,7 @@ class TradingControlProvider with ChangeNotifier {
         _error = null;
         changed = true;
       }
-      if (changed) notifyListeners();
+      if (changed) _safeNotify();
       debugPrint('TradingControlProvider._fetchStatus error: $e');
     }
   }
@@ -410,7 +419,7 @@ class TradingControlProvider with ChangeNotifier {
     if (_isBusy) return;
     _isBusy = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       // 서버가 꺼져 있으면 먼저 시작한다.
@@ -418,7 +427,7 @@ class TradingControlProvider with ChangeNotifier {
         final serverOk = await _ensureServer();
         if (!serverOk) {
           _isBusy = false;
-          notifyListeners();
+          _safeNotify();
           return;
         }
       }
@@ -440,7 +449,7 @@ class TradingControlProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isBusy = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -449,7 +458,7 @@ class TradingControlProvider with ChangeNotifier {
     if (_isBusy) return;
     _isBusy = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final result = await _apiService.stopTrading();
@@ -467,7 +476,7 @@ class TradingControlProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isBusy = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -481,7 +490,7 @@ class TradingControlProvider with ChangeNotifier {
     _isBusyNews = true;
     _error = null;
     _newsResult = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       // 서버가 꺼져 있으면 먼저 시작한다.
@@ -489,7 +498,7 @@ class TradingControlProvider with ChangeNotifier {
         final serverOk = await _ensureServer();
         if (!serverOk) {
           _isBusyNews = false;
-          notifyListeners();
+          _safeNotify();
           return;
         }
       }
@@ -526,7 +535,7 @@ class TradingControlProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isBusyNews = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 }

@@ -176,8 +176,8 @@ class StatArb:
         """StatArb 청산 후 진입 시각을 삭제한다."""
         try:
             await cache.delete(f"{_ENTRY_TIME_PREFIX}{pair_key}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("StatArb 진입 시각 삭제 실패 (%s, 무시): %s", pair_key, exc)
 
     async def _evaluate_pair(
         self,

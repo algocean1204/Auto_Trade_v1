@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
 import '../providers/trade_provider.dart';
 import '../providers/trading_control_provider.dart';
 import '../providers/indicator_provider.dart';
@@ -16,11 +15,13 @@ import '../theme/app_spacing.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/section_header.dart';
 import '../widgets/empty_state.dart';
-import '../widgets/ticker_add_dialog.dart';
 import '../widgets/weight_slider.dart';
 import '../widgets/confirmation_dialog.dart';
 import '../animations/animation_utils.dart';
+import '../services/setup_service.dart';
+import '../models/setup_models.dart';
 import 'ticker_params_screen.dart';
+import 'api_keys_tab.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -36,7 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<TradeProvider>().loadStrategyParams();
       context.read<TradeProvider>().loadUniverse();
@@ -85,6 +86,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                     Tab(text: t('crawl')),
                     Tab(text: t('tp_tab_title')),
                     Tab(text: t('server_tab')),
+                    const Tab(text: 'API 키'),
                   ],
                 ),
               ],
@@ -100,6 +102,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 _CrawlTab(),
                 const TickerParamsTab(),
                 const _ServerTab(),
+                const ApiKeysTab(),
               ],
             ),
           ),
@@ -158,7 +161,7 @@ class _StrategyTabState extends State<_StrategyTab> {
     return Consumer<TradeProvider>(
       builder: (context, provider, _) {
         if (provider.isLoading && provider.strategyParams == null) {
-          return Padding(
+          return SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Column(
               children: List.generate(
@@ -1618,11 +1621,285 @@ class _ServerTabState extends State<_ServerTab> {
                 ),
               ),
             ),
+            AppSpacing.vGapLg,
+
+            // 앱 삭제 섹션
+            StaggeredFadeSlide(
+              index: 3,
+              child: GlassCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SectionHeader(title: '앱 삭제'),
+                    AppSpacing.vGapSm,
+                    Text(
+                      'LaunchAgent, 앱 데이터, 로그, 환경설정을 삭제합니다.',
+                      style: AppTypography.bodySmall.copyWith(
+                        color: tc.textSecondary,
+                      ),
+                    ),
+                    AppSpacing.vGapLg,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildActionButton(
+                            icon: Icons.delete_forever_rounded,
+                            label: '완전 삭제',
+                            color: tc.loss,
+                            onPressed: _isBusy
+                                ? null
+                                : () => _showUninstallDialog(
+                                      context, tc, keepData: false),
+                          ),
+                        ),
+                        AppSpacing.hGapMd,
+                        Expanded(
+                          child: _buildActionButton(
+                            icon: Icons.delete_outline_rounded,
+                            label: '데이터 보존 삭제',
+                            color: tc.warning,
+                            onPressed: _isBusy
+                                ? null
+                                : () => _showUninstallDialog(
+                                      context, tc, keepData: true),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
             AppSpacing.vGapXxl,
           ],
         );
       },
     );
+  }
+
+  /// 삭제 확인 다이얼로그를 표시한다.
+  Future<void> _showUninstallDialog(
+    BuildContext context,
+    TradingColors tc, {
+    required bool keepData,
+  }) async {
+    // 미리보기를 가져온다
+    UninstallPreview? preview;
+    try {
+      final service = SetupService();
+      preview = await service.getUninstallPreview();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('삭제 항목 조회 실패'),
+            backgroundColor: tc.loss,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+
+    // 삭제 대상 목록을 다이얼로그로 보여준다
+    final existingItems =
+        preview.items.where((item) => item.exists).toList();
+
+    final sizeStr = _formatBytes(preview.totalSizeBytes);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: tc.surfaceElevated,
+          shape: RoundedRectangleBorder(
+            borderRadius: AppSpacing.borderRadiusXl,
+            side: BorderSide(
+              color: tc.loss.withValues(alpha: 0.4),
+              width: 1,
+            ),
+          ),
+          title: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: tc.loss.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.warning_amber_rounded,
+                  color: tc.loss,
+                  size: 22,
+                ),
+              ),
+              AppSpacing.hGapMd,
+              Text(
+                keepData ? '데이터 보존 삭제' : '완전 삭제',
+                style: AppTypography.displaySmall,
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  keepData
+                      ? 'DB와 .env 파일을 보존하고 나머지를 삭제합니다.'
+                      : '모든 앱 데이터가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.',
+                  style: AppTypography.bodyMedium,
+                ),
+                AppSpacing.vGapMd,
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: tc.surface,
+                    borderRadius: AppSpacing.borderRadiusMd,
+                    border: Border.all(
+                      color: tc.surfaceBorder.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final item in existingItems)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _iconForType(item.type),
+                                  size: 14,
+                                  color: tc.textTertiary,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    item.description,
+                                    style: AppTypography.bodySmall.copyWith(
+                                      fontFamily: 'monospace',
+                                      fontSize: 11,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (item.sizeBytes > 0)
+                                  Text(
+                                    _formatBytes(item.sizeBytes),
+                                    style: AppTypography.bodySmall.copyWith(
+                                      color: tc.textTertiary,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                AppSpacing.vGapMd,
+                Text(
+                  '총 크기: $sizeStr (${existingItems.length}개 항목)',
+                  style: AppTypography.bodySmall.copyWith(
+                    color: tc.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(ctx).pop(false),
+                    child: const Text('취소'),
+                  ),
+                ),
+                AppSpacing.hGapMd,
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: tc.loss,
+                    ),
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: const Text('삭제 실행'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    // 삭제를 실행한다
+    setState(() {
+      _isBusy = true;
+      _message = '삭제 진행 중...';
+    });
+
+    try {
+      final service = SetupService();
+      final result = await service.runUninstall(keepData: keepData);
+      if (mounted) {
+        setState(() {
+          _isBusy = false;
+          _message = result.message;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: result.success ? tc.profit : tc.loss,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isBusy = false;
+          _message = '삭제 실패: $e';
+        });
+      }
+    }
+  }
+
+  /// 파일 타입에 맞는 아이콘을 반환한다.
+  IconData _iconForType(String type) {
+    switch (type) {
+      case 'launchagent':
+        return Icons.schedule_rounded;
+      case 'data':
+      case 'data_sub':
+        return Icons.folder_rounded;
+      case 'logs':
+        return Icons.article_rounded;
+      case 'preferences':
+        return Icons.settings_rounded;
+      default:
+        return Icons.insert_drive_file_rounded;
+    }
+  }
+
+  /// 바이트를 사람이 읽기 좋은 형태로 변환한다.
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
   Widget _buildStatusRow(

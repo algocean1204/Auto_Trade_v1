@@ -5,6 +5,9 @@ import '../services/api_service.dart';
 class ProfitTargetProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   ProfitTargetProvider(this._apiService);
 
   ProfitTargetStatus? _status;
@@ -20,7 +23,7 @@ class ProfitTargetProvider with ChangeNotifier {
   Future<void> loadStatus() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _status = await _apiService.getProfitTargetStatus();
@@ -29,17 +32,17 @@ class ProfitTargetProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> loadHistory({int months = 6}) async {
     try {
       _history = await _apiService.getProfitTargetHistory(months: months);
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -49,7 +52,7 @@ class ProfitTargetProvider with ChangeNotifier {
       await loadStatus();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -58,5 +61,16 @@ class ProfitTargetProvider with ChangeNotifier {
       loadStatus(),
       loadHistory(),
     ]);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

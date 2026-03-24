@@ -89,7 +89,7 @@ class SafetyChecker:
             return ""
         if not self._registry.has_ticker(ticker):
             return ""
-        meta = self._registry._get_meta(ticker)
+        meta = self._registry.get_meta(ticker)
         if abs(meta.leverage) >= _LEVERAGE_3X_THRESHOLD:
             return (
                 f"3x레버리지제한: sideways에서 "

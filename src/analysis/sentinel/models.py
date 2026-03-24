@@ -1,10 +1,10 @@
 """센티넬 이상 감지 모델이다."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AnomalySignal(BaseModel):
@@ -22,7 +22,7 @@ class AnomalyResult(BaseModel):
     """센티넬 1회 스캔 결과이다."""
 
     timestamp: datetime
-    signals: list[AnomalySignal] = []
+    signals: list[AnomalySignal] = Field(default_factory=list)
     highest_level: Literal["urgent", "watch", "normal"] = "normal"
     news_headlines_scanned: int = 0
 
@@ -53,9 +53,9 @@ class SentinelState(BaseModel):
     escalations_triggered: int = 0
     emergencies_triggered: int = 0
     last_vix: float | None = None  # 이전 VIX 값 (급변 감지용)
-    last_prices: dict[str, float] = {}  # 이전 가격 (스캔 간 변동 감지용)
-    seen_headline_hashes: list[str] = []  # 이미 분류한 헤드라인 해시 (FIFO 순서 보존)
-    errors: list[str] = []
+    last_prices: dict[str, float] = Field(default_factory=dict)  # 이전 가격 (스캔 간 변동 감지용)
+    seen_headline_hashes: list[str] = Field(default_factory=list)  # 이미 분류한 헤드라인 해시 (FIFO 순서 보존)
+    errors: list[str] = Field(default_factory=list)
 
     model_config = {"arbitrary_types_allowed": True}
 

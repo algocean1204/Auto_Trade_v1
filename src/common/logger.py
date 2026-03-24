@@ -12,8 +12,25 @@ import os
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
-# 프로젝트 루트의 logs/ 디렉토리 경로이다
-_LOGS_DIR: Path = Path(__file__).resolve().parent.parent.parent / "logs"
+def _get_logs_dir() -> Path:
+    """로그 디렉토리 경로를 반환한다. 순환 참조를 피하기 위해 지연 임포트한다."""
+    try:
+        from src.common.paths import get_logs_dir
+        return get_logs_dir()
+    except ImportError:
+        import platform
+        import sys
+        if getattr(sys, "frozen", False):
+            # PyInstaller 번들 환경: 플랫폼별 앱 데이터 경로에 로그를 저장한다
+            if platform.system() == "Darwin":
+                return Path.home() / "Library" / "Application Support" / "com.stocktrader.ai" / "logs"
+            # Linux/기타: XDG_DATA_HOME 또는 ~/.local/share/ 를 사용한다
+            xdg = os.environ.get("XDG_DATA_HOME")
+            if xdg:
+                return Path(xdg) / "com.stocktrader.ai" / "logs"
+            return Path.home() / ".local" / "share" / "com.stocktrader.ai" / "logs"
+        # 개발 환경 폴백 -- 프로젝트 루트 기준 logs/ 경로이다
+        return Path(__file__).resolve().parent.parent.parent / "logs"
 
 # 로그 포맷 문자열이다
 _LOG_FORMAT: str = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
@@ -43,8 +60,9 @@ def _resolve_log_level() -> int:
 
 def _ensure_logs_dir() -> Path:
     """logs/ 디렉토리가 없으면 생성한다."""
-    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    return _LOGS_DIR
+    logs_dir = _get_logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    return logs_dir
 
 
 def _create_console_handler(level: int) -> logging.StreamHandler:

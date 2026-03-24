@@ -7,6 +7,9 @@ import '../services/api_service.dart';
 class ManualTradeProvider with ChangeNotifier {
   final ApiService _api;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   ManualTradeProvider(this._api);
 
   // ── 입력 상태 ──
@@ -45,19 +48,19 @@ class ManualTradeProvider with ChangeNotifier {
     _ticker = value.toUpperCase().trim();
     // 입력이 변경되면 이전 분석/실행 결과를 초기화한다.
     _resetResults();
-    notifyListeners();
+    _safeNotify();
   }
 
   void setSide(String value) {
     _side = value;
     _resetResults();
-    notifyListeners();
+    _safeNotify();
   }
 
   void setQuantity(int value) {
     _quantity = value > 0 ? value : 1;
     _resetResults();
-    notifyListeners();
+    _safeNotify();
   }
 
   /// 모든 상태를 초기화한다.
@@ -66,7 +69,7 @@ class ManualTradeProvider with ChangeNotifier {
     _side = 'buy';
     _quantity = 1;
     _resetResults();
-    notifyListeners();
+    _safeNotify();
   }
 
   void _resetResults() {
@@ -82,7 +85,7 @@ class ManualTradeProvider with ChangeNotifier {
   Future<void> analyzeRequest() async {
     if (_ticker.isEmpty) {
       _analyzeError = '종목 코드를 입력하세요';
-      notifyListeners();
+      _safeNotify();
       return;
     }
 
@@ -91,7 +94,7 @@ class ManualTradeProvider with ChangeNotifier {
     _analysisResult = null;
     _executeResult = null;
     _executeError = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final result = await _api.manualTradeAnalyze(
@@ -104,7 +107,7 @@ class ManualTradeProvider with ChangeNotifier {
       _analyzeError = e.toString();
     } finally {
       _isAnalyzing = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -114,7 +117,7 @@ class ManualTradeProvider with ChangeNotifier {
   Future<void> executeTrade() async {
     _isExecuting = true;
     _executeError = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       final result = await _api.manualTradeExecute(
@@ -127,7 +130,18 @@ class ManualTradeProvider with ChangeNotifier {
       _executeError = e.toString();
     } finally {
       _isExecuting = false;
-      notifyListeners();
+      _safeNotify();
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

@@ -10,10 +10,14 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.monitoring.server.auth import verify_api_key
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from src.common.logger import get_logger
@@ -43,8 +47,8 @@ class DailyReportSummary(BaseModel):
 class DailyReportListResponse(BaseModel):
     """일별 리포트 목록 응답 모델이다."""
 
-    dates: list[DailyReportSummary]
-    total: int
+    dates: list[DailyReportSummary] = Field(default_factory=list)
+    total: int = 0
 
 
 class DailyReportResponse(BaseModel):
@@ -56,12 +60,12 @@ class DailyReportResponse(BaseModel):
     risk_metrics(Map), indicator_feedback(Map 또는 null).
     """
 
-    date: str
-    summary: dict[str, Any]
-    by_ticker: dict[str, Any]
-    by_hour: dict[str, int]
-    by_exit_reason: dict[str, int]
-    risk_metrics: dict[str, Any]
+    date: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    by_ticker: dict[str, Any] = Field(default_factory=dict)
+    by_hour: dict[str, int] = Field(default_factory=dict)
+    by_exit_reason: dict[str, int] = Field(default_factory=dict)
+    risk_metrics: dict[str, Any] = Field(default_factory=dict)
     indicator_feedback: dict[str, Any] | None = None
 
 
@@ -123,7 +127,7 @@ async def _get_available_dates() -> list[str]:
     if isinstance(raw, list) and raw:
         return [str(d) for d in raw]
 
-    # DB fallback: feedback_reports 테이블에서 날짜 목록을 조회한다
+    # DB fallback: feedback_reports 테이블에서 날짜 목록을 조회한다 (최대 365건)
     try:
         db = _system.components.db  # type: ignore[union-attr]
         async with db.get_session() as session:
@@ -131,12 +135,14 @@ async def _get_available_dates() -> list[str]:
                 select(FeedbackReport.report_date)
                 .distinct()
                 .order_by(FeedbackReport.report_date.desc())
+                .limit(365)
             )
             result = await session.execute(stmt)
             dates = [str(row[0]) for row in result.fetchall() if row[0]]
             if dates:
                 # 캐시에 저장하여 이후 조회를 빠르게 한다
-                await cache.write_json("pnl:history:dates", dates, ttl=3600)
+                # EOD _s2에서 TTL 없이 영구 저장하므로 폴백도 동일하게 영구 저장한다
+                await cache.write_json("pnl:history:dates", dates)
             return dates
     except Exception:
         _logger.warning("DB에서 리포트 날짜 목록 조회 실패")
@@ -173,9 +179,12 @@ async def _load_report_from_db(date: str) -> dict[str, Any]:
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """값을 float로 안전하게 변환한다."""
+    """값을 float로 안전하게 변환한다. NaN/inf이면 기본값을 반환한다."""
     try:
-        return float(value)
+        result = float(value)
+        if math.isnan(result) or math.isinf(result):
+            return default
+        return result
     except (TypeError, ValueError):
         return default
 
@@ -396,7 +405,7 @@ def _build_indicator_feedback(
 # ── 엔드포인트 ────────────────────────────────────────────────────────────
 
 @reports_router.get("/daily/list", response_model=DailyReportListResponse)
-async def get_daily_report_list(limit: int = 30) -> DailyReportListResponse:
+async def get_daily_report_list(limit: int = Query(default=30, ge=1, le=365), _auth: str = Depends(verify_api_key)) -> DailyReportListResponse:
     """일별 리포트 목록을 반환한다.
 
     각 날짜별로 거래 수, PnL, 피드백 존재 여부를 포함한다.
@@ -442,7 +451,7 @@ async def get_daily_report_list(limit: int = 30) -> DailyReportListResponse:
 
 
 @reports_router.get("/daily", response_model=DailyReportResponse)
-async def get_daily_report(date: str) -> DailyReportResponse:
+async def get_daily_report(date: str, _auth: str = Depends(verify_api_key)) -> DailyReportResponse:
     """특정 날짜의 상세 리포트를 반환한다.
 
     date 파라미터 형식: YYYY-MM-DD
@@ -451,6 +460,9 @@ async def get_daily_report(date: str) -> DailyReportResponse:
     해당 날짜 데이터가 없으면 404를 반환한다.
     """
     _require_system()
+    # 날짜 형식 검증: YYYY-MM-DD 패턴이어야 한다
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=422, detail="날짜 형식은 YYYY-MM-DD여야 한다")
     try:
         pnl_data = await _load_pnl_history(date)
         if not pnl_data:

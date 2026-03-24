@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from src.common.logger import get_logger
@@ -35,12 +36,33 @@ _system: InjectedSystem | None = None
 # 종료 이벤트 -- 매매 루프에 종료 신호를 전달한다
 _shutdown_event: asyncio.Event | None = None
 
+# EOD 실행 중 플래그 -- 수동 stop의 EOD 실행 중 새 매매 시작을 차단한다
+_eod_running: bool = False
+
+# 사용자 의도적 정지 플래그 -- 워치독의 무조건 재시작을 방지한다
+_user_stopped: bool = False
+
+# 매매 제어 상태 전이의 TOCTOU 레이스를 방지한다
+_control_lock = asyncio.Lock()
+
 
 def set_trading_control_deps(system: InjectedSystem) -> None:
     """InjectedSystem을 주입한다. API 서버 시작 시 호출된다."""
     global _system
     _system = system
     _logger.info("TradingControlEndpoints 의존성 주입 완료")
+
+
+def signal_trading_shutdown() -> None:
+    """외부에서 매매 종료 신호를 보낸다.
+
+    SIGTERM 등 시그널 핸들러에서 호출하여 매매 루프가
+    자연스럽게 종료되도록 shutdown_event를 설정한다.
+    이렇게 해야 매매 루프가 정상 종료 → EOD 시퀀스 실행 경로를 탈 수 있다.
+    """
+    if _shutdown_event is not None:
+        _shutdown_event.set()
+        _logger.info("매매 shutdown_event 시그널 설정 완료")
 
 
 async def _record_alert(
@@ -66,13 +88,59 @@ async def _record_alert(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": None,
         }
-        existing: list[dict] = await cache.read_json("alerts:list") or []
-        existing.append(alert_entry)
-        if len(existing) > 100:
-            existing = existing[-100:]
-        await cache.write_json("alerts:list", existing, ttl=86400)
+        # atomic_list_append로 read→append→write를 원자적으로 수행한다.
+        # 동시에 여러 코루틴이 알림을 추가해도 유실이 발생하지 않는다.
+        await cache.atomic_list_append(
+            "alerts:list", [alert_entry], max_size=100, ttl=86400,
+        )
     except Exception as exc:
         _logger.debug("알림 기록 실패 (무시): %s", exc)
+
+
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _compute_is_trading_day(now_kst: datetime) -> bool:
+    """주말(토/일) 및 미국 시장 공휴일인지 판별한다."""
+    from src.common.market_clock import is_us_market_holiday
+    from zoneinfo import ZoneInfo
+
+    # weekday(): 0=월, ..., 5=토, 6=일
+    # KST 기준 토요일 새벽(미국 금요일 밤)은 거래 가능이므로,
+    # 실제 비거래일은 KST 일요일 전체 + 토요일 06:30 이후이다.
+    wd = now_kst.weekday()
+    if wd == 6:  # 일요일 — 비거래일
+        return False
+    if wd == 5:  # 토요일
+        # 06:30 이전이면 금요일 미장 세션 중이므로 거래일이다
+        if now_kst.hour < 6 or (now_kst.hour == 6 and now_kst.minute < 30):
+            return True
+        return False
+
+    # 미국 시장 공휴일 검사 (ET 기준 날짜로 판별한다)
+    et_now = now_kst.astimezone(ZoneInfo("US/Eastern"))
+    if is_us_market_holiday(et_now.date()):
+        return False
+
+    return True
+
+
+def _compute_next_window_start(now_kst: datetime) -> str | None:
+    """다음 매매 윈도우(20:00 KST) 시작 시각을 ISO 문자열로 반환한다.
+
+    현재 매매 윈도우 안이면 None을 반환한다 (이미 열려 있으므로).
+    """
+    from src.common.market_clock import get_market_clock
+    clock = get_market_clock()
+    if clock.is_trading_window():
+        return None
+    # 오늘 20:00 KST가 아직 오지 않았으면 오늘 20:00, 지났으면 내일 20:00
+    today_20 = now_kst.replace(hour=20, minute=0, second=0, microsecond=0)
+    if now_kst < today_20:
+        return today_20.isoformat()
+    # 이미 20시 이후인데 매매 윈도우가 아닌 경우(06:30~20:00 사이가 아님)는 없으므로
+    # 보수적으로 내일 20:00을 반환한다
+    return (today_20 + timedelta(days=1)).isoformat()
 
 
 def _build_status_response() -> TradingStatusResponse:
@@ -85,6 +153,10 @@ def _build_status_response() -> TradingStatusResponse:
     if _system and _system.trading_task:
         task_done = _system.trading_task.done()  # type: ignore[union-attr]
 
+    # Flutter TradingControlProvider가 기대하는 is_trading_day, next_window_start를 계산한다
+    is_trading_day = _compute_is_trading_day(time_info.now_kst)
+    next_window_start = _compute_next_window_start(time_info.now_kst)
+
     return TradingStatusResponse(
         is_trading=is_trading,
         running=is_trading,
@@ -92,6 +164,10 @@ def _build_status_response() -> TradingStatusResponse:
         is_trading_window=time_info.is_trading_window,
         session_type=time_info.session_type,
         current_kst=time_info.now_kst.isoformat(),
+        is_trading_day=is_trading_day,
+        next_window_start=next_window_start,
+        user_stopped=_user_stopped,
+        eod_running=_eod_running,
     )
 
 
@@ -99,8 +175,8 @@ def _build_status_response() -> TradingStatusResponse:
     "/status",
     response_model=TradingStatusResponse,
 )
-async def get_trading_status() -> TradingStatusResponse:
-    """현재 자동매매 실행 상태를 반환한다."""
+async def get_trading_status(_auth: str = Depends(verify_api_key)) -> TradingStatusResponse:
+    """현재 자동매매 실행 상태를 반환한다. 인증 필수."""
     return _build_status_response()
 
 
@@ -119,19 +195,31 @@ async def start_trading(
             detail="시스템이 초기화되지 않았습니다",
         )
 
-    if _system.running:
-        return TradingActionResponse(status="already_running")
+    # Lock으로 동시 start/stop 요청의 상태 전이 레이스를 방지한다
+    async with _control_lock:
+        if _system.running:
+            return TradingActionResponse(status="already_running")
 
-    clock = get_market_clock()
-    time_info = clock.get_time_info()
+        # EOD 시퀀스 실행 중이면 시작을 차단한다 (태스크 내부 EOD + 수동 stop EOD 모두 포함)
+        if _eod_running or (_system.trading_task and not _system.trading_task.done()):
+            raise HTTPException(
+                status_code=409,
+                detail="EOD 시퀀스 실행 중입니다. 완료 후 다시 시도하세요.",
+            )
 
-    if not force and not time_info.is_trading_window:
-        raise HTTPException(
-            status_code=409,
-            detail="매매 가능 시간이 아닙니다 (20:00~06:30 KST)",
-        )
+        clock = get_market_clock()
+        time_info = clock.get_time_info()
 
-    _launch_trading_task(_system)
+        if not force and not time_info.is_trading_window:
+            raise HTTPException(
+                status_code=409,
+                detail="매매 가능 시간이 아닙니다 (20:00~06:30 KST)",
+            )
+
+        global _user_stopped
+        _user_stopped = False
+        _launch_trading_task(_system)
+
     _logger.info("자동매매 시작 요청 처리 완료")
     await _record_alert(
         _system, "system", "매매 시작",
@@ -150,10 +238,13 @@ async def stop_trading(
     _key: str = Depends(verify_api_key),
 ) -> TradingActionResponse:
     """자동매매를 중지한다. 인증 필수."""
-    if _system is None or not _system.running:
-        return TradingActionResponse(status="not_running")
+    async with _control_lock:
+        if _system is None or not _system.running:
+            return TradingActionResponse(status="not_running")
 
-    await _stop_trading_task(_system, run_eod)
+        global _user_stopped
+        _user_stopped = True
+        await _stop_trading_task(_system, run_eod)
     _logger.info("자동매매 중지 완료 (run_eod=%s)", run_eod)
     await _record_alert(
         _system, "system", "매매 종료",
@@ -229,22 +320,58 @@ def _launch_trading_task(system: InjectedSystem) -> None:
         except asyncio.CancelledError:
             cancelled = True
             _logger.info("매매 태스크 취소됨")
-        except Exception:
+        except Exception as exc:
             _logger.exception("매매 태스크 예외 발생")
+            # 크래시 알림을 대시보드에 전송하여 운영자가 즉시 인지할 수 있게 한다
+            try:
+                await _record_alert(
+                    system, "system", "매매 루프 크래시",
+                    f"매매 루프가 예외로 종료되었습니다: {exc}",
+                    severity="critical",
+                )
+            except Exception:
+                _logger.debug("크래시 알림 기록 실패 (무시)")
         finally:
+            # 매매 루프 종료 즉시 running=False 설정 -- 대시보드가 즉시 반영한다
+            system.running = False
+            _logger.info("매매 루프 종료 (running=False)")
+
             # EOD 시퀀스: 루프가 정상 종료된 경우 반드시 실행한다
+            # asyncio.shield로 보호하여 SIGTERM 중 CancelledError로 중단되지 않게 한다
             if loop_finished_normally and not cancelled:
+                global _eod_running
+                _eod_running = True
+                eod_task = asyncio.ensure_future(_run_auto_eod(system))
                 try:
                     _logger.info("매매 루프 자동 종료 -- EOD 시퀀스 실행")
-                    await _run_auto_eod(system)
+                    await asyncio.shield(eod_task)
+                except asyncio.CancelledError:
+                    # shield가 외부 취소를 흡수해도 내부 태스크는 계속 실행 중이다
+                    # 내부 태스크가 완료될 때까지 대기하여 _eod_running 조기 해제를 방지한다
+                    _logger.warning("EOD 중 취소 신호 수신 — shield로 보호됨, EOD 완료 대기")
+                    try:
+                        await eod_task
+                    except Exception:
+                        _logger.exception("shield 후 EOD 태스크 완료 중 예외")
                 except Exception:
                     _logger.exception("자동 EOD 시퀀스 finally 블록 실행 실패")
+                finally:
+                    _eod_running = False
             elif cancelled:
                 _logger.info("매매 취소됨 -- EOD 건너뜀 (수동 stop에서 EOD 실행)")
             else:
                 _logger.warning("매매 루프 비정상 종료 -- EOD 건너뜀")
-            system.running = False
-            _logger.info("매매 태스크 생명주기 종료 (running=False)")
+                # 비정상 종료 시 EOD 미실행 알림을 대시보드에 전송한다
+                try:
+                    await _record_alert(
+                        system, "system", "EOD 미실행 경고",
+                        "매매 루프가 비정상 종료되어 EOD 시퀀스를 건너뛰었습니다. "
+                        "포지션 동기화, PnL 기록 등이 수행되지 않았습니다.",
+                        severity="critical",
+                    )
+                except Exception:
+                    _logger.debug("EOD 미실행 알림 기록 실패 (무시)")
+            _logger.info("매매 태스크 생명주기 종료")
 
     system.trading_task = asyncio.create_task(_lifecycle())
 
@@ -276,7 +403,13 @@ async def _stop_trading_task(
     run_eod: bool,
 ) -> None:
     """매매 태스크를 중지하고 선택적으로 EOD를 실행한다."""
+    global _eod_running
     system.running = False
+
+    # EOD 예정이면 태스크 취소 전에 _eod_running을 선점하여
+    # stop→start 레이스 조건을 방지한다
+    if run_eod:
+        _eod_running = True
 
     if _shutdown_event is not None:
         _shutdown_event.set()
@@ -285,22 +418,43 @@ async def _stop_trading_task(
         system.trading_task.cancel()  # type: ignore[union-attr]
         try:
             await system.trading_task  # type: ignore[misc]
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception as exc:
+            _logger.warning("매매 태스크 정리 중 예외 (무시): %s", exc)
 
     if run_eod:
-        from src.orchestration.phases.eod_sequence import run_eod_sequence
-        await run_eod_sequence(system)
-        # 주간 분석: 토요일 아침 (금요일 미국장 종료 후) 자동 실행
         try:
-            from src.orchestration.phases.weekly_analysis import (
-                run_weekly_analysis,
-                should_run_weekly,
-            )
-            time_info = get_market_clock().get_time_info()
-            # weekday 5 = 토요일 (금요일 거래 종료 후 EOD)
-            if time_info.now_kst.weekday() == 5 or should_run_weekly(time_info):
-                _logger.info("주간 분석 시작 (주말 EOD 후)")
-                await run_weekly_analysis(system)
-        except Exception as exc:
-            _logger.warning("주간 분석 실행 실패 (건너뜀): %s", exc)
+            from src.orchestration.phases.eod_sequence import run_eod_sequence
+            eod_task = asyncio.ensure_future(run_eod_sequence(system))
+            try:
+                await asyncio.shield(eod_task)
+            except asyncio.CancelledError:
+                _logger.warning("stop EOD 중 취소 신호 수신 — EOD 완료 대기")
+                try:
+                    await eod_task
+                except Exception:
+                    _logger.exception("shield 후 stop EOD 태스크 완료 중 예외")
+            # 주간 분석: 토요일 아침 (금요일 미국장 종료 후) 자동 실행
+            try:
+                from src.orchestration.phases.weekly_analysis import (
+                    run_weekly_analysis,
+                    should_run_weekly,
+                )
+                time_info = get_market_clock().get_time_info()
+                # weekday 5 = 토요일 (금요일 거래 종료 후 EOD)
+                if time_info.now_kst.weekday() == 5 or should_run_weekly(time_info):
+                    _logger.info("주간 분석 시작 (주말 EOD 후)")
+                    weekly_task = asyncio.ensure_future(run_weekly_analysis(system))
+                    try:
+                        await asyncio.shield(weekly_task)
+                    except asyncio.CancelledError:
+                        _logger.warning("주간 분석 중 취소 신호 수신 — 완료 대기")
+                        try:
+                            await weekly_task
+                        except Exception:
+                            _logger.exception("shield 후 주간 분석 완료 중 예외")
+            except Exception as exc:
+                _logger.warning("주간 분석 실행 실패 (건너뜀): %s", exc)
+        finally:
+            _eod_running = False

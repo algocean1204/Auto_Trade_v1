@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -131,6 +133,18 @@ class _FxRateIndicator extends StatelessWidget {
           );
         }
 
+        // 조회불가 상태 처리
+        if (fx.isUnavailable) {
+          final tc = context.tc;
+          return Text(
+            'USD/KRW 조회불가',
+            style: AppTypography.bodySmall.copyWith(
+              fontSize: 11,
+              color: tc.textTertiary,
+            ),
+          );
+        }
+
         final isUp = fx.dailyChangePct >= 0;
         final fmt = NumberFormat('#,##0.00');
         final tc = context.tc;
@@ -206,20 +220,25 @@ class _CurrentTime extends StatefulWidget {
 
 class _CurrentTimeState extends State<_CurrentTime> {
   late String _timeStr;
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
     _updateTime();
-    // 1초마다 시간 업데이트
-    Future.doWhile(() async {
-      await Future.delayed(const Duration(seconds: 1));
+    // 1초마다 시간을 업데이트한다. Timer를 사용하여 dispose 시 확실히 정리한다.
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
         setState(_updateTime);
-        return true;
       }
-      return false;
     });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _timer = null;
+    super.dispose();
   }
 
   void _updateTime() {

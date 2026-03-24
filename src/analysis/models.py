@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RegimeParams(BaseModel):
@@ -29,7 +29,7 @@ class ClassifiedNews(BaseModel):
     impact_score: float  # 0.0~1.0
     direction: str  # bullish/bearish/neutral
     category: str  # macro/earnings/policy/sector/geopolitical
-    tickers_affected: list[str] = []
+    tickers_affected: list[str] = Field(default_factory=list)
     reasoning: str = ""
     # 단타 트레이딩 전용 필드이다
     time_sensitivity: str = "analysis"  # breaking/developing/analysis/background
@@ -137,7 +137,7 @@ class AnalysisContext(BaseModel):
     indicators: dict
     regime: str
     positions: list[dict]
-    market_data: dict = {}
+    market_data: dict = Field(default_factory=dict)
 
 
 class PortfolioState(BaseModel):

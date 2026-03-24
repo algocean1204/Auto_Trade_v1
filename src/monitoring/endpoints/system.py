@@ -12,11 +12,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
 from src.common.market_clock import get_market_clock
 from src.monitoring.schemas.response_models import (
+    SAFETY_DEFAULTS,
     HealthResponse,
     ServiceHealthItem,
     SystemInfoResponse,
@@ -44,7 +45,7 @@ _system: InjectedSystem | None = None
 class ClockInfoResponse(BaseModel):
     """MarketClock 시간 정보 응답 모델이다."""
 
-    data: dict[str, Any]
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class AiModeResponse(BaseModel):
@@ -57,6 +58,17 @@ class AiModeSwitchRequest(BaseModel):
     """AI 백엔드 모드 전환 요청 모델이다."""
 
     mode: str  # "sdk" 또는 "api"로 전환한다
+
+
+class TokenRefreshResponse(BaseModel):
+    """KIS 토큰 재발급 결과 응답 모델이다."""
+
+    success: bool
+    virtual_refreshed: bool = False
+    real_refreshed: bool = False
+    virtual_expires: str = ""
+    real_expires: str = ""
+    message: str = ""
 
 
 def set_system_deps(system: InjectedSystem) -> None:
@@ -74,7 +86,7 @@ async def health_check() -> HealthResponse:
 
 
 @system_router.get("/status", response_model=SystemStatusResponse)
-async def system_status() -> SystemStatusResponse:
+async def system_status(_auth: str = Depends(verify_api_key)) -> SystemStatusResponse:
     """종합 시스템 상태를 반환한다.
 
     Claude AI, KIS API, Database(SQLite), 캐시의 연결 상태를 실시간 점검한다.
@@ -179,29 +191,20 @@ async def system_status() -> SystemStatusResponse:
             _logger.debug("KIS 호출 횟수 조회 실패 (기본값 사용): %s", exc)
 
     # 안전 모듈 상태 조회 (Flutter SafetyInfo.fromJson 호환)
-    safety: dict = {
-        "is_shutdown": False,
-        "daily_trades": 0,
-        "max_daily_trades": 30,
-        "daily_pnl_pct": 0.0,
-        "max_daily_loss_pct": -5.0,
-        "stop_loss_pct": -2.0,
-        "max_hold_days": 5,
-        "vix_shutdown_threshold": 35,
-    }
+    safety: dict = dict(SAFETY_DEFAULTS)
     if _system is not None:
         try:
             hard_safety = _system.features.get("hard_safety")
             if hard_safety is not None:
                 # HardSafety에서 셧다운 상태를 가져온다
-                safety["is_shutdown"] = getattr(hard_safety, "_shutdown", False)
-                safety["daily_trades"] = getattr(hard_safety, "_daily_trade_count", 0)
-                safety["max_daily_trades"] = getattr(hard_safety, "_max_daily_trades", 30)
-                safety["daily_pnl_pct"] = getattr(hard_safety, "_daily_pnl_pct", 0.0)
-                safety["max_daily_loss_pct"] = getattr(hard_safety, "_max_daily_loss_pct", -5.0)
-                safety["stop_loss_pct"] = getattr(hard_safety, "_stop_loss_pct", -2.0)
-                safety["max_hold_days"] = getattr(hard_safety, "_max_hold_days", 5)
-                safety["vix_shutdown_threshold"] = getattr(hard_safety, "_vix_threshold", 35)
+                safety["is_shutdown"] = getattr(hard_safety, "_shutdown", SAFETY_DEFAULTS["is_shutdown"])
+                safety["daily_trades"] = getattr(hard_safety, "_daily_trade_count", SAFETY_DEFAULTS["daily_trades"])
+                safety["max_daily_trades"] = getattr(hard_safety, "_max_daily_trades", SAFETY_DEFAULTS["max_daily_trades"])
+                safety["daily_pnl_pct"] = getattr(hard_safety, "_daily_pnl_pct", SAFETY_DEFAULTS["daily_pnl_pct"])
+                safety["max_daily_loss_pct"] = getattr(hard_safety, "_max_daily_loss_pct", SAFETY_DEFAULTS["max_daily_loss_pct"])
+                safety["stop_loss_pct"] = getattr(hard_safety, "_stop_loss_pct", SAFETY_DEFAULTS["stop_loss_pct"])
+                safety["max_hold_days"] = getattr(hard_safety, "_max_hold_days", SAFETY_DEFAULTS["max_hold_days"])
+                safety["vix_shutdown_threshold"] = getattr(hard_safety, "_vix_threshold", SAFETY_DEFAULTS["vix_shutdown_threshold"])
         except Exception as exc:
             _logger.debug("안전 모듈 상태 조회 실패 (기본값 사용): %s", exc)
 
@@ -218,7 +221,7 @@ async def system_status() -> SystemStatusResponse:
 
 
 @system_router.get("/info", response_model=SystemInfoResponse)
-async def system_info() -> SystemInfoResponse:
+async def system_info(_auth: str = Depends(verify_api_key)) -> SystemInfoResponse:
     """시스템 정보를 반환한다. 버전, Python 버전, 가동 시간 등이다."""
     uptime = time.monotonic() - _start_time
     features = len(_system.features) if _system else 0
@@ -233,15 +236,15 @@ async def system_info() -> SystemInfoResponse:
 
 
 @system_router.get("/clock", response_model=ClockInfoResponse)
-async def get_clock_info() -> ClockInfoResponse:
+async def get_clock_info(_auth: str = Depends(verify_api_key)) -> ClockInfoResponse:
     """MarketClock 시간 정보를 반환한다. 디버깅/대시보드용이다."""
     clock = get_market_clock()
     return ClockInfoResponse(data=clock.get_operating_window_info())
 
 
 @system_router.get("/ai-mode", response_model=AiModeResponse)
-async def get_ai_mode() -> AiModeResponse:
-    """현재 AI 백엔드 모드를 반환한다. 인증 불필요."""
+async def get_ai_mode(_auth: str = Depends(verify_api_key)) -> AiModeResponse:
+    """현재 AI 백엔드 모드를 반환한다."""
     from src.common.ai_gateway import get_ai_client
 
     try:
@@ -250,8 +253,8 @@ async def get_ai_mode() -> AiModeResponse:
     except Exception as exc:
         _logger.error("AI 모드 조회 실패: %s", exc)
         raise HTTPException(
-            status_code=500,
-            detail=f"AI 클라이언트 조회 실패: {exc}",
+            status_code=503,
+            detail="AI 클라이언트가 초기화되지 않았다",
         ) from exc
 
 
@@ -287,5 +290,59 @@ async def switch_ai_mode(
         _logger.error("AI 모드 전환 실패: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail=f"AI 모드 전환 실패: {exc}",
+            detail="AI 모드 전환 실패",
         ) from exc
+
+
+@system_router.post("/token/refresh", response_model=TokenRefreshResponse)
+async def refresh_kis_token(
+    _key: str = Depends(verify_api_key),
+) -> TokenRefreshResponse:
+    """KIS 토큰을 강제 재발급한다. 매매 중이 아닐 때도 사용 가능하다.
+
+    가상+실전 토큰을 모두 새로 발급하여 캐시 파일에 저장한다.
+    """
+    if _system is None:
+        raise HTTPException(status_code=503, detail="시스템 미초기화")
+
+    virtual_ok = False
+    real_ok = False
+    virtual_exp = ""
+    real_exp = ""
+    errors: list[str] = []
+
+    broker = _system.components.broker
+    if broker.virtual_auth is not None:
+        try:
+            await broker.virtual_auth.force_refresh()
+            virtual_ok = True
+            if broker.virtual_auth._expires_at:
+                virtual_exp = str(broker.virtual_auth._expires_at)
+        except Exception as exc:
+            errors.append(f"가상 토큰: {exc}")
+            _logger.warning("가상 토큰 재발급 실패: %s", exc)
+
+    if broker.real_auth is not None:
+        try:
+            await broker.real_auth.force_refresh()
+            real_ok = True
+            if broker.real_auth._expires_at:
+                real_exp = str(broker.real_auth._expires_at)
+        except Exception as exc:
+            errors.append(f"실전 토큰: {exc}")
+            _logger.warning("실전 토큰 재발급 실패: %s", exc)
+
+    # 설정된 인증 중 모두 성공했는지 판별한다
+    has_virtual = broker.virtual_auth is not None
+    has_real = broker.real_auth is not None
+    success = (not has_virtual or virtual_ok) and (not has_real or real_ok)
+    msg = "토큰 재발급 완료" if success else f"일부 실패: {'; '.join(errors)}"
+    _logger.info("KIS 토큰 재발급 결과: virtual=%s, real=%s", virtual_ok, real_ok)
+    return TokenRefreshResponse(
+        success=success,
+        virtual_refreshed=virtual_ok,
+        real_refreshed=real_ok,
+        virtual_expires=virtual_exp,
+        real_expires=real_exp,
+        message=msg,
+    )

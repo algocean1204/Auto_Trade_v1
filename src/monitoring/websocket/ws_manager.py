@@ -10,12 +10,15 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import re
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.common.logger import get_logger
+from src.common.secret_vault import get_vault
 
 if TYPE_CHECKING:
     from src.orchestration.init.dependency_injector import InjectedSystem
@@ -68,15 +71,36 @@ async def _get_channel_data(channel: str) -> dict:
         cached = await cache.read_json(f"ws:{channel}")
         if cached and isinstance(cached, dict):
             return cached
-        return {"channel": channel, "data": None}
-    except Exception:
+        # 캐시 만료 시 stale 표시를 포함하여 클라이언트가 감지할 수 있게 한다
+        return {"channel": channel, "data": None, "stale": True, "message": "Trading stopped"}
+    except Exception as exc:
+        _logger.debug("WS 채널 데이터 조회 실패 (%s): %s", channel, exc)
         return {"channel": channel, "error": "데이터 조회 실패"}
 
 
-async def _stream_loop(channel: str, ws: WebSocket) -> None:
-    """3초 주기로 데이터를 전송하는 스트림 루프이다."""
+async def _receive_loop(ws: WebSocket) -> None:
+    """클라이언트 메시지를 수신하여 연결 상태를 감지한다.
+
+    클라이언트가 close frame을 보내면 WebSocketDisconnect가 발생한다.
+    """
     try:
         while True:
+            await ws.receive_text()
+    except (WebSocketDisconnect, Exception):
+        pass
+
+
+async def _stream_loop(channel: str, ws: WebSocket) -> None:
+    """3초 주기로 데이터를 전송하는 스트림 루프이다.
+
+    receive 태스크를 병행하여 클라이언트 disconnect를 즉시 감지한다.
+    """
+    recv_task = asyncio.create_task(_receive_loop(ws))
+    try:
+        while True:
+            if recv_task.done():
+                # 클라이언트가 연결을 종료했다
+                break
             data = await _get_channel_data(channel)
             await ws.send_text(json.dumps(data, default=str))
             await asyncio.sleep(_REFRESH_INTERVAL)
@@ -84,10 +108,32 @@ async def _stream_loop(channel: str, ws: WebSocket) -> None:
         pass
     except Exception:
         _logger.debug("WS 스트림 종료: %s", channel)
+    finally:
+        recv_task.cancel()
+        try:
+            await recv_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+def _verify_ws_token(ws: WebSocket) -> bool:
+    """WebSocket 연결 시 쿼리 파라미터의 토큰을 검증한다.
+
+    타이밍 공격 방지를 위해 hmac.compare_digest를 사용한다.
+    """
+    vault = get_vault()
+    secret = vault.get_secret_or_none("API_SECRET_KEY")
+    if secret is None:
+        return False
+    token = ws.query_params.get("token", "")
+    return hmac.compare_digest(token, secret)
 
 
 async def _handle_ws(channel: str, ws: WebSocket) -> None:
-    """WebSocket 연결을 수락하고 스트림을 시작한다."""
+    """WebSocket 연결을 수락하고 스트림을 시작한다. 토큰 검증 필수이다."""
+    if not _verify_ws_token(ws):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     _add_connection(channel, ws)
     try:
@@ -133,7 +179,15 @@ async def ws_crawl_progress(ws: WebSocket, task_id: str) -> None:
     캐시 crawl:task:{task_id} 키를 1초 주기로 폴링하여 클라이언트에 전송한다.
     태스크 상태가 completed 또는 failed가 되면 최종 결과를 전송하고 연결을 종료한다.
     존재하지 않는 task_id이면 즉시 에러 메시지를 전송하고 연결을 종료한다.
+    토큰 검증 필수이다 — 다른 WS 채널과 동일한 인증을 적용한다.
     """
+    # task_id 형식 검증 — REST 엔드포인트와 동일한 패턴을 적용한다
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", task_id):
+        await ws.close(code=1008)
+        return
+    if not _verify_ws_token(ws):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     _logger.debug("크롤링 WS 연결 수락: task_id=%s", task_id)
 
@@ -197,8 +251,8 @@ async def ws_crawl_progress(ws: WebSocket, task_id: str) -> None:
         # WebSocket이 아직 열려 있으면 정상 종료한다
         try:
             await ws.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("WebSocket close 실패 (무시): %s", exc)
 
 
 def get_connection_stats() -> dict[str, int]:

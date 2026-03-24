@@ -8,38 +8,42 @@ from src.common.cache_gateway import CacheClient
 from src.common.http_client import AsyncHttpClient
 from src.common.logger import get_logger
 from src.common.secret_vault import SecretProvider
+from src.indicators.misc.fred_fetcher import FRED_API_URL
 
 logger = get_logger(__name__)
 
 _VIX_CACHE_KEY: str = "market:vix"
 _VIX3M_CACHE_KEY: str = "market:vix3m"
 _VIX_TTL: int = 3600  # 1시간 캐시 TTL이다
-_FALLBACK_VIX: float = 20.0  # 모든 소스 실패 시 사용하는 폴백 VIX이다
+_FALLBACK_VIX: float = 19.0  # 모든 소스 실패 시 mild_bull 레짐에 매핑되는 폴백 VIX이다
 
-# FRED API 엔드포인트이다. sort_order=desc&limit=1로 최신값만 가져온다
-_FRED_URL: str = (
-    "https://api.stlouisfed.org/fred/series/observations"
-)
+# FRED API 엔드포인트 — fred_fetcher에서 가져온다
+_FRED_URL: str = FRED_API_URL
 _FRED_SERIES_ID: str = "VIXCLS"
 _FRED_VIX3M_SERIES_ID: str = "VXVCLS"  # CBOE VIX 3-Month (VIX3M)
 
 
 def _parse_fred_response(body: dict) -> float | None:
-    """FRED API 응답에서 최신 VIX 값을 파싱한다.
+    """FRED API 응답에서 최신 유효 VIX 값을 파싱한다.
 
-    observations 리스트의 첫 번째 항목(최신 데이터)에서 value를 추출한다.
-    FRED는 주말/공휴일에 '.'을 반환할 수 있으므로 변환 실패 시 None을 반환한다.
+    observations 리스트를 순회하여 첫 번째 유효 값을 반환한다.
+    FRED는 주말/공휴일에 '.'을 반환하므로 해당 항목은 건너뛴다.
     """
     observations: list[dict] = body.get("observations", [])
     if not observations:
         logger.warning("FRED 응답에 observations가 없다")
         return None
-    raw_value: str = observations[0].get("value", "")
-    try:
-        return float(raw_value)
-    except (ValueError, TypeError):
-        logger.warning("FRED VIX 값 파싱 실패: '%s'", raw_value)
-        return None
+    # 최신순 정렬된 observations에서 첫 번째 유효 숫자를 찾는다
+    for obs in observations:
+        raw_value: str = obs.get("value", "")
+        if raw_value == "." or not raw_value:
+            continue
+        try:
+            return float(raw_value)
+        except (ValueError, TypeError):
+            continue
+    logger.warning("FRED 응답에서 유효한 VIX 값을 찾지 못했다 (전체 %d건)", len(observations))
+    return None
 
 
 class VixFetcher:
@@ -48,7 +52,7 @@ class VixFetcher:
     조회 우선순위:
         1. 캐시 (market:vix 키)
         2. FRED VIXCLS API (FRED_API_KEY 또는 DEMO_KEY)
-        3. 폴백 값 20.0
+        3. 폴백 값 19.0
     """
 
     def __init__(
@@ -75,7 +79,7 @@ class VixFetcher:
         """현재 VIX 값을 반환한다.
 
         캐시 히트 시 즉시 반환하고, 캐시 미스 시 FRED API를 호출한다.
-        모든 소스 실패 시 폴백 값(20.0)을 반환한다.
+        모든 소스 실패 시 폴백 값(19.0)을 반환한다.
         VIX3M은 VIX 캐시 히트 여부와 무관하게 매번 갱신을 시도한다 (콘탱고 정합성).
 
         Returns:
@@ -112,12 +116,13 @@ class VixFetcher:
     async def _fetch_from_fred(self) -> float | None:
         """FRED API에서 최신 VIXCLS 값을 조회한다. 실패 시 None을 반환한다."""
         try:
+            # limit=5로 최근 5일치를 조회하여 주말/공휴일 '.' 값을 건너뛸 수 있다
             params = {
                 "series_id": _FRED_SERIES_ID,
                 "api_key": self._fred_api_key,
                 "file_type": "json",
                 "sort_order": "desc",
-                "limit": "1",
+                "limit": "5",
             }
             response = await self._http.get(_FRED_URL, params=params)
             if not response.ok:
@@ -151,12 +156,13 @@ class VixFetcher:
             cached = await self._cache.read(_VIX3M_CACHE_KEY)
             if cached is not None:
                 return
+            # limit=5로 최근 5일치를 조회하여 주말/공휴일 '.' 값을 건너뛸 수 있다
             params = {
                 "series_id": _FRED_VIX3M_SERIES_ID,
                 "api_key": self._fred_api_key,
                 "file_type": "json",
                 "sort_order": "desc",
-                "limit": "1",
+                "limit": "5",
             }
             response = await self._http.get(_FRED_URL, params=params)
             if not response.ok:

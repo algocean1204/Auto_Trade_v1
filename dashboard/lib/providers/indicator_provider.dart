@@ -5,6 +5,9 @@ import '../services/api_service.dart';
 class IndicatorProvider with ChangeNotifier {
   final ApiService _apiService;
 
+  /// dispose 호출 여부를 추적하여 비동기 완료 후 notifyListeners 호출을 방지한다.
+  bool _disposed = false;
+
   IndicatorProvider(this._apiService);
 
   IndicatorWeights? _weights;
@@ -20,7 +23,7 @@ class IndicatorProvider with ChangeNotifier {
   Future<void> loadWeights() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       _weights = await _apiService.getIndicatorWeights();
@@ -29,14 +32,14 @@ class IndicatorProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
   Future<void> updateWeights(Map<String, double> newWeights) async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _safeNotify();
 
     try {
       await _apiService.updateIndicatorWeights(newWeights);
@@ -46,7 +49,7 @@ class IndicatorProvider with ChangeNotifier {
       _error = e.toString();
     } finally {
       _isLoading = false;
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -54,10 +57,10 @@ class IndicatorProvider with ChangeNotifier {
     try {
       final data = await _apiService.getRealtimeIndicator(ticker);
       _realtimeData[ticker] = data;
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _safeNotify();
     }
   }
 
@@ -68,7 +71,18 @@ class IndicatorProvider with ChangeNotifier {
         weights: Map.from(preset.weights),
         presets: currentWeights.presets,
       );
-      notifyListeners();
+      _safeNotify();
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// dispose 이후 안전하게 notifyListeners를 호출한다.
+  void _safeNotify() {
+    if (!_disposed) notifyListeners();
   }
 }

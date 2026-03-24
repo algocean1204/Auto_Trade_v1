@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
+# 캐시 저장용 백그라운드 태스크 참조 — GC 소멸을 방지한다
+_background_tasks: set[asyncio.Task] = set()
+
 # 캐시 키 접두사 및 TTL
 _CACHE_KEY_PREFIX = "gap_block:"
 
@@ -121,7 +124,9 @@ class GapRiskProtector:
             except Exception:
                 _logger.warning("갭 블록 캐시 저장 실패 (매매 로직에 영향 없음)")
 
-        loop.create_task(_safe())
+        task = loop.create_task(_safe())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     def evaluate(
         self,

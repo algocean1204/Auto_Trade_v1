@@ -1,8 +1,6 @@
 """F3 지표 -- 크로스 에셋 모멘텀 (리더맵 17쌍)이다."""
 from __future__ import annotations
 
-import json
-
 from src.common.cache_gateway import CacheClient
 from src.common.logger import get_logger
 from src.indicators.models import MomentumScore

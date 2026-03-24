@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GateEntry(BaseModel):
@@ -18,7 +18,7 @@ class GateEntry(BaseModel):
     passed: bool
     action: str = "allow"
     message: str = ""
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class RiskBudgetData(BaseModel):
@@ -52,7 +52,7 @@ class StreakData(BaseModel):
     current_streak: int = 0
     daily_loss_days: int = 0
     daily_loss_streak_threshold: int = 3
-    streak_rules: dict[str, Any] = {}
+    streak_rules: dict[str, Any] = Field(default_factory=dict)
     max_win_streak: int = 0
     max_loss_streak: int = 0
 
@@ -68,8 +68,8 @@ class PositionConcentrationEntry(BaseModel):
 class ConcentrationData(BaseModel):
     """포지션 집중도 현황이다. 종목별 비중 목록을 반환한다."""
 
-    limits: dict[str, Any] = {}
-    positions: list[PositionConcentrationEntry] = []
+    limits: dict[str, Any] = Field(default_factory=dict)
+    positions: list[PositionConcentrationEntry] = Field(default_factory=list)
 
 
 class TrailingStopData(BaseModel):
@@ -79,7 +79,7 @@ class TrailingStopData(BaseModel):
     initial_stop_pct: float = 3.0
     trailing_stop_pct: float = 5.0
     tracked_positions: int = 0
-    positions: dict[str, Any] = {}
+    positions: dict[str, Any] = Field(default_factory=dict)
 
 
 class RiskDashboardResponse(BaseModel):
@@ -103,13 +103,13 @@ class RiskDashboardResponse(BaseModel):
     """현재 VIX 지수이다."""
     risk_score: float
     """종합 리스크 스코어이다 (0.0~10.0, 높을수록 위험)."""
-    warnings: list[str]
+    warnings: list[str] = Field(default_factory=list)
     """활성화된 리스크 경고 목록이다."""
 
     # -- 중첩 구조 필드 (Flutter 대시보드용) --
     updated_at: str = ""
     """데이터 갱신 시각 (ISO 8601)이다."""
-    gates: list[GateEntry] = []
+    gates: list[GateEntry] = Field(default_factory=list)
     """리스크 게이트 통과/차단 상태 목록이다."""
     risk_budget: RiskBudgetData | None = None
     """리스크 예산 현황이다."""

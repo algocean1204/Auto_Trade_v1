@@ -5,8 +5,10 @@ EOD 시퀀스 Step 2.5에서 호출되며 90일 치 이력을 보관한다.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import math
+from datetime import datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from src.common.logger import get_logger
 
@@ -21,12 +23,15 @@ _CHART_TTL: int = 86400 * 90
 _MAX_HISTORY_DAYS: int = 365
 
 
-def _safe_float(val: object, default: float = 0.0) -> float:
-    """안전하게 float으로 변환한다. 변환 불가 시 기본값을 반환한다."""
+def _safe_float(val: float | str | None, default: float = 0.0) -> float:
+    """안전하게 float으로 변환한다. NaN/inf/변환 불가 시 기본값을 반환한다."""
     if val is None:
         return default
     try:
-        return float(val)
+        result = float(val)
+        if math.isnan(result) or math.isinf(result):
+            return default
+        return result
     except (ValueError, TypeError):
         return default
 
@@ -116,6 +121,19 @@ def _compute_drawdown_pct(cumulative_list: list[dict]) -> float:
     return round(current - peak, 2) if current < peak else 0.0
 
 
+def _compute_drawdown_detail(cumulative_list: list[dict]) -> dict[str, float]:
+    """Flutter DrawdownPoint 모델에 필요한 peak, current, drawdown_pct를 계산한다.
+
+    전체 누적 수익률 이력에서 최고점과 현재값을 추출하고 낙폭을 반환한다.
+    """
+    if not cumulative_list:
+        return {"peak": 0.0, "current": 0.0, "drawdown_pct": 0.0}
+    peak = max(_safe_float(c.get("cumulative_pct")) for c in cumulative_list)
+    current = _safe_float(cumulative_list[-1].get("cumulative_pct"))
+    dd_pct = round(current - peak, 2) if current < peak else 0.0
+    return {"peak": round(peak, 2), "current": round(current, 2), "drawdown_pct": dd_pct}
+
+
 async def write_chart_data(
     cache: CacheClient,
     trades: list[dict],
@@ -139,24 +157,26 @@ async def write_chart_data(
         실제로 갱신된 키 수 (최대 5)
     """
     updated: int = 0
-    today: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # 매매 세션이 KST 기준이므로 차트 날짜 키도 KST를 사용한다
+    today: str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
     pnl_pct = _compute_pnl_pct(trades, daily_pnl)
 
     # --- 1. daily_returns: 오늘 항목을 추가한다 ---
     daily_returns: list[dict] = await cache.read_json("charts:daily_returns") or []
     # 같은 날짜 중복 방지: 마지막 항목이 오늘 날짜면 덮어쓴다
+    # Flutter DailyReturn.fromJson이 pnl_amount, trade_count 키를 기대한다
+    trade_count = len(trades)
+    daily_entry = {
+        "date": today,
+        "pnl": round(daily_pnl, 2),
+        "pnl_amount": round(daily_pnl, 2),
+        "pnl_pct": pnl_pct,
+        "trade_count": trade_count,
+    }
     if daily_returns and daily_returns[-1].get("date") == today:
-        daily_returns[-1] = {
-            "date": today,
-            "pnl": round(daily_pnl, 2),
-            "pnl_pct": pnl_pct,
-        }
+        daily_returns[-1] = daily_entry
     else:
-        daily_returns.append({
-            "date": today,
-            "pnl": round(daily_pnl, 2),
-            "pnl_pct": pnl_pct,
-        })
+        daily_returns.append(daily_entry)
     daily_returns = daily_returns[-_MAX_HISTORY_DAYS:]
     await cache.write_json("charts:daily_returns", daily_returns, ttl=_CHART_TTL)
     updated += 1
@@ -173,10 +193,15 @@ async def write_chart_data(
     cumulative: list[dict] = await cache.read_json("charts:cumulative_returns") or []
     prev_cum = _safe_float(cumulative[-1].get("cumulative_pct")) if cumulative else 0.0
     new_cum = round(prev_cum + pnl_pct, 2)
+    # Flutter CumulativeReturn.fromJson이 cumulative_pnl, cumulative_pct 키를 기대한다
+    # cumulative_pnl에는 누적 PnL 금액($)을 저장한다
+    prev_cum_pnl = _safe_float(cumulative[-1].get("cumulative_pnl")) if cumulative else 0.0
+    new_cum_pnl = round(prev_cum_pnl + daily_pnl, 2)
+    cum_entry = {"date": today, "cumulative_pct": new_cum, "cumulative_pnl": new_cum_pnl}
     if cumulative and cumulative[-1].get("date") == today:
-        cumulative[-1] = {"date": today, "cumulative_pct": new_cum}
+        cumulative[-1] = cum_entry
     else:
-        cumulative.append({"date": today, "cumulative_pct": new_cum})
+        cumulative.append(cum_entry)
     cumulative = cumulative[-_MAX_HISTORY_DAYS:]
     await cache.write_json("charts:cumulative_returns", cumulative, ttl=_CHART_TTL)
     updated += 1
@@ -195,16 +220,21 @@ async def write_chart_data(
     logger.debug("[차트] heatmap_hourly 갱신: %d시간대", len(heatmap_hourly))
 
     # --- 5. drawdown: 낙폭 이력을 갱신한다 ---
-    # 누적 수익률이 방금 갱신되었으므로 최신 상태를 읽어 낙폭을 계산한다
-    updated_cumulative: list[dict] = (
-        await cache.read_json("charts:cumulative_returns") or []
-    )
-    dd_pct = _compute_drawdown_pct(updated_cumulative)
+    # 바로 위에서 cumulative를 갱신했으므로 인메모리 데이터를 직접 사용한다 (불필요한 캐시 재조회 제거)
+    dd_result = _compute_drawdown_detail(cumulative)
+    dd_pct = dd_result["drawdown_pct"]
     drawdown_data: list[dict] = await cache.read_json("charts:drawdown") or []
+    # Flutter DrawdownPoint.fromJson이 peak, current, drawdown_pct 키를 기대한다
+    dd_entry = {
+        "date": today,
+        "drawdown_pct": dd_pct,
+        "peak": dd_result["peak"],
+        "current": dd_result["current"],
+    }
     if drawdown_data and drawdown_data[-1].get("date") == today:
-        drawdown_data[-1] = {"date": today, "drawdown_pct": dd_pct}
+        drawdown_data[-1] = dd_entry
     else:
-        drawdown_data.append({"date": today, "drawdown_pct": dd_pct})
+        drawdown_data.append(dd_entry)
     drawdown_data = drawdown_data[-_MAX_HISTORY_DAYS:]
     await cache.write_json("charts:drawdown", drawdown_data, ttl=_CHART_TTL)
     updated += 1

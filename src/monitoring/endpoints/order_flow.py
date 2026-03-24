@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.monitoring.server.auth import verify_api_key
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
@@ -50,7 +52,7 @@ def set_order_flow_deps(system: InjectedSystem) -> None:
 
 
 @order_flow_router.get("/snapshot", response_model=OrderflowSnapshotResponse)
-async def get_orderflow_snapshot() -> OrderflowSnapshotResponse:
+async def get_orderflow_snapshot(_auth: str = Depends(verify_api_key)) -> OrderflowSnapshotResponse:
     """현재 주문흐름 스냅샷을 반환한다.
 
     orderflow:snapshot 캐시 키를 우선 조회하고, 없으면
@@ -93,7 +95,8 @@ async def get_orderflow_snapshot() -> OrderflowSnapshotResponse:
 @order_flow_router.get("/history", response_model=OrderflowHistoryResponse)
 async def get_orderflow_history(
     ticker: str = "",
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500),
+    _auth: str = Depends(verify_api_key),
 ) -> OrderflowHistoryResponse:
     """주문흐름 이력을 반환한다. ticker로 필터링할 수 있다."""
     if _system is None:
@@ -116,7 +119,8 @@ async def get_orderflow_history(
 
 @order_flow_router.get("/whale", response_model=WhaleActivityResponse)
 async def get_whale_activity(
-    limit: int = 20,
+    limit: int = Query(default=20, ge=1, le=200),
+    _auth: str = Depends(verify_api_key),
 ) -> WhaleActivityResponse:
     """고래(대량 거래) 활동을 반환한다."""
     if _system is None:

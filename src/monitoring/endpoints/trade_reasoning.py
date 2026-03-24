@@ -1,15 +1,18 @@
 """F7.11 TradeReasoningEndpoints -- 매매 근거 조회 API이다.
 
 매매 날짜 목록, 일별 매매 근거, 통계, 피드백 기능을 제공한다.
+캐시 미스 시 DB(Trade 테이블)에서 폴백한다.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 
 from src.common.logger import get_logger
+from src.db.models import Trade
 from src.monitoring.server.auth import verify_api_key
 
 if TYPE_CHECKING:
@@ -32,7 +35,7 @@ class FeedbackRequest(BaseModel):
     두 형식 모두 호환한다.
     """
 
-    rating: int  # 1~5
+    rating: int = Field(..., ge=1, le=5)  # 1~5
     comment: str = ""
     feedback: str = ""
     notes: str = ""
@@ -115,11 +118,21 @@ def _normalize_trade(record: dict[str, Any]) -> dict[str, Any]:
         ts = out.get("timestamp", "")
         out["id"] = f"{ticker}-{ts}" if ticker or ts else str(id(out))
 
-    # pnl_amount 기반 pnl_pct 기본값을 설정한다
+    # pnl_pct 기본값: entry_price와 quantity로 퍼센트를 역산한다
     if "pnl_pct" not in out:
         pnl_amount = out.get("pnl_amount")
-        if pnl_amount is not None:
-            out["pnl_pct"] = float(pnl_amount)
+        entry_price = out.get("entry_price") or out.get("price")
+        qty = out.get("quantity")
+        if (
+            pnl_amount is not None
+            and entry_price is not None
+            and qty is not None
+        ):
+            cost_basis = float(entry_price) * float(qty)
+            if abs(cost_basis) > 1e-9:
+                out["pnl_pct"] = (float(pnl_amount) / cost_basis) * 100.0
+            else:
+                out["pnl_pct"] = 0.0
         else:
             out["pnl_pct"] = 0.0
 
@@ -136,7 +149,9 @@ def set_trade_reasoning_deps(system: InjectedSystem) -> None:
 
 
 @trade_reasoning_router.get("/dates", response_model=TradeDatesResponse)
-async def get_trade_dates() -> TradeDatesResponse:
+async def get_trade_dates(
+    _auth: str = Depends(verify_api_key),
+) -> TradeDatesResponse:
     """매매가 존재하는 날짜 목록을 반환한다.
 
     trades:dates 키를 우선 조회하고, 없으면 trades:today에서 오늘 날짜를 추출한다.
@@ -151,8 +166,10 @@ async def get_trade_dates() -> TradeDatesResponse:
         cached = await cache.read_json("trades:dates")
         raw_dates: list[str] = cached if isinstance(cached, list) else []
 
+        # N+1 캐시 조회를 방지하기 위해 최근 90일분만 조회한다
+        _MAX_TRADE_DATES = 90
         date_items: list[TradeDateItem] = []
-        for d in raw_dates:
+        for d in raw_dates[:_MAX_TRADE_DATES]:
             if not isinstance(d, str):
                 continue
             trades_data = await cache.read_json(f"trades:reasoning:{d}")
@@ -185,6 +202,7 @@ async def get_trade_dates() -> TradeDatesResponse:
 @trade_reasoning_router.get("/daily", response_model=DailyReasoningResponse)
 async def get_daily_reasoning(
     date: str = "",
+    _auth: str = Depends(verify_api_key),
 ) -> DailyReasoningResponse:
     """일별 매매 근거를 반환한다.
 
@@ -226,7 +244,10 @@ async def get_daily_reasoning(
 
 
 @trade_reasoning_router.get("/stats", response_model=TradeStatsResponse)
-async def get_trade_stats(date: str = "") -> TradeStatsResponse:
+async def get_trade_stats(
+    date: str = "",
+    _auth: str = Depends(verify_api_key),
+) -> TradeStatsResponse:
     """매매 통계를 반환한다.
 
     trades:reasoning:{date} 키를 우선 조회하고, 없으면 trades:today에서 계산한다.
@@ -256,12 +277,13 @@ async def get_trade_stats(date: str = "") -> TradeStatsResponse:
                     t_date = ts[:10] if len(ts) >= 10 else ""
                     if not date or t_date == date:
                         converted = _normalize_trade(t)
-                        # pnl_pct를 실제 비율로 계산한다 (가격*수량 기반)
+                        # pnl_pct 역산: avg = price - pnl/qty, pnl_pct = pnl/(avg*qty)*100
                         pnl = converted.get("pnl")
                         price = converted.get("price", 0)
                         qty = converted.get("quantity", 0)
                         if pnl is not None and price > 0 and qty > 0:
-                            converted["pnl_pct"] = (float(pnl) / (float(price) * float(qty))) * 100.0
+                            cost_basis = float(price) * float(qty) - float(pnl)
+                            converted["pnl_pct"] = (float(pnl) / cost_basis) * 100.0 if abs(cost_basis) > 1e-9 else 0.0
                         converted.setdefault("pnl_amount", float(pnl) if pnl is not None else 0.0)
                         trades.append(converted)
 
@@ -355,8 +377,8 @@ def _compute_stats(trades: list[dict]) -> TradeStatsResponse:
     response_model=TradeFeedbackResponse,
 )
 async def submit_feedback(
-    trade_id: str,
-    req: FeedbackRequest,
+    trade_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
+    req: FeedbackRequest = ...,
     _key: str = Depends(verify_api_key),
 ) -> TradeFeedbackResponse:
     """매매에 대한 피드백을 저장한다. 인증 필수."""
@@ -377,7 +399,8 @@ async def submit_feedback(
             "comment": comment_text,
             "notes": req.notes,
         }
-        await cache.write_json(f"trades:feedback:{trade_id}", feedback)
+        # trades:reasoning:{date}의 TTL(30일)과 정합하여 90일 보관한다
+        await cache.write_json(f"trades:feedback:{trade_id}", feedback, ttl=86400 * 90)
         _logger.info("매매 피드백 저장: trade_id=%s, rating=%d", trade_id, req.rating)
         return TradeFeedbackResponse(status="saved", trade_id=trade_id)
     except HTTPException:
@@ -392,8 +415,8 @@ async def submit_feedback(
     response_model=TradeFeedbackResponse,
 )
 async def put_trade_feedback(
-    trade_id: str,
-    req: FeedbackRequest,
+    trade_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
+    req: FeedbackRequest = ...,
     _key: str = Depends(verify_api_key),
 ) -> TradeFeedbackResponse:
     """PUT 메서드로 매매 피드백을 저장한다. Flutter 호환 별칭이다."""

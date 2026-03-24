@@ -1,8 +1,6 @@
 """F3 지표 -- 고래 활동 감지 (블록거래 + 아이스버그)이다."""
 from __future__ import annotations
 
-import json
-
 from src.common.cache_gateway import CacheClient
 from src.common.logger import get_logger
 from src.indicators.models import WhaleSignal
@@ -13,7 +11,7 @@ _BLOCK_THRESHOLD_USD: float = 200_000.0
 _ICEBERG_MIN_TRADES: int = 5  # 1초 내 5회 이상 = 아이스버그 의심
 _BLOCK_WEIGHT: float = 0.6
 _ICEBERG_WEIGHT: float = 0.4
-_CACHE_KEY: str = "whale:order_flow:{ticker}"
+_CACHE_KEY: str = "order_flow:raw:{ticker}"
 
 
 def _score_blocks(trades: list[dict], threshold: float) -> tuple[float, int, float]:

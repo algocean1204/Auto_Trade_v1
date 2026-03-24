@@ -5,7 +5,14 @@ FRED API 호출 로직을 단일 모듈로 추출한 것이다.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from src.common.logger import get_logger
+
+if TYPE_CHECKING:
+    from src.common.cache_gateway import CacheClient
+    from src.common.http_client import AsyncHttpClient
+    from src.common.secret_vault import SecretProvider
 
 logger = get_logger(__name__)
 
@@ -16,14 +23,15 @@ FRED_SERIES: list[str] = [
     "WALCL", "WTREGEN", "RRPONTSYD",
 ]
 
-_FRED_URL: str = "https://api.stlouisfed.org/fred/series/observations"
+# FRED API 엔드포인트 — 다른 모듈에서도 참조하므로 공개 상수로 정의한다
+FRED_API_URL: str = "https://api.stlouisfed.org/fred/series/observations"
 _CACHE_TTL: int = 86400  # 24시간
 
 
 async def populate_fred_cache(
-    http: object,
-    vault: object,
-    cache: object,
+    http: AsyncHttpClient,
+    vault: SecretProvider,
+    cache: CacheClient,
     *,
     ttl: int = _CACHE_TTL,
 ) -> int:
@@ -53,7 +61,7 @@ async def populate_fred_cache(
                 "sort_order": "desc",
                 "limit": "30",
             }
-            resp = await http.get(_FRED_URL, params=params)  # type: ignore[union-attr]
+            resp = await http.get(FRED_API_URL, params=params)  # type: ignore[union-attr]
             if not resp.ok:
                 logger.warning("[FRED] %s 조회 실패: HTTP %d", sid, resp.status)
                 continue
@@ -78,7 +86,7 @@ async def populate_fred_cache(
     return count
 
 
-async def is_fred_cache_populated(cache: object) -> bool:
+async def is_fred_cache_populated(cache: CacheClient) -> bool:
     """FRED 캐시가 이미 채워져 있는지 확인한다.
 
     macro:DFF 키가 존재하면 채워진 것으로 판단한다.
@@ -86,5 +94,6 @@ async def is_fred_cache_populated(cache: object) -> bool:
     try:
         cached = await cache.read_json("macro:DFF")  # type: ignore[union-attr]
         return cached is not None and isinstance(cached, list) and len(cached) > 0
-    except Exception:
+    except Exception as exc:
+        logger.debug("FRED 캐시 확인 실패 (미충전 처리): %s", exc)
         return False

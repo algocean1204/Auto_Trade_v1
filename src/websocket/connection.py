@@ -17,6 +17,7 @@ import websockets
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
+from src.common.broker_gateway import KIS_REAL_BASE, KIS_VIRTUAL_BASE
 from src.common.logger import get_logger
 
 if TYPE_CHECKING:
@@ -27,8 +28,8 @@ _logger = get_logger(__name__)
 # KIS WebSocket 엔드포인트이다
 _WS_URL_REAL = "ws://ops.koreainvestment.com:21000"
 _WS_URL_VIRTUAL = "ws://ops.koreainvestment.com:31000"
-_APPROVAL_URL_REAL = "https://openapi.koreainvestment.com:9443/oauth2/Approval"
-_APPROVAL_URL_VIRTUAL = "https://openapivts.koreainvestment.com:29443/oauth2/Approval"
+_APPROVAL_URL_REAL = f"{KIS_REAL_BASE}/oauth2/Approval"
+_APPROVAL_URL_VIRTUAL = f"{KIS_VIRTUAL_BASE}/oauth2/Approval"
 
 _MAX_RETRIES = 3
 _RETRY_DELAY_SEC = 2.0
@@ -160,8 +161,8 @@ class WebSocketConnection:
         if self._ws is not None:
             try:
                 await self._ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("KIS WebSocket close 실패 (무시): %s", exc)
             self._ws = None
         _logger.info("KIS WebSocket 연결 종료")
 

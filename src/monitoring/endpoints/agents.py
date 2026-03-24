@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
 from src.agents.registry import (
@@ -103,6 +104,12 @@ class AgentDetailResponse(BaseModel):
     md_content: str = ""
 
 
+class AgentSaveRequest(BaseModel):
+    """에이전트 MD 저장 요청 모델이다."""
+
+    content: str = Field(default="", max_length=50000)
+
+
 class AgentSaveResponse(BaseModel):
     """에이전트 저장 응답 모델이다."""
 
@@ -150,6 +157,7 @@ def _build_teams_response() -> AgentTeamsResponse:
 # ── 캐시 시딩 ──
 
 _seeded = False
+_seed_lock = asyncio.Lock()
 
 
 async def _seed_agents_from_docs() -> None:
@@ -157,12 +165,16 @@ async def _seed_agents_from_docs() -> None:
 
     캐시에 agent:md:{agent_id} 키가 존재하지 않는 경우에만 저장하여
     사용자가 직접 저장한 콘텐츠를 덮어쓰지 않는다.
-    최초 1회만 실행된다.
+    최초 1회만 실행된다. asyncio.Lock으로 동시 시딩 레이스를 방지한다.
     """
     global _seeded
     if _seeded or _system is None:
         return
-    _seeded = True
+    async with _seed_lock:
+        # Lock 획득 후 다시 확인한다 (다른 코루틴이 이미 완료했을 수 있다)
+        if _seeded:
+            return
+        _seeded = True
 
     docs_dir = get_docs_dir()
     if not docs_dir.is_dir():
@@ -233,7 +245,9 @@ async def _save_agent_md_impl(agent_id: str, body: dict) -> AgentSaveResponse:
 # ── /api/agents/* 라우터 ──
 
 @agents_router.get("", response_model=AgentsListResponse)
-async def get_agents() -> AgentsListResponse:
+async def get_agents(
+    _auth: str = Depends(verify_api_key),
+) -> AgentsListResponse:
     """AI 에이전트 목록을 반환한다.
 
     agents(원본 dict 리스트)와 teams(AgentTeamItem 리스트)를
@@ -249,7 +263,9 @@ async def get_agents() -> AgentsListResponse:
 
 
 @agents_router.get("/list", response_model=AgentTeamsResponse)
-async def get_agents_list_v2() -> AgentTeamsResponse:
+async def get_agents_list_v2(
+    _auth: str = Depends(verify_api_key),
+) -> AgentTeamsResponse:
     """에이전트 팀 목록을 반환한다. /api/agents/list 경로이다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -259,8 +275,9 @@ async def get_agents_list_v2() -> AgentTeamsResponse:
 
 @agents_router.get("/{agent_id}/history", response_model=AgentHistoryResponse)
 async def get_agent_history(
-    agent_id: str,
-    limit: int = 20,
+    agent_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
+    limit: int = Query(default=20, ge=1, le=200),
+    _auth: str = Depends(verify_api_key),
 ) -> AgentHistoryResponse:
     """에이전트 활동 이력을 반환한다."""
     if _system is None:
@@ -283,7 +300,10 @@ async def get_agent_history(
 
 
 @agents_router.get("/{agent_id}", response_model=AgentDetailResponse)
-async def get_agent_detail(agent_id: str) -> AgentDetailResponse:
+async def get_agent_detail(
+    agent_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
+    _auth: str = Depends(verify_api_key),
+) -> AgentDetailResponse:
     """에이전트 상세 정보를 반환한다."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
@@ -298,15 +318,15 @@ async def get_agent_detail(agent_id: str) -> AgentDetailResponse:
 
 @agents_router.put("/{agent_id}", response_model=AgentSaveResponse)
 async def save_agent_md_v2(
-    agent_id: str,
-    body: dict,
+    agent_id: str = Path(..., pattern=r"^[A-Za-z0-9_.-]+$"),
+    body: AgentSaveRequest = ...,
     _key: str = Depends(verify_api_key),
 ) -> AgentSaveResponse:
     """에이전트 MD 콘텐츠를 저장한다. 인증 필수."""
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        return await _save_agent_md_impl(agent_id, body)
+        return await _save_agent_md_impl(agent_id, body.model_dump())
     except HTTPException:
         raise
     except Exception:

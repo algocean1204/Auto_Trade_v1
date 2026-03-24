@@ -67,13 +67,13 @@ class QuotaGuard:
         )
 
     async def record_request(self) -> None:
-        """API 요청 1건을 기록한다."""
+        """API 요청 1건을 원자적으로 기록한다.
+
+        atomic_increment로 read → 증가 → write를 원자적으로 수행하여
+        동시 호출 시 카운터 유실을 방지한다.
+        """
         key = self._build_key()
-        raw = await self._cache.read(key)
-        count = int(raw) if raw else 0
-        await self._cache.write(
-            key, str(count + 1), ttl=self._window,
-        )
+        await self._cache.atomic_increment(key, amount=1, ttl=self._window)
 
     async def _get_current_count(self) -> int:
         """현재 윈도우 내 요청 수를 조회한다."""

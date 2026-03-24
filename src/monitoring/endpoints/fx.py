@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.monitoring.server.auth import verify_api_key
+from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
 
@@ -22,8 +24,6 @@ fx_router = APIRouter(prefix="/api/fx", tags=["fx"])
 # InjectedSystem 레퍼런스 (DI)
 _system: InjectedSystem | None = None
 
-# 폴백 기본 환율이다
-_FALLBACK_RATE: float = 1350.0
 
 
 def set_fx_deps(system: InjectedSystem) -> None:
@@ -47,7 +47,7 @@ class FxStatusResponse(BaseModel):
     updated_at: str
     """마지막 업데이트 시각(ISO 8601)이다."""
     source: str
-    """데이터 출처이다 (예: 'KIS', 'cache', 'fallback')."""
+    """데이터 출처이다 (예: 'KIS', 'Naver-Mobile', 'Google-Finance', '조회불가')."""
 
 
 class FxHistoryEntry(BaseModel):
@@ -64,7 +64,7 @@ class FxHistoryEntry(BaseModel):
 class FxHistoryResponse(BaseModel):
     """환율 이력 응답이다."""
 
-    entries: list[FxHistoryEntry]
+    entries: list[FxHistoryEntry] = Field(default_factory=list)
     """환율 이력 목록이다."""
 
 
@@ -73,16 +73,17 @@ class FxHistoryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @fx_router.get("/status", response_model=FxStatusResponse)
-async def get_fx_status() -> FxStatusResponse:
+async def get_fx_status(_auth: str = Depends(verify_api_key)) -> FxStatusResponse:
     """현재 USD/KRW 환율 현황을 반환한다.
 
-    FxManager가 주입되어 있으면 실시간 데이터를 사용한다.
-    없으면 캐시 키 fx:current 또는 기본값 1350.0을 반환한다.
+    FxScheduler가 10단계 폴백으로 갱신한 캐시를 우선 확인한다.
+    캐시 미스 시 FxManager 실시간 조회를 시도한다.
+    모든 소스 실패 시 rate=0.0, source='조회불가'를 반환한다.
     """
     if _system is None:
         raise HTTPException(status_code=503, detail="시스템 초기화 중")
     try:
-        # 1차: 캐시를 우선 확인한다 (FxScheduler가 3-tier 폴백으로 갱신한 데이터)
+        # 1차: 캐시 확인 (FxScheduler가 10단계 폴백으로 갱신한 데이터)
         cache = _system.components.cache
         cached = await cache.read_json("fx:current")
         if cached and isinstance(cached, dict):
@@ -95,25 +96,26 @@ async def get_fx_status() -> FxStatusResponse:
                     source=str(cached.get("source", "cache")),
                 )
 
-        # 2차: FxManager 실시간 조회 (캐시가 비었거나 비정상인 경우)
+        # 2차: FxManager 실시간 조회 (캐시 비정상인 경우)
         fx_manager = _system.features.get("fx_manager")
         if fx_manager is not None:
             fx_rate = await fx_manager.get_rate()
-            rate_val = float(fx_rate.usd_krw)
-            # 폴백값인지 실제 조회값인지 구분한다
-            is_fallback = abs(rate_val - _FALLBACK_RATE) < 0.01
-            return FxStatusResponse(
-                usd_krw_rate=rate_val,
-                change_pct=0.0,
-                updated_at=fx_rate.last_updated.isoformat(),
-                source="fallback" if is_fallback else "KIS",
-            )
+            if fx_rate is not None:
+                rate_val = float(fx_rate.usd_krw)
+                if 900 < rate_val < 2000:
+                    return FxStatusResponse(
+                        usd_krw_rate=rate_val,
+                        change_pct=0.0,
+                        updated_at=fx_rate.last_updated.isoformat(),
+                        source="KIS",
+                    )
 
+        # 모든 소스 실패: 조회불가
         return FxStatusResponse(
-            usd_krw_rate=_FALLBACK_RATE,
+            usd_krw_rate=0.0,
             change_pct=0.0,
             updated_at="",
-            source="fallback",
+            source="조회불가",
         )
     except HTTPException:
         raise
@@ -123,7 +125,7 @@ async def get_fx_status() -> FxStatusResponse:
 
 
 @fx_router.get("/history", response_model=FxHistoryResponse)
-async def get_fx_history(limit: int = 30) -> FxHistoryResponse:
+async def get_fx_history(limit: int = Query(default=30, ge=1, le=365), _auth: str = Depends(verify_api_key)) -> FxHistoryResponse:
     """USD/KRW 환율 이력을 반환한다.
 
     캐시 키 fx:history에서 데이터를 읽는다.
@@ -138,13 +140,15 @@ async def get_fx_history(limit: int = 30) -> FxHistoryResponse:
         cache = _system.components.cache
         cached = await cache.read_json("fx:history")
         if cached and isinstance(cached, list):
+            # 최신 항목이 리스트 끝에 위치하므로 뒤에서부터 limit개를 역순으로 가져온다
+            recent = cached[-limit:] if len(cached) > limit else cached
             entries = [
                 FxHistoryEntry(
                     date=str(e.get("date", "")),
-                    rate=float(e.get("rate", _FALLBACK_RATE)),
+                    rate=float(e.get("rate", 0.0)),
                     change_pct=float(e.get("change_pct", 0.0)),
                 )
-                for e in cached[:limit]
+                for e in reversed(recent)
             ]
             return FxHistoryResponse(entries=entries)
         return FxHistoryResponse(entries=[])

@@ -44,7 +44,7 @@ class ApiService {
   /// EnvLoader가 프로젝트 루트 .env 파일에서 API_SECRET_KEY를 자동으로 읽는다.
   /// --dart-define=API_SECRET_KEY=VALUE 빌드 파라미터로 오버라이드할 수 있다.
   /// 빈 문자열로 설정하면 Authorization 헤더를 전송하지 않는다.
-  final String apiKey;
+  String apiKey;
 
   /// 모든 HTTP 요청에 적용되는 타임아웃이다.
   static const _timeout = Duration(seconds: 15);
@@ -57,11 +57,18 @@ class ApiService {
             ),
         apiKey = apiKey ?? EnvLoader.get('API_SECRET_KEY');
 
-  /// ServerLauncher가 감지한 포트로 baseUrl을 갱신한다.
+  /// ServerLauncher가 감지한 포트와 EnvLoader의 최신 API 키로 갱신한다.
+  ///
+  /// EnvLoader.reload() 후 호출하면 새로 생성된 API_SECRET_KEY도 반영된다.
   void refreshBaseUrl() {
     final detected = ServerLauncher.instance.baseUrl;
     if (detected != baseUrl) {
       baseUrl = detected;
+    }
+    // EnvLoader가 리로드된 경우 최신 API 키를 반영한다
+    final freshKey = EnvLoader.get('API_SECRET_KEY');
+    if (freshKey != apiKey) {
+      apiKey = freshKey;
     }
   }
 
@@ -323,6 +330,9 @@ class ApiService {
       // V2: /api/dashboard/accounts
       return await _get(ApiConstants.dashboardAccounts,
           (data) => data as Map<String, dynamic>);
+    } on ServerUnreachableException {
+      // 서버 미연결은 상위로 전파하여 Provider가 연결 상태를 구분할 수 있게 한다
+      rethrow;
     } catch (e) {
       debugPrint('getAccountsSummary error: $e');
       return {};
@@ -348,6 +358,8 @@ class ApiService {
       // V2: /api/system/info (V1의 /system/usage → V2의 /api/system/info)
       return await _get(ApiConstants.systemInfo,
           (data) => data as Map<String, dynamic>);
+    } on ServerUnreachableException {
+      rethrow;
     } catch (e) {
       debugPrint('getSystemUsage error: $e');
       return {};
@@ -526,19 +538,6 @@ class ApiService {
     await _postVoid('/api/feedback/reject-adjustment/$id', {});
   }
 
-  Future<List<Map<String, dynamic>>> getReportsList() async {
-    try {
-      return await _get('/api/reports/daily/list', (data) {
-        final raw = data as Map<String, dynamic>;
-        final dates = raw['dates'] as List? ?? [];
-        return dates.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      });
-    } catch (e) {
-      debugPrint('getReportsList error: $e');
-      return [];
-    }
-  }
-
   // ── Universe endpoints ──
 
   Future<List<UniverseTicker>> getUniverse() async {
@@ -631,8 +630,9 @@ class ApiService {
 
   Future<List<MonthlyHistory>> getProfitTargetHistory({int months = 6}) async {
     try {
+      // 백엔드 쿼리 파라미터 이름은 'limit'이다 ('months' 아님)
       return await _getList(
-        '/api/target/history?months=$months',
+        '/api/target/history?limit=$months',
         MonthlyHistory.fromJson,
       );
     } catch (e) {
@@ -904,46 +904,6 @@ class ApiService {
     }
   }
 
-  /// 캐시된 거시 지표 데이터를 가져온다.
-  Future<Map<String, dynamic>> getCachedIndicators() async {
-    try {
-      return await _get(
-        '/api/macro/cached-indicators',
-        (data) => data as Map<String, dynamic>,
-      );
-    } catch (e) {
-      debugPrint('getCachedIndicators error: $e');
-      return {};
-    }
-  }
-
-  /// 캐시된 거시 지표 원시 데이터를 가져온다.
-  Future<Map<String, dynamic>> getMacroAnalysis() async {
-    try {
-      return await _get(
-        ApiConstants.macroCachedIndicators,
-        (data) => data as Map<String, dynamic>,
-      );
-    } catch (e) {
-      debugPrint('getMacroAnalysis error: $e');
-      return {};
-    }
-  }
-
-  /// 핵심 원칙(슬로건) 텍스트만 가져온다.
-  Future<Map<String, dynamic>> getCorePrinciple() async {
-    try {
-      final data = await _get(
-        '/api/principles',
-        (d) => d as Map<String, dynamic>,
-      );
-      return {'core_principle': data['core_principle'] ?? ''};
-    } catch (e) {
-      debugPrint('getCorePrinciple error: $e');
-      return {'core_principle': ''};
-    }
-  }
-
   // ── RSI endpoints ──
 
   /// Triple RSI 지표 데이터를 가져온다.
@@ -1197,22 +1157,34 @@ class ApiService {
   }
 
   /// 새 매매 원칙을 추가한다.
+  /// 백엔드는 {"status": "created", "principle": {...}} 형태로 반환한다.
   Future<TradingPrinciple> addPrinciple(
       String category, String title, String content) async {
     return _post(
       '/api/principles',
       {'category': category, 'title': title, 'content': content},
-      (data) => TradingPrinciple.fromJson(data as Map<String, dynamic>),
+      (data) {
+        final map = data as Map<String, dynamic>;
+        // 백엔드 PrincipleCreateResponse에서 principle 필드를 추출한다
+        final principle = map['principle'] as Map<String, dynamic>? ?? map;
+        return TradingPrinciple.fromJson(principle);
+      },
     );
   }
 
   /// 기존 매매 원칙을 수정한다.
+  /// 백엔드는 {"status": "updated", "principle": {...}} 형태로 반환한다.
   Future<TradingPrinciple> updatePrinciple(
       String id, Map<String, dynamic> updates) async {
     return _put(
       '/api/principles/$id',
       updates,
-      (data) => TradingPrinciple.fromJson(data as Map<String, dynamic>),
+      (data) {
+        final map = data as Map<String, dynamic>;
+        // 백엔드 PrincipleUpdateResponse에서 principle 필드를 추출한다
+        final principle = map['principle'] as Map<String, dynamic>? ?? map;
+        return TradingPrinciple.fromJson(principle);
+      },
     );
   }
 

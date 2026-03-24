@@ -6,11 +6,15 @@ KIS HDFSCNT0(해외주식 실시간 체결) TR을 파싱한다.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src.common.logger import get_logger
 from src.websocket.models import ParsedMessage, TradeEvent
 
 _logger = get_logger(__name__)
+
+# KIS 해외주식 실시간 체결의 시각은 US/Eastern(미국 동부시간)이다
+_ET = ZoneInfo("US/Eastern")
 
 # KIS 해외주식 체결 필드 인덱스 (HDFSCNT0)이다
 _IDX_TICKER = 0
@@ -40,13 +44,20 @@ def _safe_int(value: str) -> int:
 
 
 def _parse_time(time_str: str) -> datetime:
-    """KIS 체결시간(HHMMSS)을 UTC datetime으로 변환한다."""
+    """KIS 체결시간(HHMMSS)을 UTC datetime으로 변환한다.
+
+    KIS 해외주식 체결시간은 US/Eastern 기준이므로,
+    ET 시각으로 해석한 뒤 UTC로 변환한다. 서머타임은 ZoneInfo가 자동 처리한다.
+    """
     try:
         hour = int(time_str[:2])
         minute = int(time_str[2:4])
         second = int(time_str[4:6])
-        now = datetime.now(tz=timezone.utc)
-        return now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+        # ET 기준 오늘 날짜 + 시분초를 조합한다
+        now_et = datetime.now(tz=_ET)
+        et_dt = now_et.replace(hour=hour, minute=minute, second=second, microsecond=0)
+        # UTC로 변환하여 반환한다
+        return et_dt.astimezone(timezone.utc)
     except (ValueError, IndexError):
         return datetime.now(tz=timezone.utc)
 

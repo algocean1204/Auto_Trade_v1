@@ -7,6 +7,18 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+# 안전 모듈 기본값 -- system.py에서도 참조하므로 한 곳에서 관리한다
+SAFETY_DEFAULTS: dict = {
+    "is_shutdown": False,
+    "daily_trades": 0,
+    "max_daily_trades": 30,
+    "daily_pnl_pct": 0.0,
+    "max_daily_loss_pct": -5.0,
+    "stop_loss_pct": -2.0,
+    "max_hold_days": 5,
+    "vix_shutdown_threshold": 35,
+}
+
 
 class TradingStatusResponse(BaseModel):
     """매매 상태 응답이다."""
@@ -17,6 +29,13 @@ class TradingStatusResponse(BaseModel):
     is_trading_window: bool
     session_type: str
     current_kst: str
+    # Flutter TradingControlProvider._fetchStatus가 기대하는 추가 필드
+    is_trading_day: bool = True
+    next_window_start: str | None = None
+    # 사용자 의도적 정지 여부 -- 워치독이 재시작 판단에 사용한다
+    user_stopped: bool = False
+    # EOD 시퀀스 실행 중 여부이다
+    eod_running: bool = False
 
 
 class TradingActionResponse(BaseModel):
@@ -90,16 +109,7 @@ class SystemStatusResponse(BaseModel):
         "kis_calls_today": 0,
         "kis_limit": 1000,
     })
-    safety: dict = Field(default_factory=lambda: {
-        "is_shutdown": False,
-        "daily_trades": 0,
-        "max_daily_trades": 30,
-        "daily_pnl_pct": 0.0,
-        "max_daily_loss_pct": -5.0,
-        "stop_loss_pct": -2.0,
-        "max_hold_days": 5,
-        "vix_shutdown_threshold": 35,
-    })
+    safety: dict = Field(default_factory=lambda: dict(SAFETY_DEFAULTS))
 
 
 class HealthResponse(BaseModel):

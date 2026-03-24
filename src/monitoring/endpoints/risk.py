@@ -14,7 +14,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from src.monitoring.server.auth import verify_api_key
 
 from src.common.logger import get_logger
 from src.monitoring.schemas.risk_schemas import (
@@ -140,7 +142,7 @@ def _build_warnings(
 # ---------------------------------------------------------------------------
 
 @risk_router.get("/dashboard", response_model=RiskDashboardResponse)
-async def get_risk_dashboard() -> RiskDashboardResponse:
+async def get_risk_dashboard(_auth: str = Depends(verify_api_key)) -> RiskDashboardResponse:
     """포트폴리오 리스크 대시보드 종합 데이터를 반환한다.
 
     regime_detector, position_monitor, vix_fetcher, capital_guard를
@@ -156,7 +158,7 @@ async def get_risk_dashboard() -> RiskDashboardResponse:
             current_drawdown_pct=0.0,
             position_concentration=0.0,
             regime="unknown",
-            vix_current=20.0,
+            vix_current=19.0,
             risk_score=0.0,
             warnings=[],
             updated_at=datetime.now(tz=timezone.utc).isoformat(),
@@ -165,7 +167,7 @@ async def get_risk_dashboard() -> RiskDashboardResponse:
         features = _system.features
 
         # --- VIX 조회 ---
-        vix_current: float = 20.0
+        vix_current: float = 19.0
         vix_fetcher = features.get("vix_fetcher")
         if vix_fetcher is not None:
             try:
@@ -514,10 +516,17 @@ def _build_trailing_stop(features: dict[str, Any]) -> TrailingStopData:
                 pnl_pct = ((cur - avg) / avg * 100) if avg > 0 else 0.0
                 # 트레일링 손절가: 현재가 기준으로 trailing_pct만큼 아래
                 trailing_stop_price = round(cur * (1 - trailing_pct / 100), 4)
+                # Flutter TrailingStopPosition.fromJson이 기대하는 키:
+                # high_price, current_price, drawdown_pct, stop_price
+                # high_price는 트레일링 기준 고가이므로 현재가를 사용한다
+                drawdown_pct = round(min(0.0, pnl_pct), 2)
                 positions_info[ticker] = {
                     "entry_price": avg,
+                    "high_price": cur,
                     "current_price": cur,
                     "pnl_pct": round(pnl_pct, 2),
+                    "drawdown_pct": drawdown_pct,
+                    "stop_price": trailing_stop_price,
                     "trailing_stop_price": trailing_stop_price,
                 }
 
@@ -585,8 +594,8 @@ async def _build_streak(
         try:
             feature_max = int(getattr(losing_streak, "max_streak", 0))
             max_loss = max(max_loss, feature_max)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("LosingStreak max_streak 조회 실패 (무시): %s", exc)
 
     try:
         return StreakData(

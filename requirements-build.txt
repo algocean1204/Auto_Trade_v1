@@ -1,0 +1,4 @@
+# DMG 빌드 전용 의존성이다 (런타임에는 불필요)
+# 설치: pip install -r requirements-build.txt
+cython==3.0.11
+pyinstaller==6.11.1

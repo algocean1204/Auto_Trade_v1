@@ -1,6 +1,7 @@
 """F4 뉴스 페이딩 -- 뉴스 스파이크의 역방향 페이딩 신호를 생성한다."""
 from __future__ import annotations
 
+from src.analysis.classifier.key_news_filter import HIGH_IMPACT_THRESHOLD
 from src.common.logger import get_logger
 from src.strategy.models import FadeSignal
 
@@ -13,7 +14,8 @@ _SPIKE_SECONDS_MAX = 60       # 60초 이내
 # 디케이 추정 상수
 _DECAY_BASE = 0.6             # 기본 디케이율 60%
 _DECAY_HIGH_IMPACT = 0.3      # 고영향 뉴스 디케이율 30%
-_HIGH_IMPACT_THRESHOLD = 0.8  # 영향도 임계값
+# key_news_filter.HIGH_IMPACT_THRESHOLD(0.7)을 공유하여 모듈 간 일관성을 유지한다
+_HIGH_IMPACT_THRESHOLD = HIGH_IMPACT_THRESHOLD
 
 
 def _is_spike(pct_change: float, seconds: int) -> bool:
@@ -53,12 +55,14 @@ class NewsFading:
         self,
         price_spike: dict,
         news_context: dict,
+        impact_threshold: float = 0.9,
     ) -> FadeSignal:
         """스파이크 감지 시 페이딩 신호를 생성한다.
 
         Args:
             price_spike: pct_change(%), seconds(초), current_price
             news_context: impact_score(0~1), category
+            impact_threshold: 고영향 뉴스 판단 임계값 (이상이면 페이딩 금지)
         """
         pct_change = price_spike.get("pct_change", 0.0)
         seconds = price_spike.get("seconds", 999)
@@ -70,7 +74,7 @@ class NewsFading:
             return FadeSignal(should_fade=False)
 
         # 고영향 뉴스는 페이딩 금지 (구조적 변화일 수 있다)
-        if impact_score >= 0.9:
+        if impact_score >= impact_threshold:
             logger.info("뉴스 페이딩 금지: 고영향 뉴스 (impact=%.2f)", impact_score)
             return FadeSignal(should_fade=False)
 

@@ -60,7 +60,7 @@ class PositionMonitor:
                         "포지션 동기화 실패 (캐시 %.0f초): %s", age, exc.message,
                     )
             else:
-                logger.error("포지션 동기화 최초 실패: %s", exc.message)
+                logger.error("포지션 동기화 최초 실패: %s", exc.message, exc_info=True)
         return dict(self._positions)
 
     async def get_position(self, ticker: str) -> PositionData | None:

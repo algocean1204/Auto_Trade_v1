@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from src.common.event_bus import EventType, get_event_bus
 from src.common.logger import get_logger
+from src.common.ticker_registry import get_ticker_registry
 from src.executor.order.order_manager import OrderManager
 from src.executor.position.position_monitor import PositionMonitor
 
@@ -46,9 +47,11 @@ async def force_liquidate_all(
     failed: list[str] = []
     total_value = 0.0
 
+    reg = get_ticker_registry()
     for ticker, pos in positions.items():
+        exchange = reg.get_exchange_code(ticker) if reg.has_ticker(ticker) else "NAS"
         result = await order_manager.execute_sell(
-            ticker=ticker, quantity=pos.quantity,
+            ticker=ticker, quantity=pos.quantity, exchange=exchange,
         )
         if result.status == "filled":
             liquidated.append(ticker)
@@ -91,14 +94,20 @@ async def force_liquidate_ticker(
         logger.info("청산할 포지션 없음: %s", ticker)
         return LiquidationResult(liquidated=[], failed=[])
 
+    reg = get_ticker_registry()
+    exchange = reg.get_exchange_code(ticker) if reg.has_ticker(ticker) else "NAS"
     result = await order_manager.execute_sell(
-        ticker=ticker, quantity=pos.quantity,
+        ticker=ticker, quantity=pos.quantity, exchange=exchange,
     )
     value = pos.current_price * pos.quantity
     if result.status == "filled":
+        logger.info("단일 종목 청산 성공: %s %d주 @$%.2f", ticker, pos.quantity, pos.current_price)
         return LiquidationResult(
             liquidated=[ticker], failed=[], total_value=value,
         )
+    logger.error(
+        "단일 종목 청산 실패: %s %d주 -> %s", ticker, pos.quantity, result.message,
+    )
     return LiquidationResult(
         liquidated=[], failed=[ticker], total_value=0.0,
     )
