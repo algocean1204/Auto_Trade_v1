@@ -75,7 +75,8 @@ class LaunchAgentManager:
     def _build_server_plist(self, app_path: str) -> dict:
         """서버 LaunchAgent plist 딕셔너리를 생성한다.
 
-        서버가 항상 실행되도록 KeepAlive=true로 설정한다.
+        비정상 종료 시에만 자동 재시작한다 (KeepAlive.SuccessfulExit=false).
+        정상 종료(워치독 08:00 셧다운 등)는 재시작하지 않는다.
         """
         working_dir = str(get_app_support_dir())
         log_path = str(self._log_dir / "server.log")
@@ -86,7 +87,7 @@ class LaunchAgentManager:
                 f"{app_path}/Contents/Resources/python_backend/trading_server",
             ],
             "WorkingDirectory": working_dir,
-            "KeepAlive": True,
+            "KeepAlive": {"SuccessfulExit": False},
             "RunAtLoad": True,
             "StandardOutPath": log_path,
             "StandardErrorPath": log_path,

@@ -211,6 +211,10 @@ class _ApiKeysTabState extends State<ApiKeysTab> {
       return;
     }
 
+    // account_no 키 — 모의는 kis_mock_account_no, 실전은 kis_account_no이다
+    final accountKey = mock ? 'kis_mock_account_no' : 'kis_account_no';
+    final accountNo = _values[accountKey] ?? '';
+
     // config에 저장하여 서버에서 읽을 수 있게 한다
     provider.updateConfig('${prefix}app_key', appKey);
     provider.updateConfig('${prefix}app_secret', appSecret);
@@ -221,6 +225,7 @@ class _ApiKeysTabState extends State<ApiKeysTab> {
       {
         'app_key': appKey,
         'app_secret': appSecret,
+        'account_no': accountNo,
         'mock': mock ? 'true' : 'false',
       },
       storeAs: storeAs,

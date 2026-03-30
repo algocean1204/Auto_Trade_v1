@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../providers/setup_provider.dart';
 import '../../screens/shell_screen.dart';
 import '../../services/api_service.dart';
+import '../../services/server_launcher.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/trading_colors.dart';
 import '../../utils/env_loader.dart';
@@ -128,7 +129,11 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     );
   }
 
-  /// 설정 저장 후 대시보드로 전환한다.
+  /// 설정 저장 후 셋업용 서버를 종료하고 대시보드로 전환한다.
+  ///
+  /// 셋업 위저드에서 시작한 서버는 위저드 전용이다.
+  /// 완료 후 서버를 종료하여 대시보드에서 사용자가 토큰 발급 → 서버 시작
+  /// 순서로 직접 시작하도록 한다.
   Future<void> _complete(SetupProvider prov) async {
     final ok = await prov.saveAllConfig();
     if (!mounted) return;
@@ -138,6 +143,13 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       // ServerLauncher의 baseUrl도 갱신한다
       context.read<ApiService>().refreshBaseUrl();
 
+      // 셋업용으로 시작한 서버를 종료한다 — 대시보드에서 수동으로 시작한다
+      final launcher = ServerLauncher.instance;
+      if (launcher.launchedByUs) {
+        await launcher.stop();
+      }
+
+      if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const ShellScreen()),
       );

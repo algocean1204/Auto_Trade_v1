@@ -139,7 +139,11 @@ def _single_classify(model: Any, text: str, categories: list[str]) -> str:
 
 
 def _sync_translate(text: str, target_lang: str) -> str:
-    """Bllossom-8B로 번역한다. 번역만 출력, 추론 없음."""
+    """Bllossom-8B로 번역한다. 번역만 출력, 추론 없음.
+
+    한국어 번역 시 결과에 한글이 없으면 ValueError를 발생시킨다.
+    호출부에서 폴백 처리를 할 수 있도록 명시적으로 실패한다.
+    """
     model = _load_bllossom()
     lang_name: str = {"ko": "한국어", "en": "English"}.get(target_lang, target_lang)
     response: dict = model.create_chat_completion(
@@ -165,6 +169,9 @@ def _sync_translate(text: str, target_lang: str) -> str:
         ]
         if korean_lines:
             return "\n".join(korean_lines)
+        # 한글이 전혀 없으면 번역 실패로 판정한다
+        logger.warning("Bllossom 번역 결과에 한글 없음: input=%s, output=%s", text[:60], result[:60])
+        raise ValueError(f"Bllossom 번역 실패 — 한글 미포함: {result[:60]}")
     return result
 
 

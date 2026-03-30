@@ -241,6 +241,72 @@ class ModelDownloadResult {
   }
 }
 
+/// 개별 데이터 파일 정보이다.
+class DataFileInfo {
+  final String name;
+  final String path;
+  final bool exists;
+  final int sizeBytes;
+  final String description;
+
+  const DataFileInfo({
+    required this.name,
+    required this.path,
+    required this.exists,
+    required this.sizeBytes,
+    required this.description,
+  });
+
+  factory DataFileInfo.fromJson(Map<String, dynamic> json) {
+    return DataFileInfo(
+      name: json['name'] as String? ?? '',
+      path: json['path'] as String? ?? '',
+      exists: json['exists'] as bool? ?? false,
+      sizeBytes: json['size_bytes'] as int? ?? 0,
+      description: json['description'] as String? ?? '',
+    );
+  }
+}
+
+/// 기존 설치 데이터 감지 결과이다.
+class DataStatus {
+  final bool hasPreviousInstall;
+  final bool envExists;
+  final bool dbExists;
+  final String modelsDir;
+  final String dataDir;
+  final List<DataFileInfo> files;
+  final List<ModelInfo> models;
+
+  const DataStatus({
+    required this.hasPreviousInstall,
+    required this.envExists,
+    required this.dbExists,
+    required this.modelsDir,
+    required this.dataDir,
+    required this.files,
+    required this.models,
+  });
+
+  factory DataStatus.fromJson(Map<String, dynamic> json) {
+    final rawFiles = json['files'] as List<dynamic>? ?? [];
+    final rawModels = json['models'] as List<dynamic>? ?? [];
+    return DataStatus(
+      hasPreviousInstall: json['has_previous_install'] as bool? ?? false,
+      envExists: json['env_exists'] as bool? ?? false,
+      dbExists: json['db_exists'] as bool? ?? false,
+      modelsDir: json['models_dir'] as String? ?? '',
+      dataDir: json['data_dir'] as String? ?? '',
+      files: rawFiles
+          .map((e) => DataFileInfo.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      models: rawModels
+          .map((e) => ModelInfo.fromJson(e as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+}
+
 // ── LaunchAgent 관련 모델 ──
 
 /// 개별 LaunchAgent 상태 정보이다.

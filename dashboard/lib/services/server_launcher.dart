@@ -187,6 +187,7 @@ class ServerLauncher {
 
     // 번들 모드: 내장 바이너리가 실제로 존재할 때만 사용한다.
     // flutter run 디버그 빌드도 .app 구조를 사용하므로 바이너리 존재 여부로 확인한다.
+    // 바이너리가 없으면 개발 모드로 폴백한다 (flutter run + build_dmg 미실행 시).
     final bundledExe = '$_projectRoot/trading_server';
     if (_isBundledApp && File(bundledExe).existsSync()) {
       executable = bundledExe;
@@ -197,12 +198,15 @@ class ServerLauncher {
         workDir.createSync(recursive: true);
       }
     } else {
-      // 개발 모드: Python 가상환경을 사용한다.
+      // 개발 모드 또는 번들에 바이너리가 없는 경우: Python 가상환경을 사용한다.
       final venvPython = '$_projectRoot/.venv/bin/python';
       if (!File(venvPython).existsSync()) {
-        return const ServerLaunchResult(
+        return ServerLaunchResult(
           success: false,
-          message: 'Python 가상환경을 찾을 수 없습니다.',
+          message: _isBundledApp
+              ? '서버 바이너리를 찾을 수 없습니다. build_dmg.sh로 빌드하거나 '
+                  'LaunchAgent로 서버를 시작하세요.'
+              : 'Python 가상환경을 찾을 수 없습니다.',
         );
       }
       executable = venvPython;
@@ -500,7 +504,8 @@ class ServerLauncher {
   /// LaunchAgent를 로드하여 서버를 시작한다.
   ///
   /// plist가 이미 로드되어 있으면 start만 호출한다.
-  /// KeepAlive=true이므로 로드 즉시 서버가 시작된다.
+  /// plist 설정에 따라 load 시 자동 시작 여부가 결정된다.
+  /// load 후 명시적으로 start를 호출하여 확실히 시작한다.
   Future<ServerLaunchResult> startViaLaunchAgent() async {
     // 이미 실행 중이면 바로 반환한다.
     if (await _healthCheck()) {
@@ -528,6 +533,9 @@ class ServerLauncher {
         );
       }
       _appendLog('[launchctl] LaunchAgent 로드 완료');
+      // load 후 명시적으로 start를 호출하여 확실히 시작한다.
+      await Process.run('launchctl', ['start', _serviceLabel]);
+      _appendLog('[launchctl] 서버 시작 요청');
     } else {
       // 로드되어 있지만 프로세스가 없으면 start를 호출한다.
       await Process.run('launchctl', ['start', _serviceLabel]);
@@ -550,7 +558,7 @@ class ServerLauncher {
 
   /// LaunchAgent를 언로드하여 서버를 완전히 중지한다.
   ///
-  /// unload를 사용하여 KeepAlive 자동 재시작을 방지한다.
+  /// unload를 사용하여 LaunchAgent 등록을 해제한다.
   Future<ServerLaunchResult> stopViaLaunchAgent() async {
     final status = await getLaunchAgentStatus();
     if (!status.loaded) {
@@ -579,7 +587,7 @@ class ServerLauncher {
 
   /// LaunchAgent를 통해 서버를 재시작한다.
   ///
-  /// KeepAlive=true이므로 stop 명령이 자동 재시작을 트리거한다.
+  /// stop → start를 명시적으로 실행하여 재시작한다.
   Future<ServerLaunchResult> restartViaLaunchAgent() async {
     final status = await getLaunchAgentStatus();
     if (!status.loaded) {
@@ -587,12 +595,18 @@ class ServerLauncher {
       return startViaLaunchAgent();
     }
 
-    // stop → KeepAlive가 자동 재시작한다.
+    // stop으로 현재 프로세스를 종료한다.
     await Process.run('launchctl', ['stop', _serviceLabel]);
-    _appendLog('[launchctl] 서버 재시작 요청 (stop → KeepAlive 자동 재시작)');
+    _appendLog('[launchctl] 서버 중지 요청');
+
+    // 프로세스 종료를 대기한다.
+    await Future.delayed(const Duration(seconds: 3));
+
+    // start로 새 프로세스를 시작한다.
+    await Process.run('launchctl', ['start', _serviceLabel]);
+    _appendLog('[launchctl] 서버 재시작 요청');
 
     // 재시작 완료를 대기한다.
-    await Future.delayed(const Duration(seconds: 3));
     final healthy = await _waitForHealth();
     if (healthy) {
       return const ServerLaunchResult(

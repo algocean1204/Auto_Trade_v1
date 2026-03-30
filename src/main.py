@@ -33,6 +33,7 @@ from src.monitoring.server.api_server import (
     set_setup_mode,
     start_server,
 )
+from src.monitoring.endpoints.system import set_system_shutdown_event
 from src.orchestration.init.dependency_injector import inject_dependencies
 from src.orchestration.init.graceful_shutdown import (
     graceful_shutdown,
@@ -109,6 +110,8 @@ async def main() -> None:
     #    서버 시작 전에 등록하여 시작 중 시그널 미처리 구간을 제거한다
     shutdown_event = asyncio.Event()
     setup_signal_handlers(system, shutdown_event)
+    # /api/system/shutdown 엔드포인트가 서버 프로세스를 종료할 수 있도록 이벤트를 주입한다
+    set_system_shutdown_event(shutdown_event)
 
     # 3. API 서버 생성 + 의존성 주입 + 비동기 시작 (F7.1)
     app = create_app()
@@ -130,6 +133,56 @@ async def main() -> None:
 
     server_task.add_done_callback(_on_server_done)
 
+    # 3.7. 08:00 KST 자동 셧다운 워치독 -- 불필요한 자원 소모를 방지한다
+    async def _auto_shutdown_watchdog() -> None:
+        """08:00 KST 이후 매매/EOD가 모두 끝나면 서버를 자동 종료한다.
+
+        야간 매매 세션(20:00~08:00) 후 자원 절약을 위한 안전장치이다.
+        08:00~20:00 사이에 시작된 서버는 주간 디버깅으로 간주하여 비활성한다.
+        EOD가 08:00 이후까지 실행되어도 완료를 기다린 후 종료한다.
+        """
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+
+        from src.monitoring.endpoints.trading_control import is_eod_running
+
+        kst = ZoneInfo("Asia/Seoul")
+        start_time = _dt.now(kst)
+
+        # 08:00~20:00 사이에 서버를 시작하면 주간 디버깅 목적이므로 워치독 비활성
+        if 8 <= start_time.hour < 20:
+            logger.info("08:00~20:00 사이 서버 시작 — 자동 셧다운 워치독 비활성")
+            return
+
+        last_log_minute = -1
+        while not shutdown_event.is_set():
+            await asyncio.sleep(60)
+            now = _dt.now(kst)
+
+            # 08:00 이전이면 대기한다
+            if now.hour < 8:
+                continue
+
+            # 매매/EOD 모두 종료되었으면 셧다운
+            if not system.running and not is_eod_running():
+                logger.info(
+                    "%02d:%02d KST 자동 셧다운 — 매매/EOD 미실행 상태",
+                    now.hour, now.minute,
+                )
+                shutdown_event.set()
+                return
+
+            # 5분마다 대기 상태를 로그에 기록한다 (과도한 로그 방지)
+            if now.minute % 5 == 0 and now.minute != last_log_minute:
+                reason = "매매" if system.running else "EOD"
+                logger.info(
+                    "%02d:%02d KST — %s 실행 중이므로 셧다운 대기",
+                    now.hour, now.minute, reason,
+                )
+                last_log_minute = now.minute
+
+    watchdog_task = asyncio.create_task(_auto_shutdown_watchdog())
+
     # 4. 종료 대기 (시그널 또는 서버 실패 중 먼저 발생한 쪽)
     logger.info("시스템 준비 완료. API 서버에서 매매를 제어합니다.")
     done, pending = await asyncio.wait(
@@ -147,8 +200,59 @@ async def main() -> None:
         except asyncio.CancelledError:
             pass
 
+    # 워치독 태스크 정리
+    if not watchdog_task.done():
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+
     if server_failed.is_set():
         logger.error("서버 시작 실패로 시스템을 종료한다.")
+        # 매매 루프에도 종료 신호를 보내 자연 종료 → EOD 실행 경로를 보장한다
+        try:
+            from src.monitoring.endpoints.trading_control import signal_trading_shutdown
+            signal_trading_shutdown()
+        except Exception:
+            pass
+
+    # 4.5. 매매 태스크/EOD가 실행 중이면 완료를 대기한다 (EOD 데이터 보호)
+    #       셧다운 신호를 받아도 EOD가 끝날 때까지 기다려야 PnL/보고서 누락이 없다
+    if system.trading_task and not system.trading_task.done():
+        logger.info("매매 태스크/EOD 완료 대기 중 (최대 10분)...")
+        try:
+            await asyncio.wait_for(system.trading_task, timeout=600)
+            logger.info("매매 태스크 정상 완료")
+        except asyncio.TimeoutError:
+            logger.warning("매매 태스크 10분 타임아웃 — 강제 취소")
+            system.trading_task.cancel()
+            try:
+                await system.trading_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except (asyncio.CancelledError, Exception) as exc:
+            logger.warning("매매 태스크 대기 중 예외: %s", type(exc).__name__)
+
+    # 4.6. 수동 stop에서 생성된 독립 EOD 태스크가 실행 중이면 완료를 대기한다
+    #       _stop_trading_task()의 ensure_future EOD는 system.trading_task에 포함되지 않는다
+    from src.monitoring.endpoints.trading_control import get_active_eod_task
+    active_eod = get_active_eod_task()
+    if active_eod and not active_eod.done():
+        logger.info("독립 EOD 태스크 완료 대기 중 (최대 10분)...")
+        try:
+            done, _ = await asyncio.wait({active_eod}, timeout=600)
+            if done:
+                logger.info("독립 EOD 태스크 정상 완료")
+            else:
+                logger.warning("독립 EOD 태스크 10분 타임아웃 — 강제 취소")
+                active_eod.cancel()
+                try:
+                    await active_eod
+                except (asyncio.CancelledError, Exception):
+                    pass
+        except Exception as exc:
+            logger.warning("독립 EOD 태스크 대기 중 예외: %s", type(exc).__name__)
 
     # 5. 서버 태스크 정리 — 어떤 예외든 흡수하여 graceful_shutdown 도달을 보장한다
     if not server_task.done():

@@ -120,11 +120,15 @@ def _verify_ws_token(ws: WebSocket) -> bool:
     """WebSocket 연결 시 쿼리 파라미터의 토큰을 검증한다.
 
     타이밍 공격 방지를 위해 hmac.compare_digest를 사용한다.
+    setup_mode에서 API_SECRET_KEY가 미설정이면 인증을 건너뛴다.
     """
+    from src.monitoring.server.auth import is_setup_mode
+
     vault = get_vault()
     secret = vault.get_secret_or_none("API_SECRET_KEY")
     if secret is None:
-        return False
+        # setup_mode이면 인증 건너뜀 (첫 설치 위저드)
+        return is_setup_mode()
     token = ws.query_params.get("token", "")
     return hmac.compare_digest(token, secret)
 

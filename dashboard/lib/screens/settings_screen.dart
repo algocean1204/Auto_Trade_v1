@@ -37,7 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 7, vsync: this);
+    _tabController = TabController(length: 8, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<TradeProvider>().loadStrategyParams();
       context.read<TradeProvider>().loadUniverse();
@@ -85,6 +85,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                     Tab(text: t('universe')),
                     Tab(text: t('crawl')),
                     Tab(text: t('tp_tab_title')),
+                    const Tab(text: 'AI 모델'),
                     Tab(text: t('server_tab')),
                     const Tab(text: 'API 키'),
                   ],
@@ -101,6 +102,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 _UniverseTab(),
                 _CrawlTab(),
                 const TickerParamsTab(),
+                const _ModelsTab(),
                 const _ServerTab(),
                 const ApiKeysTab(),
               ],
@@ -1367,6 +1369,419 @@ class _CrawlTab extends StatelessWidget {
 }
 
 // ── 서버 관리 탭 ──
+// ── AI 모델 관리 탭 ──
+//
+// 모델 다운로드 상태 확인, 개별/전체 다운로드, 기존 데이터 감지를 제공한다.
+
+class _ModelsTab extends StatefulWidget {
+  const _ModelsTab();
+
+  @override
+  State<_ModelsTab> createState() => _ModelsTabState();
+}
+
+class _ModelsTabState extends State<_ModelsTab> {
+  Timer? _pollTimer;
+  DataStatus? _dataStatus;
+  ModelsStatus? _modelsStatus;
+  bool _isLoading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 모델 + 데이터 상태를 동시 조회한다.
+  Future<void> _loadAll() async {
+    setState(() { _isLoading = true; _error = null; });
+    final service = SetupService();
+    try {
+      final results = await Future.wait([
+        service.getModelsStatus(),
+        service.getDataStatus(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _modelsStatus = results[0] as ModelsStatus;
+        _dataStatus = results[1] as DataStatus;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = '서버 연결 실패'; _isLoading = false; });
+    }
+  }
+
+  /// 3초 폴링을 시작한다 (다운로드 진행 중 상태 갱신용).
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (!mounted) return;
+      _refreshModels();
+    });
+  }
+
+  void _stopPolling() { _pollTimer?.cancel(); _pollTimer = null; }
+
+  int _pollFailCount = 0;
+
+  /// 모델 상태만 갱신한다 (폴링용).
+  Future<void> _refreshModels() async {
+    try {
+      final service = SetupService();
+      final status = await service.getModelsStatus();
+      if (!mounted) return;
+      _pollFailCount = 0;
+      final downloading = status.models.any(
+        (m) => !m.downloaded && m.downloadProgress != null,
+      );
+      setState(() { _modelsStatus = status; _error = null; });
+      // 다운로드가 모두 끝나면 폴링을 중단하고 전체 갱신한다
+      if (!downloading && _pollTimer != null) {
+        _stopPolling();
+        _loadAll();
+      }
+    } catch (_) {
+      _pollFailCount++;
+      // 연속 5회 실패 시 폴링을 중단하고 에러를 표시한다
+      if (_pollFailCount >= 5 && mounted) {
+        _stopPolling();
+        setState(() { _error = '서버 연결이 끊어졌습니다. 새로고침하세요.'; });
+      }
+    }
+  }
+
+  /// 특정 모델 또는 전체를 다운로드한다.
+  Future<void> _startDownload({List<String>? modelIds}) async {
+    try {
+      final service = SetupService();
+      await service.startModelDownload(modelIds: modelIds);
+      if (!mounted) return;
+      _startPolling();
+      await _refreshModels();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = '다운로드 시작 실패: $e'; });
+    }
+  }
+
+  /// 다운로드를 취소한다.
+  Future<void> _cancelDownload() async {
+    try {
+      final service = SetupService();
+      await service.cancelModelDownload();
+      if (!mounted) return;
+      _stopPolling();
+      await _refreshModels();
+    } catch (e) {
+      if (!mounted) return;
+      _stopPolling();
+      setState(() { _error = '취소 요청 실패 — 서버 연결을 확인하세요'; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tc = context.tc;
+    final theme = Theme.of(context);
+
+    if (_isLoading && _modelsStatus == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null && _modelsStatus == null) {
+      return Center(child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.cloud_off, size: 48, color: tc.textTertiary),
+          AppSpacing.vGapMd,
+          Text(_error!, style: TextStyle(color: tc.textSecondary)),
+          AppSpacing.vGapMd,
+          FilledButton.icon(
+            onPressed: _loadAll,
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('재시도'),
+          ),
+        ],
+      ));
+    }
+
+    final models = _modelsStatus?.models ?? [];
+    final downloading = models.any(
+      (m) => !m.downloaded && m.downloadProgress != null,
+    );
+    final allDownloaded = models.isNotEmpty && models.every((m) => m.downloaded);
+    final progress = _overallProgress(models);
+    final dataFiles = _dataStatus?.files ?? [];
+
+    return RefreshIndicator(
+      onRefresh: _loadAll,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: AppSpacing.paddingScreen,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── 기존 데이터 감지 섹션 ──
+            if (_dataStatus != null) ...[
+              _buildDataDetectionSection(tc, theme, dataFiles),
+              AppSpacing.vGapXl,
+            ],
+            // ── 모델 다운로드 섹션 ──
+            Text('AI 모델 관리', style: theme.textTheme.titleLarge?.copyWith(
+              color: tc.textPrimary, fontWeight: FontWeight.bold)),
+            AppSpacing.vGapSm,
+            Text(
+              '로컬 분류/번역에 필요한 GGUF 모델입니다. 총 약 ${_modelsStatus?.totalSizeGb.toStringAsFixed(0) ?? "23"}GB',
+              style: theme.textTheme.bodyMedium?.copyWith(color: tc.textSecondary),
+            ),
+            AppSpacing.vGapMd,
+            // 전체 상태 요약 카드
+            _buildSummaryCard(tc, theme, allDownloaded),
+            AppSpacing.vGapLg,
+            // 전체 진행률 바
+            if (downloading) ...[
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('전체 진행률', style: theme.textTheme.titleSmall?.copyWith(
+                  color: tc.textPrimary)),
+                Text('${(progress * 100).toStringAsFixed(0)}%',
+                  style: TextStyle(color: tc.info, fontWeight: FontWeight.w600)),
+              ]),
+              AppSpacing.vGapSm,
+              ClipRRect(
+                borderRadius: AppSpacing.borderRadiusSm,
+                child: LinearProgressIndicator(value: progress, minHeight: 6,
+                  backgroundColor: tc.surfaceBorder,
+                  valueColor: AlwaysStoppedAnimation<Color>(tc.info))),
+              AppSpacing.vGapLg,
+            ],
+            // 개별 모델 카드 (개별 다운로드 버튼 포함)
+            ...models.map((m) => Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+              child: _buildModelCard(tc, theme, m, downloading),
+            )),
+            AppSpacing.vGapLg,
+            // 전체 다운로드/취소 버튼
+            if (!allDownloaded) ...[
+              Row(children: [
+                Expanded(child: downloading
+                  ? OutlinedButton.icon(
+                      onPressed: _cancelDownload,
+                      icon: Icon(Icons.cancel, size: 18, color: tc.loss),
+                      label: Text('취소', style: TextStyle(color: tc.loss)))
+                  : FilledButton.icon(
+                      onPressed: () => _startDownload(),
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('전체 다운로드'))),
+              ]),
+              AppSpacing.vGapMd,
+            ],
+            // 경로 정보
+            if (_dataStatus != null) ...[
+              AppSpacing.vGapMd,
+              _buildPathInfo(tc, theme),
+            ],
+            AppSpacing.vGapXl,
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 기존 데이터 감지 섹션을 빌드한다.
+  Widget _buildDataDetectionSection(
+    TradingColors tc, ThemeData theme, List<DataFileInfo> files,
+  ) {
+    final hasData = _dataStatus!.hasPreviousInstall;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Icon(hasData ? Icons.history : Icons.new_releases,
+            color: hasData ? tc.info : tc.textTertiary, size: 22),
+          AppSpacing.hGapSm,
+          Text(hasData ? '기존 설치 데이터 감지됨' : '새로운 설치',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: tc.textPrimary, fontWeight: FontWeight.w600)),
+        ]),
+        AppSpacing.vGapMd,
+        // 데이터 파일 목록
+        ...files.map((f) => Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Row(children: [
+            Icon(f.exists ? Icons.check_circle : Icons.radio_button_unchecked,
+              color: f.exists ? tc.profit : tc.textTertiary, size: 16),
+            AppSpacing.hGapSm,
+            Expanded(child: Text(f.description,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: f.exists ? tc.textPrimary : tc.textTertiary))),
+            Text(f.exists ? _formatSize(f.sizeBytes) : '없음',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: f.exists ? tc.textSecondary : tc.textTertiary)),
+          ]),
+        )),
+      ],
+    );
+  }
+
+  /// 모델 상태 요약 카드를 빌드한다.
+  Widget _buildSummaryCard(TradingColors tc, ThemeData theme, bool allDone) {
+    final st = _modelsStatus;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: allDone ? tc.profit.withValues(alpha: 0.08) : tc.infoBg,
+      shape: RoundedRectangleBorder(
+        borderRadius: AppSpacing.borderRadiusMd,
+        side: BorderSide(color: allDone
+          ? tc.profit.withValues(alpha: 0.3) : tc.info.withValues(alpha: 0.3)),
+      ),
+      child: Padding(
+        padding: AppSpacing.paddingCard,
+        child: Row(children: [
+          Icon(allDone ? Icons.check_circle : Icons.info_outline,
+            color: allDone ? tc.profit : tc.info, size: 20),
+          AppSpacing.hGapMd,
+          Expanded(child: Text(
+            allDone
+              ? '모든 모델 준비 완료 (${st?.downloadedCount ?? 0}/${st?.totalCount ?? 0})'
+              : '${st?.downloadedCount ?? 0}/${st?.totalCount ?? 0}개 다운로드됨 — 미완료 모델은 개별 또는 전체 다운로드 가능',
+            style: TextStyle(
+              color: allDone ? tc.profit : tc.info, fontSize: 13),
+          )),
+        ]),
+      ),
+    );
+  }
+
+  /// 개별 모델 카드 (개별 다운로드 버튼 포함).
+  Widget _buildModelCard(
+    TradingColors tc, ThemeData theme, ModelInfo m, bool anyDownloading,
+  ) {
+    final isDownloading = !m.downloaded && m.downloadProgress != null;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: tc.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: AppSpacing.borderRadiusMd,
+        side: BorderSide(color: tc.surfaceBorder),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(children: [
+              Icon(
+                m.downloaded ? Icons.check_circle
+                  : isDownloading ? Icons.downloading : Icons.download,
+                color: m.downloaded ? tc.profit
+                  : isDownloading ? tc.info : tc.textTertiary,
+                size: 24,
+              ),
+              AppSpacing.hGapMd,
+              Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(m.name, style: theme.textTheme.titleSmall,
+                    overflow: TextOverflow.ellipsis),
+                  AppSpacing.vGapXs,
+                  Text(
+                    m.downloaded
+                      ? '${m.sizeGb.toStringAsFixed(1)} GB · 완료'
+                      : '${m.sizeGb.toStringAsFixed(1)} GB',
+                    style: TextStyle(
+                      color: m.downloaded ? tc.profit : tc.textSecondary,
+                      fontSize: 12),
+                  ),
+                ],
+              )),
+              if (isDownloading)
+                Text('${(m.downloadProgress! * 100).toStringAsFixed(0)}%',
+                  style: TextStyle(color: tc.info, fontWeight: FontWeight.w600))
+              else if (!m.downloaded && !anyDownloading)
+                SizedBox(
+                  height: 32,
+                  child: OutlinedButton(
+                    onPressed: () => _startDownload(modelIds: [m.modelId]),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                    child: const Text('다운로드'),
+                  ),
+                ),
+            ]),
+            if (isDownloading) ...[
+              AppSpacing.vGapSm,
+              ClipRRect(
+                borderRadius: AppSpacing.borderRadiusSm,
+                child: LinearProgressIndicator(
+                  value: m.downloadProgress,
+                  minHeight: 4,
+                  backgroundColor: tc.surfaceBorder,
+                  valueColor: AlwaysStoppedAnimation<Color>(tc.info),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 저장 경로 정보를 표시한다.
+  Widget _buildPathInfo(TradingColors tc, ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('저장 경로', style: theme.textTheme.titleSmall?.copyWith(
+          color: tc.textSecondary)),
+        AppSpacing.vGapSm,
+        _pathRow(tc, theme, '모델', _dataStatus!.modelsDir),
+        AppSpacing.vGapXs,
+        _pathRow(tc, theme, '데이터', _dataStatus!.dataDir),
+      ],
+    );
+  }
+
+  Widget _pathRow(TradingColors tc, ThemeData theme, String label, String path) {
+    return Row(children: [
+      SizedBox(width: 50, child: Text(label,
+        style: theme.textTheme.bodySmall?.copyWith(color: tc.textTertiary))),
+      Expanded(child: Text(path,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: tc.textSecondary, fontFamily: 'monospace', fontSize: 11),
+        overflow: TextOverflow.ellipsis)),
+    ]);
+  }
+
+  double _overallProgress(List<ModelInfo> models) {
+    if (models.isEmpty) return 0.0;
+    var total = 0.0;
+    for (final m in models) {
+      total += m.downloaded ? 1.0 : (m.downloadProgress ?? 0.0);
+    }
+    return total / models.length;
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    if (bytes < 1073741824) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
+    return '${(bytes / 1073741824).toStringAsFixed(1)} GB';
+  }
+}
+
+
+// ── 서버 제어 탭 ──
 //
 // TradingControlProvider.isConnected를 기본 서버 상태로 사용한다.
 // 서버는 AppBar SERVER 버튼(subprocess) 또는 LaunchAgent로 시작될 수 있다.
@@ -1406,15 +1821,30 @@ class _ServerTabState extends State<_ServerTab> {
     if (mounted) setState(() => _agentStatus = status);
   }
 
+  /// LaunchAgent 액션을 실행하고 TradingControlProvider 상태를 즉시 동기화한다.
+  ///
+  /// [isStop]이 true이면 서버 중지로 판단하여 markServerStopped()를 호출하고,
+  /// false이면 시작/재시작으로 판단하여 syncAfterServerStart()를 호출한다.
   Future<void> _runAction(
-    Future<ServerLaunchResult> Function() action,
-  ) async {
+    Future<ServerLaunchResult> Function() action, {
+    bool isStop = false,
+  }) async {
     setState(() {
       _isBusy = true;
       _message = null;
     });
     final result = await action();
     await _refreshAgentStatus();
+    // LaunchAgent 시작/중지 후 TradingControlProvider 상태를 즉시 동기화한다.
+    // 이를 통해 AppBar의 SERVER/OFF/START/NEWS 버튼이 즉시 반영된다.
+    if (mounted) {
+      final ctrl = context.read<TradingControlProvider>();
+      if (isStop) {
+        ctrl.markServerStopped();
+      } else {
+        await ctrl.syncAfterServerStart();
+      }
+    }
     if (mounted) {
       setState(() {
         _isBusy = false;
@@ -1518,10 +1948,11 @@ class _ServerTabState extends State<_ServerTab> {
                             icon: Icons.stop_rounded,
                             label: t('server_stop'),
                             color: tc.loss,
-                            onPressed: _isBusy || !isConnected
+                            onPressed: _isBusy || !isConnected || !ctrl.canStopServer
                                 ? null
                                 : () => _runAction(
-                                    _launcher.stopViaLaunchAgent),
+                                    _launcher.stopViaLaunchAgent,
+                                    isStop: true),
                           ),
                         ),
                         AppSpacing.hGapMd,
@@ -1530,7 +1961,7 @@ class _ServerTabState extends State<_ServerTab> {
                             icon: Icons.refresh_rounded,
                             label: t('server_restart'),
                             color: tc.primary,
-                            onPressed: _isBusy
+                            onPressed: _isBusy || !ctrl.canStopServer
                                 ? null
                                 : () => _runAction(
                                     _launcher.restartViaLaunchAgent),
@@ -1538,6 +1969,16 @@ class _ServerTabState extends State<_ServerTab> {
                         ),
                       ],
                     ),
+                    // 앱 이동 시 LaunchAgent 재설치 안내
+                    if (agentStatus?.loaded == true) ...[
+                      AppSpacing.vGapSm,
+                      Text(
+                        '앱을 다른 위치로 이동하면 LaunchAgent를 재설치해야 합니다.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: tc.textTertiary,
+                        ),
+                      ),
+                    ],
                     if (_isBusy) ...[
                       AppSpacing.vGapMd,
                       const LinearProgressIndicator(),

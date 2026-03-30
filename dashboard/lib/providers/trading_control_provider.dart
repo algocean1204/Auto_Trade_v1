@@ -26,8 +26,8 @@ class TradingControlProvider with ChangeNotifier {
   /// 자동매매 실행 여부이다 (마지막 성공 응답 기준).
   bool _isRunning = false;
 
-  /// 서버 연결 가능 여부이다.
-  bool _isConnected = true;
+  /// 서버 연결 가능 여부이다. 첫 폴링 전까지는 미연결 상태로 시작한다.
+  bool _isConnected = false;
 
   /// 상태 조회/시작/중지 요청 처리 중 여부이다.
   bool _isBusy = false;
@@ -226,6 +226,9 @@ class TradingControlProvider with ChangeNotifier {
   }
 
   /// 보호 만료 후 서버를 자동 종료한다.
+  ///
+  /// shutdown API를 호출하여 서버가 어떻게 시작되었든 안전하게 종료한다.
+  /// 서버 측에도 08:00 KST 워치독이 있으므로 이중 안전장치이다.
   Future<void> _autoShutdownServer() async {
     // 아직 매매 실행 중이면 종료하지 않는다 (안전장치).
     if (_isRunning || _isBusyNews) {
@@ -245,14 +248,49 @@ class TradingControlProvider with ChangeNotifier {
     _serverProtectedUntil = null;
     _autoShutdownTimer = null;
 
-    // 이 앱이 시작한 서버만 종료한다.
-    if (_serverLauncher.launchedByUs) {
-      stopPolling();
-      await _serverLauncher.stop();
-      _isConnected = false;
-      _isRunning = false;
-      _safeNotify();
+    // shutdown API로 서버를 안전하게 종료한다 (시작 방법과 무관)
+    try {
+      await _apiService.shutdownServer();
+      debugPrint('TradingControlProvider: 자동 종료 — shutdown API 성공');
+    } catch (e) {
+      debugPrint('TradingControlProvider: 자동 종료 — shutdown API 실패: $e');
     }
+    // 앱이 시작한 프로세스가 있으면 추가로 종료한다 (안전장치)
+    await _serverLauncher.stop();
+
+    stopPolling();
+    _isConnected = false;
+    _isRunning = false;
+    _safeNotify();
+  }
+
+  /// 서버가 외부에서 시작된 후 상태를 동기화한다.
+  ///
+  /// Settings의 LaunchAgent 시작/재시작 후 호출한다.
+  /// 헬스체크로 서버 상태를 확인하고, AppBar 버튼에 즉시 반영한다.
+  Future<void> syncAfterServerStart() async {
+    final alive = await _serverLauncher.isServerRunning();
+    if (alive && !_isConnected) {
+      _isConnected = true;
+      _error = null;
+      _apiService.refreshBaseUrl();
+      _safeNotify();
+      // 전체 상태(매매 상태, 시간 윈도우 등)를 갱신한다
+      await _fetchStatus();
+    }
+  }
+
+  /// 서버가 외부에서 중지되었음을 즉시 반영한다.
+  ///
+  /// Settings의 LaunchAgent 중지 후 호출한다.
+  /// 헬스체크 없이 즉시 disconnected 상태로 전환하여
+  /// graceful shutdown 중 레이스 컨디션을 방지한다.
+  void markServerStopped() {
+    if (!_isConnected && !_isRunning) return;
+    _isConnected = false;
+    _isRunning = false;
+    _error = null;
+    _safeNotify();
   }
 
   /// 서버를 수동으로 시작한다.
@@ -267,7 +305,8 @@ class TradingControlProvider with ChangeNotifier {
 
   /// 서버 프로세스를 중지한다.
   ///
-  /// 이 앱이 시작한 프로세스만 종료한다.
+  /// /api/system/shutdown API를 호출하여 서버를 안전하게 종료한다.
+  /// API 호출 실패 시 프로세스 직접 종료를 시도한다.
   /// 자동매매 실행 중, 뉴스 수집 중, 또는 매매 세션 보호 중이면 중지를 거부한다.
   Future<bool> stopServer() async {
     if (_isRunning) {
@@ -299,7 +338,17 @@ class TradingControlProvider with ChangeNotifier {
     _autoShutdownTimer = null;
     _tradingSessionActive = false;
     _serverProtectedUntil = null;
+
+    // 1) shutdown API로 서버를 안전하게 종료한다
+    try {
+      await _apiService.shutdownServer();
+      debugPrint('TradingControlProvider: shutdown API 호출 성공');
+    } catch (e) {
+      debugPrint('TradingControlProvider: shutdown API 실패, 프로세스 직접 종료: $e');
+    }
+    // 2) 앱이 직접 시작한 프로세스가 있으면 추가로 종료한다 (안전장치)
     await _serverLauncher.stop();
+
     _isConnected = false;
     _isRunning = false;
     _error = null;

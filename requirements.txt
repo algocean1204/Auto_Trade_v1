@@ -31,6 +31,9 @@ hmmlearn==0.3.3
 # llama-cpp-python==0.3.8
 mlx-lm==0.21.2
 
+# ── 번역 (MarianMT) ──
+sentencepiece==0.2.0
+
 # ── 데이터/크롤링 ──
 feedparser==6.0.11
 beautifulsoup4==4.12.3

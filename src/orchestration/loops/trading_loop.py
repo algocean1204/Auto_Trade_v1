@@ -2433,6 +2433,10 @@ async def _execute_iteration(
         msg = f"반복 실행 오류: {exc}"
         logger.error(msg, exc_info=True)
         errors.append(msg)
+        # Self-Healing: 에러를 모니터링봇에 전달한다
+        _error_monitor = system.features.get("error_monitor")
+        if _error_monitor is not None:
+            _error_monitor.record_error(exc, "trading_loop")
 
     # WebSocket 채널 캐시 갱신 (실패해도 루프에 영향 없음)
     await _update_ws_cache(system, session_type, trades)

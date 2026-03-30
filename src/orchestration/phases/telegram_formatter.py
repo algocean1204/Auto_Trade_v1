@@ -222,7 +222,7 @@ _SYSTEM_PROMPT = """너는 미국 2X 레버리지 ETF(SOXL, QLD, TQQQ, UPRO, SSO
 1. 핵심 뉴스 = impact_score >= 0.7. 반드시 카테고리별로 묶어서 표시
 2. 일반 뉴스 = impact_score < 0.7. 방향+제목+시간+출처 한줄
 3. 진행 중인 상황 = situation_reports. 없으면 섹션 생략
-4. headline_kr이 있으면 반드시 사용, 없으면 title 사용
+4. headline_kr이 있으면 반드시 사용. 없으면 title을 한국어로 직접 번역하여 표시
 5. 카테고리: 🌍지정학 🏦거시경제 💰실적 🏭섹터 📜정책 📰기타
 6. 방향: 📈강세 📉약세 ➡️중립
 7. 긴급도: 🚨즉시대응 👀관찰 📋참고 (actionability 필드)

@@ -38,6 +38,7 @@ _SECRET_KEY_MAP: dict[str, str] = {
     "alphavantage": "ALPHAVANTAGE_API_KEY",
     "fred": "FRED_API_KEY",
     "dart": "DART_API_KEY",
+    "stocktwits": "STOCKTWITS_ACCESS_TOKEN",
 }
 
 # 소스별 API 키 파라미터 이름 매핑이다
@@ -46,6 +47,7 @@ _PARAM_NAME_MAP: dict[str, str] = {
     "alphavantage": "apikey",
     "fred": "api_key",
     "dart": "apikey",
+    "stocktwits": "access_token",
 }
 
 

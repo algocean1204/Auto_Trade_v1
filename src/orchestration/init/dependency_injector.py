@@ -1,7 +1,7 @@
 """F9.2 DependencyInjector -- Feature 매니저에 Common 인프라를 주입한다.
 
 SystemComponents를 받아 InjectedSystem을 조립한다.
-F1~F10 Feature 인스턴스를 생성하고 등록한다.
+F1~F10 Feature 인스턴스를 생성하고 등록한다. (F10 = Self-Healing)
 """
 from __future__ import annotations
 
@@ -115,7 +115,11 @@ def _inject_f3_indicators(system: InjectedSystem) -> None:
         _register_feature(system, "price_fetcher", PriceDataFetcher(c.broker))
 
         from src.indicators.bundle_builder import IndicatorBundleBuilder
-        builder = IndicatorBundleBuilder(c.broker, c.cache, system.components.registry)
+        _finnhub_key = c.vault.get_secret_or_none("FINNHUB_API_KEY")
+        builder = IndicatorBundleBuilder(
+            c.broker, c.cache, system.components.registry,
+            http=c.http, finnhub_api_key=_finnhub_key,
+        )
         # indicators.py 엔드포인트가 "indicator_bundle_builder" 키를 조회하므로 일치시킨다
         _register_feature(system, "indicator_bundle_builder", builder)
     except Exception as exc:
@@ -484,10 +488,21 @@ def _inject_f9_optimization(system: InjectedSystem) -> None:
         logger.warning("F9 ExecutionOptimizer 초기화 실패 (건너뜀): %s", exc)
 
 
+def _inject_f10_healing(system: InjectedSystem) -> None:
+    """F10 Self-Healing 모듈을 초기화하고 등록한다."""
+    try:
+        from src.healing import ErrorMonitor, TradeWatchdog
+
+        _register_feature(system, "error_monitor", ErrorMonitor(system))
+        _register_feature(system, "trade_watchdog", TradeWatchdog(system))
+    except Exception as exc:
+        logger.warning("F10 Healing 초기화 실패 (건너뜀): %s", exc)
+
+
 def inject_dependencies(components: SystemComponents) -> InjectedSystem:
     """SystemComponents에 Feature 매니저를 조립하고 의존성을 주입한다.
 
-    F1~F9 Feature 인스턴스를 생성하여 등록한다.
+    F1~F10 Feature 인스턴스를 생성하여 등록한다.
     개별 Feature 초기화 실패 시 해당 Feature만 건너뛴다.
     """
     system = InjectedSystem(components=components, running=False)
@@ -501,6 +516,7 @@ def inject_dependencies(components: SystemComponents) -> InjectedSystem:
     _inject_f7_telegram(system)
     _inject_f8_tax(system)
     _inject_f9_optimization(system)
+    _inject_f10_healing(system)
 
     # Universe DB 영속화 -- 부팅 시 DB에서 유니버스를 로드하기 위한 persister이다
     try:

@@ -65,6 +65,7 @@ from src.monitoring.endpoints.principles import (
 )
 from src.monitoring.endpoints.system import (
     set_system_deps,
+    set_system_shutdown_event,
     system_router,
 )
 from src.monitoring.endpoints.trade_reasoning import (
@@ -88,6 +89,7 @@ from src.monitoring.endpoints.profit_target import (
 )
 from src.monitoring.endpoints.risk import set_risk_deps, risk_router
 from src.monitoring.endpoints.setup import set_setup_deps, setup_router
+from src.monitoring.endpoints.healing import healing_router, set_healing_deps
 from src.monitoring.schedulers.fx_scheduler import FxScheduler
 from src.monitoring.websocket.ws_manager import set_ws_deps, ws_router
 
@@ -166,6 +168,7 @@ def _register_routes(app: FastAPI) -> None:
         profit_target_router,      # /api/target/* (수익 목표 현황/이력/추정)
         risk_router,               # /api/risk/* (리스크 대시보드)
         setup_router,              # /api/setup/* (소비자 설치 위저드)
+        healing_router,            # /api/healing/* (Self-Healing 상태/트리거)
         ws_router,
     ]
     for router in routers:
@@ -246,8 +249,9 @@ def inject_system(app: FastAPI, system: InjectedSystem) -> None:
     set_profit_target_deps(system)
     set_risk_deps(system)
     set_setup_deps(system)
+    set_healing_deps(system)
     set_ws_deps(system)
-    _logger.info("모든 엔드포인트에 InjectedSystem 주입 완료 (31개)")
+    _logger.info("모든 엔드포인트에 InjectedSystem 주입 완료 (32개)")
 
     # 백그라운드 스케줄러 등록 -- 서버 startup 이벤트에서 시작한다
     global _fx_scheduler

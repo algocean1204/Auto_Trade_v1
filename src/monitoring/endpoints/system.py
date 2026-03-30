@@ -6,6 +6,7 @@ AI 모드 조회/전환 엔드포인트를 포함한다 (GET/POST /api/system/ai
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from src.monitoring.schemas.response_models import (
     SAFETY_DEFAULTS,
     HealthResponse,
     ServiceHealthItem,
+    ShutdownResponse,
     SystemInfoResponse,
     SystemStatusResponse,
 )
@@ -40,6 +42,15 @@ system_router = APIRouter(prefix="/api/system", tags=["system"])
 
 # InjectedSystem 레퍼런스 (DI)
 _system: InjectedSystem | None = None
+
+# 메인 프로세스의 shutdown_event 참조 -- set_system_shutdown_event()로 주입한다
+_main_shutdown_event: asyncio.Event | None = None
+
+
+def set_system_shutdown_event(event: asyncio.Event) -> None:
+    """main.py의 shutdown_event를 주입한다. 서버 프로세스 종료에 사용한다."""
+    global _main_shutdown_event
+    _main_shutdown_event = event
 
 
 class ClockInfoResponse(BaseModel):
@@ -292,6 +303,47 @@ async def switch_ai_mode(
             status_code=500,
             detail="AI 모드 전환 실패",
         ) from exc
+
+
+@system_router.post("/shutdown", response_model=ShutdownResponse)
+async def shutdown_server(
+    _key: str = Depends(verify_api_key),
+) -> ShutdownResponse:
+    """서버 프로세스를 안전하게 종료한다. 인증 필수.
+
+    매매 루프가 실행 중이면 먼저 중지한 후 서버를 종료한다.
+    main.py의 shutdown_event를 set하여 graceful_shutdown 경로를 탄다.
+    """
+    if _main_shutdown_event is None:
+        raise HTTPException(
+            status_code=503,
+            detail="shutdown_event가 주입되지 않았다",
+        )
+
+    if _main_shutdown_event.is_set():
+        return ShutdownResponse(
+            status="already_shutting_down",
+            message="서버가 이미 종료 중이다",
+        )
+
+    # 매매 루프가 실행 중이면 종료 신호를 보낸다
+    # running=False는 _lifecycle()의 finally에서 자동 설정된다 (EOD 실행 조건 보호)
+    if _system is not None and _system.running:
+        try:
+            from src.monitoring.endpoints.trading_control import signal_trading_shutdown
+            signal_trading_shutdown()
+            _logger.info("셧다운 전 매매 루프 종료 신호 전송")
+        except Exception as exc:
+            _logger.warning("매매 루프 종료 신호 실패 (계속 진행): %s", exc)
+
+    # 서버 프로세스 종료 이벤트를 set한다
+    _main_shutdown_event.set()
+    _logger.info("서버 셧다운 요청 처리 완료 — shutdown_event.set()")
+
+    return ShutdownResponse(
+        status="shutting_down",
+        message="서버가 안전하게 종료 중이다",
+    )
 
 
 @system_router.post("/token/refresh", response_model=TokenRefreshResponse)

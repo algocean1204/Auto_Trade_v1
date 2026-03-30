@@ -36,6 +36,10 @@ readonly FLUTTER_APP_PATH="${FLUTTER_BUILD_DIR}/${FLUTTER_APP_NAME}.app"
 # 배포용 .app 이름이다
 readonly DIST_APP_NAME="StockTrader"
 
+# Python 3.12 가상환경 경로이다
+readonly VENV_DIR="${PROJECT_ROOT}/.venv"
+readonly PYTHON312_HOMEBREW="/opt/homebrew/opt/python@3.12/bin/python3.12"
+
 # PyInstaller 결과물 경로이다
 readonly PYINSTALLER_DIST="${DIST_DIR}/trading_server"
 readonly PYINSTALLER_SPEC="${PROJECT_ROOT}/trading_server.spec"
@@ -143,6 +147,60 @@ print_usage() {
   ./scripts/build_dmg.sh --skip-cython --skip-flutter  # 증분 빌드
   ./scripts/build_dmg.sh --dry-run                # 논리 흐름 확인
 USAGE
+}
+
+# ─────────────────────────────────────────────────────────────
+# Python 3.12 가상환경 설정
+# ─────────────────────────────────────────────────────────────
+setup_venv() {
+    _log_step "Python 3.12 가상환경 설정"
+
+    # Python 3.12 실행 파일을 탐색한다
+    local python312=""
+    if [[ -x "$PYTHON312_HOMEBREW" ]]; then
+        python312="$PYTHON312_HOMEBREW"
+        _log_info "Homebrew Python 3.12를 발견했다: ${python312}"
+    elif command -v python3.12 &>/dev/null; then
+        python312="$(command -v python3.12)"
+        _log_info "시스템 Python 3.12를 발견했다: ${python312}"
+    else
+        _log_error "Python 3.12를 찾을 수 없다. Homebrew로 설치한다: brew install python@3.12"
+        exit 1
+    fi
+
+    # 기존 .venv가 Python 3.12를 사용하는지 확인한다
+    if [[ -d "$VENV_DIR" ]]; then
+        local venv_python_version
+        venv_python_version=$("${VENV_DIR}/bin/python3" --version 2>/dev/null || echo "unknown")
+        if [[ "$venv_python_version" == *"3.12"* ]]; then
+            _log_info "기존 Python 3.12 가상환경을 사용한다: ${VENV_DIR}"
+        else
+            _log_warn "기존 가상환경이 Python 3.12가 아니다 (${venv_python_version}). 재생성한다..."
+            rm -rf "${VENV_DIR}"
+            _log_info "새 Python 3.12 가상환경을 생성한다..."
+            "$python312" -m venv "${VENV_DIR}"
+        fi
+    else
+        _log_info "Python 3.12 가상환경을 생성한다: ${VENV_DIR}"
+        "$python312" -m venv "${VENV_DIR}"
+    fi
+
+    # 가상환경을 활성화한다
+    # shellcheck disable=SC1091
+    source "${VENV_DIR}/bin/activate"
+    _log_ok "가상환경 활성화 완료: ${VENV_DIR}"
+
+    # 빌드 필수 패키지를 확인하고 설치한다
+    local build_deps=("pyinstaller" "cython")
+    for dep in "${build_deps[@]}"; do
+        if ! python3 -c "import ${dep}" &>/dev/null; then
+            _log_info "${dep}을 설치한다..."
+            pip install "${dep}" --quiet
+        fi
+    done
+
+    _log_ok "Python: $(python3 --version 2>&1)"
+    _log_ok "가상환경 경로: ${VENV_DIR}"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -570,6 +628,21 @@ step_create_dmg() {
         --hide-extension "${DIST_APP_NAME}.app" \
         "${dmg_output}" \
         "${staging_dir}" || true
+
+    # create-dmg 실행 후 .dmg 파일 존재 확인. 언마운트 실패 시 재시도한다
+    if [[ ! -f "$dmg_output" ]]; then
+        _log_warn "DMG 직접 생성 실패. 언마운트 후 수동 변환을 시도한다..."
+        # 남은 마운트를 정리한다
+        local rw_dmg
+        rw_dmg=$(ls "${DIST_DIR}/rw."*".${DIST_APP_NAME}-v${VERSION}.dmg" 2>/dev/null | head -1)
+        if [[ -n "$rw_dmg" ]]; then
+            sleep 3
+            hdiutil detach /dev/disk* -force 2>/dev/null || true
+            sleep 2
+            hdiutil convert "$rw_dmg" -format UDZO -o "$dmg_output" && rm -f "$rw_dmg"
+        fi
+    fi
+
     if [[ ! -f "$dmg_output" ]]; then
         _log_error ".dmg 파일이 생성되지 않았다"
         exit 1
@@ -649,6 +722,7 @@ main() {
     mkdir -p "${DIST_DIR}"
 
     # 빌드 파이프라인을 실행한다
+    setup_venv
     check_prerequisites
     step_cython
     step_pyinstaller

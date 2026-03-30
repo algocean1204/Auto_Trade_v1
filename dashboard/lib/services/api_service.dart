@@ -1427,6 +1427,31 @@ class ApiService {
     }
   }
 
+  /// 서버 프로세스를 안전하게 종료한다.
+  /// 백엔드 응답: {"status": "shutting_down" | "already_shutting_down", "message": "..."}
+  Future<Map<String, dynamic>> shutdownServer() async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/system/shutdown'),
+            headers: _headers(withJson: true),
+            body: json.encode({}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        return Map<String, dynamic>.from(json.decode(response.body) as Map);
+      } else {
+        throw Exception(
+            'POST /api/system/shutdown failed: ${response.statusCode}');
+      }
+    } catch (e, st) {
+      if (e is Exception && e is! ServerUnreachableException) {
+        _wrapNetworkError<Map<String, dynamic>>(e, st);
+      }
+      rethrow;
+    }
+  }
+
   // ── News Collect & Send ──
 
   /// 뉴스 수집 -> 분류 -> 번역 -> 텔레그램 전송 파이프라인을 실행한다.

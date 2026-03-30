@@ -31,11 +31,14 @@ generate_server_plist() {
         <string>${PROJECT_ROOT}/scripts/start_server.sh</string>
     </array>
 
-    <!-- 서버를 항상 실행 상태로 유지한다 -->
+    <!-- 비정상 종료 시에만 자동 재시작한다. 정상 종료(08:00 워치독 등)는 재시작하지 않는다 -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 
-    <!-- 로그인 시 자동 시작한다 -->
+    <!-- load 시 자동 시작한다 -->
     <key>RunAtLoad</key>
     <true/>
 
@@ -152,8 +155,8 @@ install_all() {
 
     echo ""
     echo "설치 완료!"
-    echo "  - 서버: 항상 실행 (KeepAlive)"
-    echo "  - 자동매매: 매일 23:00 시작, 06:30 종료"
+    echo "  - 서버: load 시 자동 시작, 비정상 종료 시 자동 재시작 (08:00 KST 자동 종료 안전장치)"
+    echo "  - 자동매매: 매일 23:00 시작, 06:30 종료 (서버가 실행 중일 때만 동작)"
     echo "  - 로그: $LOG_DIR/"
     echo ""
     echo "상태 확인: $0 status"

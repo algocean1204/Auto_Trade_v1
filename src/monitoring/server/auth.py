@@ -31,6 +31,11 @@ def set_auth_setup_mode(enabled: bool) -> None:
     _setup_mode = enabled
 
 
+def is_setup_mode() -> bool:
+    """현재 setup_mode 여부를 반환한다."""
+    return _setup_mode
+
+
 async def verify_api_key(
     credentials: HTTPAuthorizationCredentials | None = Depends(_security),
 ) -> str:

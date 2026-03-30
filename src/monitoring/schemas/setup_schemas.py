@@ -248,6 +248,29 @@ class UninstallResponse(BaseModel):
     deleted_count: int = 0
 
 
+class DataFileInfo(BaseModel):
+    """개별 데이터 파일 상태이다."""
+
+    name: str = ""
+    path: str = ""
+    exists: bool = False
+    size_bytes: int = 0
+    description: str = ""
+
+
+class DataStatusResponse(BaseModel):
+    """기존 설치 데이터 감지 결과 응답이다."""
+
+    has_previous_install: bool = False
+    """이전 설치 흔적이 존재하는지 여부이다."""
+    env_exists: bool = False
+    db_exists: bool = False
+    models_dir: str = ""
+    data_dir: str = ""
+    files: list[DataFileInfo] = Field(default_factory=list)
+    models: list[ModelInfo] = Field(default_factory=list)
+
+
 class TokenIssueResponse(BaseModel):
     """KIS 토큰 발급 결과 응답이다."""
 

@@ -2,10 +2,10 @@
 #
 # AI Auto-Trading System V2 - Always-On Server Script
 #
-# 서버를 항상 실행 상태로 유지하는 스크립트이다.
+# 서버 프로세스를 시작하는 스크립트이다.
 # SQLite + InMemoryCache 모드이므로 외부 DB/캐시 서비스 없이 python3 -m src.main을 실행한다.
 # 매매 스케줄은 auto_trading.sh가 API로 제어한다. 이 스크립트는 서버 수명만 관리한다.
-# LaunchAgent(com.trading.server.plist)에서 KeepAlive=true로 호출한다.
+# 사용자가 앱에서 수동으로 서버를 시작/종료한다. 08:00 KST 자동 종료 안전장치가 서버에 내장되어 있다.
 #
 
 set -euo pipefail
@@ -251,7 +251,7 @@ main() {
     log "실제 서버 포트: $PORT (포트 파일: $PORT_FILE)"
 
     # 서버 프로세스가 종료될 때까지 대기한다
-    # KeepAlive=true이므로 LaunchAgent가 비정상 종료 시 재시작한다
+    # 08:00 KST 자동 셧다운 워치독이 서버에 내장되어 있다
     # wait가 시그널로 인터럽트되면 128+signal을 반환한다
     local exit_code=0
     wait "$server_pid" || exit_code=$?
@@ -259,7 +259,6 @@ main() {
     log "서버 프로세스 종료 (exit code: $exit_code)"
     rm -f "$PID_FILE"
 
-    # exit code를 그대로 전달한다 -- LaunchAgent KeepAlive가 재시작 여부를 결정한다
     exit $exit_code
 }
 

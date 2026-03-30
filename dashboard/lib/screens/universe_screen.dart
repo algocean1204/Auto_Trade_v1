@@ -730,7 +730,35 @@ class _InactiveTickersTab extends StatelessWidget {
               ticker: tickers[index],
               onToggle: (enabled) =>
                   provider.toggleTicker(tickers[index].ticker, enabled),
-              onDelete: () {},
+              onDelete: () async {
+                final ticker = tickers[index];
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: ctx.tc.surfaceElevated,
+                    title: Text('삭제 확인', style: AppTypography.headlineMedium),
+                    content: Text(
+                      '${ticker.ticker} (${ticker.name})',
+                      style: AppTypography.bodyMedium,
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('취소'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: ctx.tc.loss),
+                        child: const Text('삭제'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed == true && context.mounted) {
+                  provider.removeTicker(ticker.ticker);
+                }
+              },
             ),
           ),
         );

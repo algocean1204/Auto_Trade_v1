@@ -20,6 +20,8 @@ from src.monitoring.endpoints._setup_validators import (
 )
 from src.monitoring.schemas.setup_schemas import (
     ConfigCurrentResponse,
+    DataFileInfo,
+    DataStatusResponse,
     LaunchAgentInfo,
     LaunchAgentInstallRequest,
     LaunchAgentInstallResponse,
@@ -312,6 +314,69 @@ async def validate_service(
     return SetupValidateResponse(service=service, valid=valid, message=msg)
 
 
+# ── GET /api/setup/data/status ─────────────────────────
+
+
+@setup_router.get("/data/status", response_model=DataStatusResponse)
+async def get_data_status() -> DataStatusResponse:
+    """기존 설치 데이터(모델, DB, 설정 파일)를 감지하여 반환한다. 인증 불필요이다."""
+    import os
+
+    from src.common.paths import get_data_dir, get_env_path, get_models_dir
+
+    models_dir = get_models_dir()
+    data_dir = get_data_dir()
+    env_path = get_env_path()
+
+    # 데이터 파일 감지 목록이다
+    data_files: list[DataFileInfo] = []
+    _check_targets = [
+        ("strategy_params.json", data_dir / "strategy_params.json", "매매 전략 파라미터"),
+        ("ticker_params.json", data_dir / "ticker_params.json", "종목별 파라미터"),
+        ("trading_principles.json", data_dir / "trading_principles.json", "매매 원칙"),
+        ("server_port.txt", data_dir / "server_port.txt", "서버 포트 정보"),
+        ("trading.db", get_app_support_dir() / "trading.db", "거래 데이터베이스"),
+        (".env", env_path or get_app_support_dir() / ".env", "API 키 설정"),
+    ]
+
+    for name, path, desc in _check_targets:
+        exists = path.exists() if path else False
+        size = 0
+        if exists:
+            try:
+                size = os.path.getsize(str(path))
+            except OSError:
+                pass
+        data_files.append(DataFileInfo(
+            name=name, path=str(path), exists=exists,
+            size_bytes=size, description=desc,
+        ))
+
+    # 모델 파일 감지 (get_detailed_models_status 재사용)
+    models_list = []
+    try:
+        from src.setup.model_manager import get_detailed_models_status
+        models_resp = get_detailed_models_status()
+        models_list = models_resp.models
+    except Exception:
+        pass
+
+    env_exists = env_path is not None and env_path.exists()
+    db_path = get_app_support_dir() / "trading.db"
+    db_exists = db_path.exists()
+    has_prev = db_exists or any(m.downloaded for m in models_list)
+
+    return DataStatusResponse(
+        has_previous_install=has_prev,
+        env_exists=env_exists,
+        db_exists=db_exists,
+        models_dir=str(models_dir),
+        data_dir=str(data_dir),
+        files=data_files,
+        models=models_list,
+    )
+
+
 # ── GET /api/setup/models ──────────────────────────────
 
 
@@ -400,9 +465,11 @@ async def install_launchagents(
                 # PyInstaller 번들에서 앱 경로를 추출한다
                 import os
 
-                exe_path = os.path.dirname(sys.executable)
-                # MacOS/ -> Contents/ -> .app/
-                app_path = os.path.dirname(os.path.dirname(exe_path))
+                # sys.executable = .app/Contents/Resources/python_backend/trading_server
+                # dirname 체인: trading_server → python_backend → Resources → Contents → .app
+                app_path = os.path.dirname(sys.executable)
+                for _ in range(3):
+                    app_path = os.path.dirname(app_path)
             else:
                 # 개발 모드에서는 프로젝트 루트를 사용한다
                 from src.common.paths import get_project_root

@@ -20,7 +20,7 @@ logger: logging.Logger = get_logger(__name__)
 _instance: SecretProvider | None = None
 
 # 필수 키이다. DATABASE_URL은 미설정 시 SQLite 기본값을 자동 부여한다
-_REQUIRED_KEYS: list[str] = ["TELEGRAM_BOT_TOKEN"]
+_REQUIRED_KEYS: list[str] = []
 
 # KIS 키 쌍 -- 최소 하나의 쌍이 존재해야 한다
 _KIS_KEY_PAIRS: list[tuple[str, str]] = [

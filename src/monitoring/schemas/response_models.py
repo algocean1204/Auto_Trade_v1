@@ -119,6 +119,13 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class ShutdownResponse(BaseModel):
+    """서버 셧다운 응답이다."""
+
+    status: str  # "shutting_down", "already_shutting_down"
+    message: str
+
+
 class SystemInfoResponse(BaseModel):
     """시스템 정보 응답이다."""
 

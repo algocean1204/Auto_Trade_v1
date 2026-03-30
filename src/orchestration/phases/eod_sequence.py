@@ -970,6 +970,9 @@ async def _s_daily_telegram(s: InjectedSystem, r: EODReport, c: dict) -> None:
     """
     try:
         html = _build_daily_telegram_html(c, r)
+        # 텔레그램 HTML 메시지 최대 4096자 제한 — 초과 시 안전하게 잘라낸다
+        if len(html) > 4000:
+            html = html[:3950] + "\n\n<i>... (메시지 길이 초과로 일부 생략)</i>"
         await s.components.telegram.send_text(html)
         r.telegram_sent = True
         logger.info("[EOD 7-0c] 종합 텔레그램 발송 완료")
@@ -996,7 +999,6 @@ def _build_daily_telegram_html(c: dict, r: EODReport) -> str:
     sell_trades = [t for t in trades if t.get("side") == "sell"]
     total = len(trades)
     if total > 0:
-        import html as _html
         sell_pnls = [_tg_safe_float(t.get("pnl", 0)) for t in sell_trades]
         sell_count = len(sell_trades)
         wins = sum(1 for p in sell_pnls if p > 0)
@@ -1015,8 +1017,8 @@ def _build_daily_telegram_html(c: dict, r: EODReport) -> str:
             worst_idx = min(range(len(sell_pnls)), key=lambda i: sell_pnls[i])
             best = sell_trades[best_idx]
             worst = sell_trades[worst_idx]
-            lines.append(f"Best: {_html.escape(best.get('ticker', '?'))} ${sell_pnls[best_idx]:+,.2f}")
-            lines.append(f"Worst: {_html.escape(worst.get('ticker', '?'))} ${sell_pnls[worst_idx]:+,.2f}")
+            lines.append(f"Best: {escape_html(best.get('ticker', '?'))} ${sell_pnls[best_idx]:+,.2f}")
+            lines.append(f"Worst: {escape_html(worst.get('ticker', '?'))} ${sell_pnls[worst_idx]:+,.2f}")
 
         # 티커별 요약
         by_ticker: dict[str, dict] = {}
@@ -1030,7 +1032,7 @@ def _build_daily_telegram_html(c: dict, r: EODReport) -> str:
         lines.append("")
         for tk, info in sorted(by_ticker.items(), key=lambda x: -x[1]["pnl"]):
             icon = "🟢" if info["pnl"] >= 0 else "🔴"
-            lines.append(f"  {icon} {_html.escape(tk)}: {info['count']}건 ${info['pnl']:+,.2f}")
+            lines.append(f"  {icon} {escape_html(tk)}: {info['count']}건 ${info['pnl']:+,.2f}")
     else:
         lines.append("\n오늘 체결된 매매가 없습니다.")
 
@@ -1187,8 +1189,14 @@ async def _s9(s: InjectedSystem, r: EODReport, c: dict) -> None:
 
     # C-12: trades:today와 pnl:daily를 최종 단계에서 삭제한다 (모든 하위 단계 완료 후)
     # pnl:daily를 남기면 다음 세션 시작 전에 EOD가 재실행될 경우 stale 데이터를 읽는다
-    await cache.delete("trades:today")
-    await cache.delete("pnl:daily")
+    try:
+        await cache.delete("trades:today")
+    except Exception:
+        logger.warning("[EOD 9] trades:today 삭제 실패")
+    try:
+        await cache.delete("pnl:daily")
+    except Exception:
+        logger.warning("[EOD 9] pnl:daily 삭제 실패")
 
     # 슬리피지 원시 데이터 삭제 (Step 2.8에서 집계 완료)
     try:

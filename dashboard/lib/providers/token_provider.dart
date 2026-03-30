@@ -295,13 +295,12 @@ class TokenProvider with ChangeNotifier {
             return;
           }
         }
-        _error = '시스템 Python3을 찾을 수 없습니다. '
-            'Xcode Command Line Tools를 설치하세요.';
+        _error = '서버를 먼저 시작한 후 토큰을 발급하세요.';
         return;
       }
     }
 
-    _error = '번들 모드에서 토큰 발급 수단을 찾을 수 없습니다. 서버를 먼저 시작하세요.';
+    _error = '서버를 먼저 시작한 후 토큰을 발급하세요.';
   }
 
   /// subprocess 실행 결과를 파싱하여 토큰 상태를 업데이트한다.

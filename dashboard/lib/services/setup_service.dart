@@ -179,6 +179,14 @@ class SetupService {
     }
   }
 
+  /// 기존 설치 데이터(모델, DB, 설정 파일) 감지 결과를 조회한다.
+  Future<DataStatus> getDataStatus() {
+    return _get(
+      '/api/setup/data/status',
+      (data) => DataStatus.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
   /// MLX 모델 다운로드 상태 목록을 조회한다.
   Future<ModelsStatus> getModelsStatus() {
     return _get(
